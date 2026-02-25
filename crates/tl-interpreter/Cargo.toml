@@ -1,0 +1,13 @@
+[package]
+name = "tl-interpreter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Tree-walking interpreter for ThinkingLanguage (Phase 0)"
+
+[dependencies]
+tl-ast = { path = "../tl-ast" }
+tl-errors = { path = "../tl-errors" }
+
+[dev-dependencies]
+tl-parser = { path = "../tl-parser" }

@@ -1,0 +1,11 @@
+[package]
+name = "tl-parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Recursive descent parser for ThinkingLanguage"
+
+[dependencies]
+tl-lexer = { path = "../tl-lexer" }
+tl-ast = { path = "../tl-ast" }
+tl-errors = { path = "../tl-errors" }

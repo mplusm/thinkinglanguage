@@ -1,0 +1,10 @@
+[package]
+name = "tl-lexer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lexer/tokenizer for ThinkingLanguage"
+
+[dependencies]
+logos.workspace = true
+tl-errors = { path = "../tl-errors" }

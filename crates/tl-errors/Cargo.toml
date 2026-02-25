@@ -1,0 +1,10 @@
+[package]
+name = "tl-errors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Error types and diagnostics for the ThinkingLanguage compiler"
+
+[dependencies]
+ariadne.workspace = true
+thiserror.workspace = true

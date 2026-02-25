@@ -1,0 +1,19 @@
+[package]
+name = "tl-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "CLI entry point for ThinkingLanguage (tl run, tl shell)"
+
+[[bin]]
+name = "tl"
+path = "src/main.rs"
+
+[dependencies]
+tl-lexer = { path = "../tl-lexer" }
+tl-parser = { path = "../tl-parser" }
+tl-ast = { path = "../tl-ast" }
+tl-interpreter = { path = "../tl-interpreter" }
+tl-errors = { path = "../tl-errors" }
+clap.workspace = true
+rustyline.workspace = true
