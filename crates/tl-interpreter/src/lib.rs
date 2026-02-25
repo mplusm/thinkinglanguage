@@ -27,6 +27,12 @@ pub enum Value {
     },
     /// A built-in function
     Builtin(String),
+    /// A closure (anonymous function with captured environment)
+    Closure {
+        params: Vec<Param>,
+        body: Box<Expr>,
+        captured_env: Vec<HashMap<String, Value>>,
+    },
 }
 
 impl fmt::Display for Value {
@@ -55,6 +61,7 @@ impl fmt::Display for Value {
             Value::None => write!(f, "none"),
             Value::Function { name, .. } => write!(f, "<fn {name}>"),
             Value::Builtin(name) => write!(f, "<builtin {name}>"),
+            Value::Closure { .. } => write!(f, "<closure>"),
         }
     }
 }
@@ -82,6 +89,7 @@ impl Value {
             Value::None => "none",
             Value::Function { .. } => "function",
             Value::Builtin(_) => "builtin",
+            Value::Closure { .. } => "closure",
         }
     }
 }
@@ -116,6 +124,12 @@ impl Environment {
         global.insert("range".to_string(), Value::Builtin("range".to_string()));
         global.insert("push".to_string(), Value::Builtin("push".to_string()));
         global.insert("type_of".to_string(), Value::Builtin("type_of".to_string()));
+        global.insert("map".to_string(), Value::Builtin("map".to_string()));
+        global.insert("filter".to_string(), Value::Builtin("filter".to_string()));
+        global.insert("reduce".to_string(), Value::Builtin("reduce".to_string()));
+        global.insert("sum".to_string(), Value::Builtin("sum".to_string()));
+        global.insert("any".to_string(), Value::Builtin("any".to_string()));
+        global.insert("all".to_string(), Value::Builtin("all".to_string()));
 
         Self {
             scopes: vec![global],
@@ -459,6 +473,29 @@ impl Interpreter {
                 Ok(Value::None)
             }
 
+            Expr::Match { subject, arms } => {
+                let subject_val = self.eval_expr(subject)?;
+                for (pattern, body) in arms {
+                    // Wildcard _ always matches
+                    if matches!(pattern, Expr::Ident(s) if s == "_") {
+                        return self.eval_expr(body);
+                    }
+                    let pattern_val = self.eval_expr(pattern)?;
+                    let matched = match (&subject_val, &pattern_val) {
+                        (Value::Int(a), Value::Int(b)) => a == b,
+                        (Value::Float(a), Value::Float(b)) => a == b,
+                        (Value::String(a), Value::String(b)) => a == b,
+                        (Value::Bool(a), Value::Bool(b)) => a == b,
+                        (Value::None, Value::None) => true,
+                        _ => false, // type mismatch = no match
+                    };
+                    if matched {
+                        return self.eval_expr(body);
+                    }
+                }
+                Ok(Value::None)
+            }
+
             Expr::NullCoalesce { expr, default } => {
                 let val = self.eval_expr(expr)?;
                 if matches!(val, Value::None) {
@@ -466,6 +503,14 @@ impl Interpreter {
                 } else {
                     Ok(val)
                 }
+            }
+
+            Expr::Closure { params, body } => {
+                Ok(Value::Closure {
+                    params: params.clone(),
+                    body: Box::new(body.as_ref().clone()),
+                    captured_env: self.env.scopes.clone(),
+                })
             }
 
             Expr::Assign { target, value } => {
@@ -613,6 +658,29 @@ impl Interpreter {
                 self.env.pop_scope();
                 Ok(result)
             }
+            Value::Closure {
+                params,
+                body,
+                captured_env,
+            } => {
+                if args.len() != params.len() {
+                    return Err(runtime_err(format!(
+                        "Closure expected {} arguments, got {}",
+                        params.len(),
+                        args.len()
+                    )));
+                }
+                // Save current env, swap in captured env
+                let saved_env = std::mem::replace(&mut self.env.scopes, captured_env.clone());
+                self.env.push_scope();
+                for (param, arg) in params.iter().zip(args) {
+                    self.env.set(param.name.clone(), arg.clone());
+                }
+                let result = self.eval_expr(body);
+                // Restore original env
+                self.env.scopes = saved_env;
+                result
+            }
             _ => Err(runtime_err(format!(
                 "Cannot call {}",
                 func.type_name()
@@ -723,6 +791,124 @@ impl Interpreter {
                     .map(|v| v.type_name().to_string())
                     .unwrap_or_else(|| "none".to_string()),
             )),
+            "map" => {
+                if args.len() != 2 {
+                    return Err(runtime_err("map() expects 2 arguments (list, fn)".to_string()));
+                }
+                let items = match &args[0] {
+                    Value::List(items) => items.clone(),
+                    _ => return Err(runtime_err("map() first arg must be a list".to_string())),
+                };
+                let func = args[1].clone();
+                let mut result = Vec::new();
+                for item in items {
+                    result.push(self.call_function(&func, &[item])?);
+                }
+                Ok(Value::List(result))
+            }
+            "filter" => {
+                if args.len() != 2 {
+                    return Err(runtime_err("filter() expects 2 arguments (list, fn)".to_string()));
+                }
+                let items = match &args[0] {
+                    Value::List(items) => items.clone(),
+                    _ => return Err(runtime_err("filter() first arg must be a list".to_string())),
+                };
+                let func = args[1].clone();
+                let mut result = Vec::new();
+                for item in items {
+                    let val = self.call_function(&func, &[item.clone()])?;
+                    if val.is_truthy() {
+                        result.push(item);
+                    }
+                }
+                Ok(Value::List(result))
+            }
+            "reduce" => {
+                if args.len() != 3 {
+                    return Err(runtime_err("reduce() expects 3 arguments (list, init, fn)".to_string()));
+                }
+                let items = match &args[0] {
+                    Value::List(items) => items.clone(),
+                    _ => return Err(runtime_err("reduce() first arg must be a list".to_string())),
+                };
+                let mut acc = args[1].clone();
+                let func = args[2].clone();
+                for item in items {
+                    acc = self.call_function(&func, &[acc, item])?;
+                }
+                Ok(acc)
+            }
+            "sum" => {
+                if args.len() != 1 {
+                    return Err(runtime_err("sum() expects 1 argument (list)".to_string()));
+                }
+                let items = match &args[0] {
+                    Value::List(items) => items.clone(),
+                    _ => return Err(runtime_err("sum() expects a list".to_string())),
+                };
+                let mut total: i64 = 0;
+                let mut is_float = false;
+                let mut total_f: f64 = 0.0;
+                for item in &items {
+                    match item {
+                        Value::Int(n) => {
+                            if is_float {
+                                total_f += *n as f64;
+                            } else {
+                                total += n;
+                            }
+                        }
+                        Value::Float(n) => {
+                            if !is_float {
+                                total_f = total as f64;
+                                is_float = true;
+                            }
+                            total_f += n;
+                        }
+                        _ => return Err(runtime_err("sum() list must contain numbers".to_string())),
+                    }
+                }
+                if is_float {
+                    Ok(Value::Float(total_f))
+                } else {
+                    Ok(Value::Int(total))
+                }
+            }
+            "any" => {
+                if args.len() != 2 {
+                    return Err(runtime_err("any() expects 2 arguments (list, fn)".to_string()));
+                }
+                let items = match &args[0] {
+                    Value::List(items) => items.clone(),
+                    _ => return Err(runtime_err("any() first arg must be a list".to_string())),
+                };
+                let func = args[1].clone();
+                for item in items {
+                    let val = self.call_function(&func, &[item])?;
+                    if val.is_truthy() {
+                        return Ok(Value::Bool(true));
+                    }
+                }
+                Ok(Value::Bool(false))
+            }
+            "all" => {
+                if args.len() != 2 {
+                    return Err(runtime_err("all() expects 2 arguments (list, fn)".to_string()));
+                }
+                let items = match &args[0] {
+                    Value::List(items) => items.clone(),
+                    _ => return Err(runtime_err("all() first arg must be a list".to_string())),
+                };
+                let func = args[1].clone();
+                for item in items {
+                    let val = self.call_function(&func, &[item])?;
+                    if !val.is_truthy() {
+                        return Ok(Value::Bool(false));
+                    }
+                }
+                Ok(Value::Bool(true))
+            }
             _ => Err(runtime_err(format!("Unknown builtin: {name}"))),
         }
     }
@@ -863,10 +1049,70 @@ mod tests {
     }
 
     #[test]
+    fn test_match_int() {
+        let output = run_output("let x = 2\nprint(match x { 1 => \"one\", 2 => \"two\", _ => \"other\" })");
+        assert_eq!(output, vec!["two"]);
+    }
+
+    #[test]
+    fn test_match_wildcard() {
+        let output = run_output("let x = 99\nprint(match x { 1 => \"one\", _ => \"fallback\" })");
+        assert_eq!(output, vec!["fallback"]);
+    }
+
+    #[test]
+    fn test_match_string() {
+        let output = run_output("let s = \"hi\"\nprint(match s { \"hello\" => 1, \"hi\" => 2, _ => 0 })");
+        assert_eq!(output, vec!["2"]);
+    }
+
+    #[test]
+    fn test_closure() {
+        let output = run_output("let double = (x) => x * 2\nprint(double(5))");
+        assert_eq!(output, vec!["10"]);
+    }
+
+    #[test]
+    fn test_closure_capture() {
+        let output = run_output("let factor = 3\nlet mul = (x) => x * factor\nprint(mul(7))");
+        assert_eq!(output, vec!["21"]);
+    }
+
+    #[test]
     fn test_for_loop() {
         let output = run_output(
             "let sum = 0\nfor i in range(5) { sum = sum + i }\nprint(sum)",
         );
         assert_eq!(output, vec!["10"]);
+    }
+
+    #[test]
+    fn test_map_builtin() {
+        let output = run_output("let nums = [1, 2, 3]\nlet doubled = map(nums, (x) => x * 2)\nprint(doubled)");
+        assert_eq!(output, vec!["[2, 4, 6]"]);
+    }
+
+    #[test]
+    fn test_filter_builtin() {
+        let output = run_output("let nums = [1, 2, 3, 4, 5]\nlet evens = filter(nums, (x) => x % 2 == 0)\nprint(evens)");
+        assert_eq!(output, vec!["[2, 4]"]);
+    }
+
+    #[test]
+    fn test_pipe_with_closure() {
+        let output = run_output("let result = [1, 2, 3] |> map((x) => x + 10)\nprint(result)");
+        assert_eq!(output, vec!["[11, 12, 13]"]);
+    }
+
+    #[test]
+    fn test_sum_builtin() {
+        let output = run_output("print(sum([1, 2, 3, 4]))");
+        assert_eq!(output, vec!["10"]);
+    }
+
+    #[test]
+    fn test_reduce_builtin() {
+        let output = run_output("let product = reduce([1, 2, 3, 4], 1, (acc, x) => acc * x)\nprint(product)");
+        assert_eq!(output, vec!["24"]);
     }
 }

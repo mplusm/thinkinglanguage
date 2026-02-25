@@ -466,10 +466,14 @@ impl Parser {
                 Ok(Expr::Ident(name))
             }
             Token::LParen => {
-                self.advance();
-                let expr = self.parse_expression()?;
-                self.expect(&Token::RParen)?;
-                Ok(expr)
+                if self.is_closure_ahead() {
+                    self.parse_closure()
+                } else {
+                    self.advance();
+                    let expr = self.parse_expression()?;
+                    self.expect(&Token::RParen)?;
+                    Ok(expr)
+                }
             }
             Token::LBracket => {
                 self.advance();
@@ -494,10 +498,29 @@ impl Parser {
                     let pattern = self.parse_expression()?;
                     self.expect(&Token::FatArrow)?;
                     let body = self.parse_expression()?;
+                    self.match_token(&Token::Comma); // optional trailing comma
                     arms.push((pattern, body));
                 }
                 self.expect(&Token::RBrace)?;
                 Ok(Expr::Case { arms })
+            }
+            Token::Match => {
+                self.advance(); // consume 'match'
+                let subject = self.parse_expression()?;
+                self.expect(&Token::LBrace)?;
+                let mut arms = Vec::new();
+                while !self.check(&Token::RBrace) && !self.is_at_end() {
+                    let pattern = self.parse_expression()?;
+                    self.expect(&Token::FatArrow)?;
+                    let body = self.parse_expression()?;
+                    self.match_token(&Token::Comma); // optional trailing comma
+                    arms.push((pattern, body));
+                }
+                self.expect(&Token::RBrace)?;
+                Ok(Expr::Match {
+                    subject: Box::new(subject),
+                    arms,
+                })
             }
             Token::Underscore => {
                 self.advance();
@@ -509,6 +532,44 @@ impl Parser {
                 hint: Some("Expected an expression (literal, variable, or function call)".into()),
             })),
         }
+    }
+
+    /// Look ahead from current `(` to determine if this is a closure `(params) => expr`.
+    /// Scans forward to find the matching `)`, then checks if the next token is `=>`.
+    fn is_closure_ahead(&self) -> bool {
+        // Current token should be LParen
+        let mut i = self.pos + 1; // skip the LParen
+        let mut depth = 1;
+        while i < self.tokens.len() {
+            match &self.tokens[i].token {
+                Token::LParen => depth += 1,
+                Token::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        // Check if next token after `)` is `=>`
+                        return i + 1 < self.tokens.len()
+                            && self.tokens[i + 1].token == Token::FatArrow;
+                    }
+                }
+                Token::None_ => return false, // hit EOF
+                _ => {}
+            }
+            i += 1;
+        }
+        false
+    }
+
+    /// Parse a closure: `(params) => expr`
+    fn parse_closure(&mut self) -> Result<Expr, TlError> {
+        self.expect(&Token::LParen)?;
+        let params = self.parse_param_list()?;
+        self.expect(&Token::RParen)?;
+        self.expect(&Token::FatArrow)?;
+        let body = self.parse_expression()?;
+        Ok(Expr::Closure {
+            params,
+            body: Box::new(body),
+        })
     }
 
     // ── Argument & Parameter Lists ───────────────────────────
@@ -666,6 +727,28 @@ mod tests {
         // Should parse as 1 + (2 * 3) due to precedence
         if let Stmt::Let { value, .. } = &program.statements[0] {
             assert!(matches!(value, Expr::BinOp { op: BinOp::Add, .. }));
+        }
+    }
+
+    #[test]
+    fn test_parse_match() {
+        let program = parse("match x { 1 => \"one\", 2 => \"two\", _ => \"other\" }").unwrap();
+        assert_eq!(program.statements.len(), 1);
+        if let Stmt::Expr(Expr::Match { subject, arms }) = &program.statements[0] {
+            assert!(matches!(subject.as_ref(), Expr::Ident(n) if n == "x"));
+            assert_eq!(arms.len(), 3);
+        } else {
+            panic!("Expected match expression");
+        }
+    }
+
+    #[test]
+    fn test_parse_closure() {
+        let program = parse("let double = (x) => x * 2").unwrap();
+        if let Stmt::Let { value, .. } = &program.statements[0] {
+            assert!(matches!(value, Expr::Closure { .. }));
+        } else {
+            panic!("Expected let with closure");
         }
     }
 
