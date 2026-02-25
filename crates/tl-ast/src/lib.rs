@@ -57,6 +57,12 @@ pub enum Stmt {
         body: Vec<Stmt>,
     },
 
+    /// `schema Name { field: type, ... }`
+    Schema {
+        name: String,
+        fields: Vec<SchemaField>,
+    },
+
     /// `break`
     Break,
 
@@ -223,6 +229,13 @@ pub enum UnaryOp {
 pub struct Param {
     pub name: String,
     pub type_ann: Option<TypeExpr>,
+}
+
+/// Schema field definition
+#[derive(Debug, Clone)]
+pub struct SchemaField {
+    pub name: String,
+    pub type_ann: TypeExpr,
 }
 
 /// Type expressions (Phase 0: basic types only)

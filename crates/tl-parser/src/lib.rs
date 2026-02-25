@@ -105,6 +105,7 @@ impl Parser {
             Token::While => self.parse_while(),
             Token::For => self.parse_for(),
             Token::Return => self.parse_return(),
+            Token::Schema => self.parse_schema(),
             Token::Break => {
                 self.advance();
                 Ok(Stmt::Break)
@@ -118,6 +119,26 @@ impl Parser {
                 Ok(Stmt::Expr(expr))
             }
         }
+    }
+
+    /// Parse `schema Name { field: type, ... }`
+    fn parse_schema(&mut self) -> Result<Stmt, TlError> {
+        self.advance(); // consume 'schema'
+        let name = self.expect_ident()?;
+        self.expect(&Token::LBrace)?;
+        let mut fields = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            let field_name = self.expect_ident()?;
+            self.expect(&Token::Colon)?;
+            let type_ann = self.parse_type()?;
+            self.match_token(&Token::Comma); // optional trailing comma
+            fields.push(SchemaField {
+                name: field_name,
+                type_ann,
+            });
+        }
+        self.expect(&Token::RBrace)?;
+        Ok(Stmt::Schema { name, fields })
     }
 
     fn parse_let(&mut self) -> Result<Stmt, TlError> {
@@ -522,6 +543,23 @@ impl Parser {
                     arms,
                 })
             }
+            Token::With => {
+                self.advance(); // consume 'with'
+                self.expect(&Token::LBrace)?;
+                let mut pairs = Vec::new();
+                while !self.check(&Token::RBrace) && !self.is_at_end() {
+                    let key_name = self.expect_ident()?;
+                    self.expect(&Token::Assign)?;
+                    let value = self.parse_expression()?;
+                    self.match_token(&Token::Comma); // optional trailing comma
+                    pairs.push((Expr::String(key_name), value));
+                }
+                self.expect(&Token::RBrace)?;
+                Ok(Expr::Call {
+                    function: Box::new(Expr::Ident("with".to_string())),
+                    args: vec![Expr::Map(pairs)],
+                })
+            }
             Token::Underscore => {
                 self.advance();
                 Ok(Expr::Ident("_".to_string()))
@@ -760,6 +798,36 @@ mod tests {
             assert_eq!(args.len(), 1);
         } else {
             panic!("Expected function call");
+        }
+    }
+
+    #[test]
+    fn test_parse_schema() {
+        let program = parse("schema User { id: int64, name: string, age: float64 }").unwrap();
+        if let Stmt::Schema { name, fields } = &program.statements[0] {
+            assert_eq!(name, "User");
+            assert_eq!(fields.len(), 3);
+            assert_eq!(fields[0].name, "id");
+            assert_eq!(fields[1].name, "name");
+            assert_eq!(fields[2].name, "age");
+        } else {
+            panic!("Expected schema statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_with_block() {
+        let program = parse("with { doubled = age * 2, name = first }").unwrap();
+        if let Stmt::Expr(Expr::Call { function, args }) = &program.statements[0] {
+            assert!(matches!(function.as_ref(), Expr::Ident(n) if n == "with"));
+            assert_eq!(args.len(), 1);
+            if let Expr::Map(pairs) = &args[0] {
+                assert_eq!(pairs.len(), 2);
+            } else {
+                panic!("Expected Map arg");
+            }
+        } else {
+            panic!("Expected with call expression");
         }
     }
 }

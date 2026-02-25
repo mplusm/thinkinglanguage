@@ -1,0 +1,13 @@
+order_id,user_id,product,amount,quantity
+101,1,Widget,29.99,2
+102,2,Gadget,49.99,1
+103,1,Widget,29.99,3
+104,3,Sprocket,19.99,5
+105,4,Widget,29.99,1
+106,5,Gadget,49.99,2
+107,6,Sprocket,19.99,10
+108,7,Widget,29.99,1
+109,8,Gadget,49.99,3
+110,9,Sprocket,19.99,2
+111,10,Widget,29.99,4
+112,1,Gadget,49.99,1

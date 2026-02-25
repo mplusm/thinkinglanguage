@@ -1,15 +1,18 @@
 [package]
-name = "tl-interpreter"
+name = "tl-data"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Tree-walking interpreter for ThinkingLanguage (Phase 0)"
+authors.workspace = true
 
 [dependencies]
 tl-ast = { path = "../tl-ast" }
 tl-errors = { path = "../tl-errors" }
-tl-data = { path = "../tl-data" }
+
+datafusion = "44"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+parquet = "53"
+postgres = "0.19"
 
 [dev-dependencies]
-tl-parser = { path = "../tl-parser" }
 tempfile = "3"

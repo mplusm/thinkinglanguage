@@ -6,6 +6,7 @@ members = [
     "crates/tl-interpreter",
     "crates/tl-errors",
     "crates/tl-cli",
+    "crates/tl-data",
 ]
 resolver = "2"
 

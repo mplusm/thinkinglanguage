@@ -7,8 +7,33 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 use tl_ast::*;
 use tl_errors::{RuntimeError, TlError};
+use tl_data::translate::{translate_expr, LocalValue, TranslateContext};
+use tl_data::{
+    ArrowDataType, ArrowField, ArrowSchema,
+    DataFrame, DataEngine, JoinType, col,
+};
+
+/// Wrapper around DataFusion DataFrame that implements Debug + Clone.
+#[derive(Clone)]
+pub struct TlTable {
+    pub df: DataFrame,
+}
+
+impl fmt::Debug for TlTable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<table>")
+    }
+}
+
+/// Schema definition: column names and Arrow types.
+#[derive(Debug, Clone)]
+pub struct TlSchema {
+    pub name: String,
+    pub arrow_schema: Arc<ArrowSchema>,
+}
 
 /// Runtime value
 #[derive(Debug, Clone)]
@@ -33,6 +58,10 @@ pub enum Value {
         body: Box<Expr>,
         captured_env: Vec<HashMap<String, Value>>,
     },
+    /// A lazy DataFusion table (DataFrame)
+    Table(TlTable),
+    /// A schema definition
+    Schema(TlSchema),
 }
 
 impl fmt::Display for Value {
@@ -62,6 +91,8 @@ impl fmt::Display for Value {
             Value::Function { name, .. } => write!(f, "<fn {name}>"),
             Value::Builtin(name) => write!(f, "<builtin {name}>"),
             Value::Closure { .. } => write!(f, "<closure>"),
+            Value::Table(_) => write!(f, "<table>"),
+            Value::Schema(s) => write!(f, "<schema {}>", s.name),
         }
     }
 }
@@ -90,6 +121,8 @@ impl Value {
             Value::Function { .. } => "function",
             Value::Builtin(_) => "builtin",
             Value::Closure { .. } => "closure",
+            Value::Table(_) => "table",
+            Value::Schema(_) => "schema",
         }
     }
 }
@@ -130,6 +163,16 @@ impl Environment {
         global.insert("sum".to_string(), Value::Builtin("sum".to_string()));
         global.insert("any".to_string(), Value::Builtin("any".to_string()));
         global.insert("all".to_string(), Value::Builtin("all".to_string()));
+        // Data engine builtins
+        global.insert("read_csv".to_string(), Value::Builtin("read_csv".to_string()));
+        global.insert("read_parquet".to_string(), Value::Builtin("read_parquet".to_string()));
+        global.insert("write_csv".to_string(), Value::Builtin("write_csv".to_string()));
+        global.insert("write_parquet".to_string(), Value::Builtin("write_parquet".to_string()));
+        global.insert("collect".to_string(), Value::Builtin("collect".to_string()));
+        global.insert("show".to_string(), Value::Builtin("show".to_string()));
+        global.insert("describe".to_string(), Value::Builtin("describe".to_string()));
+        global.insert("head".to_string(), Value::Builtin("head".to_string()));
+        global.insert("postgres".to_string(), Value::Builtin("postgres".to_string()));
 
         Self {
             scopes: vec![global],
@@ -184,6 +227,8 @@ pub struct Interpreter {
     pub output: Vec<String>,
     /// Track last expression value for REPL display
     last_expr_value: Option<Value>,
+    /// Data engine (lazily initialized)
+    data_engine: Option<DataEngine>,
 }
 
 impl Interpreter {
@@ -192,7 +237,16 @@ impl Interpreter {
             env: Environment::new(),
             output: Vec::new(),
             last_expr_value: None,
+            data_engine: None,
         }
+    }
+
+    /// Get or create the DataEngine (lazy init).
+    fn engine(&mut self) -> &DataEngine {
+        if self.data_engine.is_none() {
+            self.data_engine = Some(DataEngine::new());
+        }
+        self.data_engine.as_ref().unwrap()
     }
 
     /// Execute a complete program
@@ -333,6 +387,21 @@ impl Interpreter {
                 }
                 Ok(Signal::None)
             }
+            Stmt::Schema { name, fields } => {
+                let arrow_fields: Vec<ArrowField> = fields
+                    .iter()
+                    .map(|f| {
+                        let dt = tl_type_to_arrow(&f.type_ann);
+                        ArrowField::new(&f.name, dt, true)
+                    })
+                    .collect();
+                let schema = TlSchema {
+                    name: name.clone(),
+                    arrow_schema: Arc::new(ArrowSchema::new(arrow_fields)),
+                };
+                self.env.set(name.clone(), Value::Schema(schema));
+                Ok(Signal::None)
+            }
             Stmt::Break => Ok(Signal::Break),
             Stmt::Continue => Ok(Signal::Continue),
         }
@@ -404,7 +473,11 @@ impl Interpreter {
 
             Expr::Pipe { left, right } => {
                 let left_val = self.eval_expr(left)?;
-                // Pipe: left_val becomes the first argument to the right-side call
+                // Table-aware pipe: if left is a Table, dispatch to table operations
+                if let Value::Table(ref tl_table) = left_val {
+                    return self.eval_table_pipe(tl_table.df.clone(), right);
+                }
+                // Regular pipe: left_val becomes the first argument to the right-side call
                 match right.as_ref() {
                     Expr::Call { function, args } => {
                         let func = self.eval_expr(function)?;
@@ -415,7 +488,6 @@ impl Interpreter {
                         self.call_function(&func, &all_args)
                     }
                     Expr::Ident(name) => {
-                        // `x |> double` is sugar for `double(x)`
                         let func = self.env.get(name).cloned().ok_or_else(|| {
                             TlError::Runtime(RuntimeError {
                                 message: format!("Undefined function: `{name}`"),
@@ -690,16 +762,20 @@ impl Interpreter {
 
     fn call_builtin(&mut self, name: &str, args: &[Value]) -> Result<Value, TlError> {
         match name {
-            "print" => {
-                let output: Vec<String> = args.iter().map(|a| format!("{a}")).collect();
-                let line = output.join(" ");
-                println!("{line}");
-                self.output.push(line);
-                Ok(Value::None)
-            }
-            "println" => {
-                let output: Vec<String> = args.iter().map(|a| format!("{a}")).collect();
-                let line = output.join(" ");
+            "print" | "println" => {
+                // If any arg is a table, auto-collect and display it
+                let mut parts = Vec::new();
+                for a in args {
+                    match a {
+                        Value::Table(t) => {
+                            let batches = self.engine().collect(t.df.clone()).map_err(|e| runtime_err(e))?;
+                            let formatted = DataEngine::format_batches(&batches).map_err(|e| runtime_err(e))?;
+                            parts.push(formatted);
+                        }
+                        _ => parts.push(format!("{a}")),
+                    }
+                }
+                let line = parts.join(" ");
                 println!("{line}");
                 self.output.push(line);
                 Ok(Value::None)
@@ -909,6 +985,143 @@ impl Interpreter {
                 }
                 Ok(Value::Bool(true))
             }
+            // ── Data engine builtins ──
+            "read_csv" => {
+                if args.len() != 1 {
+                    return Err(runtime_err("read_csv() expects 1 argument (path)".into()));
+                }
+                let path = match &args[0] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err("read_csv() path must be a string".into())),
+                };
+                let df = self.engine().read_csv(&path).map_err(|e| runtime_err(e))?;
+                Ok(Value::Table(TlTable { df }))
+            }
+            "read_parquet" => {
+                if args.len() != 1 {
+                    return Err(runtime_err("read_parquet() expects 1 argument (path)".into()));
+                }
+                let path = match &args[0] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err("read_parquet() path must be a string".into())),
+                };
+                let df = self.engine().read_parquet(&path).map_err(|e| runtime_err(e))?;
+                Ok(Value::Table(TlTable { df }))
+            }
+            "write_csv" => {
+                if args.len() != 2 {
+                    return Err(runtime_err("write_csv() expects 2 arguments (table, path)".into()));
+                }
+                let df = match &args[0] {
+                    Value::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err("write_csv() first arg must be a table".into())),
+                };
+                let path = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err("write_csv() path must be a string".into())),
+                };
+                self.engine().write_csv(df, &path).map_err(|e| runtime_err(e))?;
+                Ok(Value::None)
+            }
+            "write_parquet" => {
+                if args.len() != 2 {
+                    return Err(runtime_err("write_parquet() expects 2 arguments (table, path)".into()));
+                }
+                let df = match &args[0] {
+                    Value::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err("write_parquet() first arg must be a table".into())),
+                };
+                let path = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err("write_parquet() path must be a string".into())),
+                };
+                self.engine().write_parquet(df, &path).map_err(|e| runtime_err(e))?;
+                Ok(Value::None)
+            }
+            "collect" => {
+                if args.len() != 1 {
+                    return Err(runtime_err("collect() expects 1 argument (table)".into()));
+                }
+                let df = match &args[0] {
+                    Value::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err("collect() expects a table".into())),
+                };
+                let batches = self.engine().collect(df).map_err(|e| runtime_err(e))?;
+                let formatted = DataEngine::format_batches(&batches).map_err(|e| runtime_err(e))?;
+                Ok(Value::String(formatted))
+            }
+            "show" => {
+                let df = match args.first() {
+                    Some(Value::Table(t)) => t.df.clone(),
+                    _ => return Err(runtime_err("show() expects a table".into())),
+                };
+                let limit = match args.get(1) {
+                    Some(Value::Int(n)) => *n as usize,
+                    None => 20,
+                    _ => return Err(runtime_err("show() second arg must be an int".into())),
+                };
+                let limited = df.limit(0, Some(limit)).map_err(|e| runtime_err(format!("{e}")))?;
+                let batches = self.engine().collect(limited).map_err(|e| runtime_err(e))?;
+                let formatted = DataEngine::format_batches(&batches).map_err(|e| runtime_err(e))?;
+                println!("{formatted}");
+                self.output.push(formatted.clone());
+                Ok(Value::None)
+            }
+            "describe" => {
+                if args.len() != 1 {
+                    return Err(runtime_err("describe() expects 1 argument (table)".into()));
+                }
+                let df = match &args[0] {
+                    Value::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err("describe() expects a table".into())),
+                };
+                let schema = df.schema();
+                let mut lines = Vec::new();
+                lines.push("Columns:".to_string());
+                for (qualifier, field) in schema.iter() {
+                    let prefix = match qualifier {
+                        Some(q) => format!("{q}."),
+                        None => String::new(),
+                    };
+                    lines.push(format!("  {}{}: {}", prefix, field.name(), field.data_type()));
+                }
+                let output = lines.join("\n");
+                println!("{output}");
+                self.output.push(output.clone());
+                Ok(Value::String(output))
+            }
+            "head" => {
+                if args.is_empty() {
+                    return Err(runtime_err("head() expects at least 1 argument (table)".into()));
+                }
+                let df = match &args[0] {
+                    Value::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err("head() first arg must be a table".into())),
+                };
+                let n = match args.get(1) {
+                    Some(Value::Int(n)) => *n as usize,
+                    None => 10,
+                    _ => return Err(runtime_err("head() second arg must be an int".into())),
+                };
+                let limited = df.limit(0, Some(n)).map_err(|e| runtime_err(format!("{e}")))?;
+                Ok(Value::Table(TlTable { df: limited }))
+            }
+            "postgres" => {
+                if args.len() != 2 {
+                    return Err(runtime_err("postgres() expects 2 arguments (conn_str, table_name)".into()));
+                }
+                let conn_str = match &args[0] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err("postgres() conn_str must be a string".into())),
+                };
+                let table_name = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err("postgres() table_name must be a string".into())),
+                };
+                let df = self.engine().read_postgres(&conn_str, &table_name)
+                    .map_err(|e| runtime_err(e))?;
+                Ok(Value::Table(TlTable { df }))
+            }
             _ => Err(runtime_err(format!("Unknown builtin: {name}"))),
         }
     }
@@ -958,6 +1171,387 @@ impl Interpreter {
             }
         }
         Ok(result)
+    }
+
+    // ── Table-aware pipe evaluation ─────────────────────────
+
+    /// Evaluate `table |> operation(args)` — dispatches to table operations.
+    fn eval_table_pipe(&mut self, df: DataFrame, right: &Expr) -> Result<Value, TlError> {
+        match right {
+            Expr::Call { function, args } => {
+                let fname = match function.as_ref() {
+                    Expr::Ident(name) => name.as_str(),
+                    _ => {
+                        // Fall through to regular call with table as first arg
+                        let func = self.eval_expr(function)?;
+                        let mut all_args = vec![Value::Table(TlTable { df })];
+                        for arg in args {
+                            all_args.push(self.eval_expr(arg)?);
+                        }
+                        return self.call_function(&func, &all_args);
+                    }
+                };
+                match fname {
+                    "filter" => self.table_filter(df, args),
+                    "select" => self.table_select(df, args),
+                    "sort" => self.table_sort(df, args),
+                    "with" => self.table_with(df, args),
+                    "aggregate" => self.table_aggregate(df, args),
+                    "join" => self.table_join(df, args),
+                    "head" => self.table_limit(df, args),
+                    "limit" => self.table_limit(df, args),
+                    "collect" => {
+                        let batches = self.engine().collect(df).map_err(|e| runtime_err(e))?;
+                        let formatted = DataEngine::format_batches(&batches).map_err(|e| runtime_err(e))?;
+                        Ok(Value::String(formatted))
+                    }
+                    "show" => {
+                        let limit = match args.first() {
+                            Some(expr) => {
+                                let val = self.eval_expr(expr)?;
+                                match val {
+                                    Value::Int(n) => n as usize,
+                                    _ => 20,
+                                }
+                            }
+                            None => 20,
+                        };
+                        let limited = df.limit(0, Some(limit)).map_err(|e| runtime_err(format!("{e}")))?;
+                        let batches = self.engine().collect(limited).map_err(|e| runtime_err(e))?;
+                        let formatted = DataEngine::format_batches(&batches).map_err(|e| runtime_err(e))?;
+                        println!("{formatted}");
+                        self.output.push(formatted);
+                        Ok(Value::None)
+                    }
+                    "describe" => {
+                        let schema = df.schema();
+                        let mut lines = Vec::new();
+                        lines.push("Columns:".to_string());
+                        for field in schema.fields() {
+                            lines.push(format!("  {}: {}", field.name(), field.data_type()));
+                        }
+                        let output = lines.join("\n");
+                        println!("{output}");
+                        self.output.push(output.clone());
+                        Ok(Value::String(output))
+                    }
+                    "write_csv" => {
+                        if args.len() != 1 {
+                            return Err(runtime_err("write_csv() expects 1 argument (path)".into()));
+                        }
+                        let path = match self.eval_expr(&args[0])? {
+                            Value::String(s) => s,
+                            _ => return Err(runtime_err("write_csv() path must be a string".into())),
+                        };
+                        self.engine().write_csv(df, &path).map_err(|e| runtime_err(e))?;
+                        Ok(Value::None)
+                    }
+                    "write_parquet" => {
+                        if args.len() != 1 {
+                            return Err(runtime_err("write_parquet() expects 1 argument (path)".into()));
+                        }
+                        let path = match self.eval_expr(&args[0])? {
+                            Value::String(s) => s,
+                            _ => return Err(runtime_err("write_parquet() path must be a string".into())),
+                        };
+                        self.engine().write_parquet(df, &path).map_err(|e| runtime_err(e))?;
+                        Ok(Value::None)
+                    }
+                    // Unknown table op: fall through to regular call
+                    _ => {
+                        let func = self.env.get(fname).cloned().ok_or_else(|| {
+                            runtime_err(format!("Unknown table operation: `{fname}`"))
+                        })?;
+                        let mut all_args = vec![Value::Table(TlTable { df })];
+                        for arg in args {
+                            all_args.push(self.eval_expr(arg)?);
+                        }
+                        self.call_function(&func, &all_args)
+                    }
+                }
+            }
+            Expr::Ident(name) => {
+                let func = self.env.get(name).cloned().ok_or_else(|| {
+                    runtime_err(format!("Unknown table operation: `{name}`"))
+                })?;
+                self.call_function(&func, &[Value::Table(TlTable { df })])
+            }
+            _ => Err(runtime_err("Right side of |> must be a function call".into())),
+        }
+    }
+
+    /// Build a TranslateContext from current interpreter locals.
+    fn build_translate_context(&self) -> TranslateContext {
+        let mut ctx = TranslateContext::new();
+        for scope in &self.env.scopes {
+            for (name, val) in scope {
+                let local = match val {
+                    Value::Int(n) => Some(LocalValue::Int(*n)),
+                    Value::Float(f) => Some(LocalValue::Float(*f)),
+                    Value::String(s) => Some(LocalValue::String(s.clone())),
+                    Value::Bool(b) => Some(LocalValue::Bool(*b)),
+                    _ => None,
+                };
+                if let Some(local) = local {
+                    ctx.locals.insert(name.clone(), local);
+                }
+            }
+        }
+        ctx
+    }
+
+    /// `table |> filter(predicate)`
+    fn table_filter(&mut self, df: DataFrame, args: &[Expr]) -> Result<Value, TlError> {
+        if args.len() != 1 {
+            return Err(runtime_err("filter() expects 1 argument (predicate)".into()));
+        }
+        let ctx = self.build_translate_context();
+        let pred = translate_expr(&args[0], &ctx).map_err(|e| runtime_err(e))?;
+        let filtered = df.filter(pred).map_err(|e| runtime_err(format!("{e}")))?;
+        Ok(Value::Table(TlTable { df: filtered }))
+    }
+
+    /// `table |> select(col1, col2, name: expr)`
+    fn table_select(&mut self, df: DataFrame, args: &[Expr]) -> Result<Value, TlError> {
+        if args.is_empty() {
+            return Err(runtime_err("select() expects at least 1 argument".into()));
+        }
+        let ctx = self.build_translate_context();
+        let mut select_exprs = Vec::new();
+        for arg in args {
+            match arg {
+                Expr::Ident(name) => {
+                    select_exprs.push(col(name.as_str()));
+                }
+                Expr::NamedArg { name, value } => {
+                    let expr = translate_expr(value, &ctx).map_err(|e| runtime_err(e))?;
+                    select_exprs.push(expr.alias(name));
+                }
+                Expr::String(name) => {
+                    select_exprs.push(col(name.as_str()));
+                }
+                _ => {
+                    let expr = translate_expr(arg, &ctx).map_err(|e| runtime_err(e))?;
+                    select_exprs.push(expr);
+                }
+            }
+        }
+        let selected = df.select(select_exprs).map_err(|e| runtime_err(format!("{e}")))?;
+        Ok(Value::Table(TlTable { df: selected }))
+    }
+
+    /// `table |> sort(col, "desc")` or `table |> sort(col)` (default asc)
+    fn table_sort(&mut self, df: DataFrame, args: &[Expr]) -> Result<Value, TlError> {
+        if args.is_empty() {
+            return Err(runtime_err("sort() expects at least 1 argument (column)".into()));
+        }
+        let mut sort_exprs = Vec::new();
+        let mut i = 0;
+        while i < args.len() {
+            let col_name = match &args[i] {
+                Expr::Ident(name) => name.clone(),
+                Expr::String(name) => name.clone(),
+                _ => return Err(runtime_err("sort() column must be an identifier or string".into())),
+            };
+            i += 1;
+            // Check for optional "asc"/"desc" direction
+            let ascending = if i < args.len() {
+                match &args[i] {
+                    Expr::String(dir) if dir == "desc" || dir == "DESC" => {
+                        i += 1;
+                        false
+                    }
+                    Expr::String(dir) if dir == "asc" || dir == "ASC" => {
+                        i += 1;
+                        true
+                    }
+                    _ => true,
+                }
+            } else {
+                true
+            };
+            sort_exprs.push(
+                col(col_name.as_str()).sort(ascending, true) // nulls last
+            );
+        }
+        let sorted = df.sort(sort_exprs).map_err(|e| runtime_err(format!("{e}")))?;
+        Ok(Value::Table(TlTable { df: sorted }))
+    }
+
+    /// `table |> with { col_name = expr, ... }` — add derived columns
+    fn table_with(&mut self, df: DataFrame, args: &[Expr]) -> Result<Value, TlError> {
+        if args.len() != 1 {
+            return Err(runtime_err("with() expects 1 argument (map of column definitions)".into()));
+        }
+        let pairs = match &args[0] {
+            Expr::Map(pairs) => pairs,
+            _ => return Err(runtime_err("with() expects a map { col = expr, ... }".into())),
+        };
+        let ctx = self.build_translate_context();
+        let mut result_df = df;
+        for (key, value_expr) in pairs {
+            let col_name = match key {
+                Expr::String(s) => s.clone(),
+                Expr::Ident(s) => s.clone(),
+                _ => return Err(runtime_err("with() key must be a string or identifier".into())),
+            };
+            let df_expr = translate_expr(value_expr, &ctx).map_err(|e| runtime_err(e))?;
+            result_df = result_df
+                .with_column(&col_name, df_expr)
+                .map_err(|e| runtime_err(format!("{e}")))?;
+        }
+        Ok(Value::Table(TlTable { df: result_df }))
+    }
+
+    /// `table |> aggregate(by: "col", total: sum(amount), n: count())`
+    fn table_aggregate(&mut self, df: DataFrame, args: &[Expr]) -> Result<Value, TlError> {
+        let ctx = self.build_translate_context();
+        let mut group_by_cols: Vec<tl_data::datafusion::prelude::Expr> = Vec::new();
+        let mut agg_exprs: Vec<tl_data::datafusion::prelude::Expr> = Vec::new();
+
+        for arg in args {
+            match arg {
+                Expr::NamedArg { name, value } if name == "by" => {
+                    // by: "col" or by: col
+                    match value.as_ref() {
+                        Expr::String(col_name) => {
+                            group_by_cols.push(col(col_name.as_str()));
+                        }
+                        Expr::Ident(col_name) => {
+                            group_by_cols.push(col(col_name.as_str()));
+                        }
+                        Expr::List(items) => {
+                            for item in items {
+                                match item {
+                                    Expr::String(s) => group_by_cols.push(col(s.as_str())),
+                                    Expr::Ident(s) => group_by_cols.push(col(s.as_str())),
+                                    _ => return Err(runtime_err("by: list items must be strings or identifiers".into())),
+                                }
+                            }
+                        }
+                        _ => return Err(runtime_err("by: must be a column name or list".into())),
+                    }
+                }
+                Expr::NamedArg { name, value } => {
+                    // Named aggregate: total: sum(amount)
+                    let agg_expr = translate_expr(value, &ctx).map_err(|e| runtime_err(e))?;
+                    agg_exprs.push(agg_expr.alias(name));
+                }
+                _ => {
+                    // Positional aggregate
+                    let agg_expr = translate_expr(arg, &ctx).map_err(|e| runtime_err(e))?;
+                    agg_exprs.push(agg_expr);
+                }
+            }
+        }
+
+        let aggregated = df
+            .aggregate(group_by_cols, agg_exprs)
+            .map_err(|e| runtime_err(format!("{e}")))?;
+        Ok(Value::Table(TlTable { df: aggregated }))
+    }
+
+    /// `table |> join(right_table, on: left_col == right_col, kind: "inner")`
+    fn table_join(&mut self, df: DataFrame, args: &[Expr]) -> Result<Value, TlError> {
+        if args.is_empty() {
+            return Err(runtime_err("join() expects at least 1 argument (right table)".into()));
+        }
+
+        // First positional arg: right table (evaluate it)
+        let right_table = self.eval_expr(&args[0])?;
+        let right_df = match right_table {
+            Value::Table(t) => t.df,
+            _ => return Err(runtime_err("join() first arg must be a table".into())),
+        };
+
+        let mut left_cols: Vec<&str> = Vec::new();
+        let mut right_cols: Vec<&str> = Vec::new();
+        let mut join_type = JoinType::Inner;
+        let mut on_col_names: Vec<(String, String)> = Vec::new();
+
+        for arg in &args[1..] {
+            match arg {
+                Expr::NamedArg { name, value } if name == "on" => {
+                    // on: left_col == right_col
+                    match value.as_ref() {
+                        Expr::BinOp { left, op: BinOp::Eq, right } => {
+                            let left_col = match left.as_ref() {
+                                Expr::Ident(s) => s.clone(),
+                                Expr::String(s) => s.clone(),
+                                _ => return Err(runtime_err("on: left side must be a column name".into())),
+                            };
+                            let right_col = match right.as_ref() {
+                                Expr::Ident(s) => s.clone(),
+                                Expr::String(s) => s.clone(),
+                                _ => return Err(runtime_err("on: right side must be a column name".into())),
+                            };
+                            on_col_names.push((left_col, right_col));
+                        }
+                        _ => return Err(runtime_err("on: must be an equality expression (col1 == col2)".into())),
+                    }
+                }
+                Expr::NamedArg { name, value } if name == "kind" => {
+                    let kind_val = self.eval_expr(value)?;
+                    let kind_str = match &kind_val {
+                        Value::String(s) => s.as_str(),
+                        _ => return Err(runtime_err("kind: must be a string".into())),
+                    };
+                    join_type = match kind_str {
+                        "inner" => JoinType::Inner,
+                        "left" => JoinType::Left,
+                        "right" => JoinType::Right,
+                        "full" => JoinType::Full,
+                        _ => return Err(runtime_err(format!("Unknown join type: {kind_str}"))),
+                    };
+                }
+                _ => {} // ignore other args
+            }
+        }
+
+        // Build column references
+        for (l, r) in &on_col_names {
+            left_cols.push(l.as_str());
+            right_cols.push(r.as_str());
+        }
+
+        let joined = df
+            .join(right_df, join_type, &left_cols, &right_cols, None)
+            .map_err(|e| runtime_err(format!("{e}")))?;
+        Ok(Value::Table(TlTable { df: joined }))
+    }
+
+    /// `table |> head(n)` or `table |> limit(n)`
+    fn table_limit(&mut self, df: DataFrame, args: &[Expr]) -> Result<Value, TlError> {
+        let n = match args.first() {
+            Some(expr) => {
+                let val = self.eval_expr(expr)?;
+                match val {
+                    Value::Int(n) => n as usize,
+                    _ => return Err(runtime_err("head/limit expects an integer".into())),
+                }
+            }
+            None => 10,
+        };
+        let limited = df.limit(0, Some(n)).map_err(|e| runtime_err(format!("{e}")))?;
+        Ok(Value::Table(TlTable { df: limited }))
+    }
+}
+
+/// Convert TL type annotations to Arrow DataTypes.
+fn tl_type_to_arrow(ty: &TypeExpr) -> ArrowDataType {
+    match ty {
+        TypeExpr::Named(name) => match name.as_str() {
+            "int64" | "int" => ArrowDataType::Int64,
+            "int32" => ArrowDataType::Int32,
+            "int16" => ArrowDataType::Int16,
+            "float64" | "float" => ArrowDataType::Float64,
+            "float32" => ArrowDataType::Float32,
+            "string" | "str" | "text" => ArrowDataType::Utf8,
+            "bool" | "boolean" => ArrowDataType::Boolean,
+            _ => ArrowDataType::Utf8, // fallback
+        },
+        TypeExpr::Optional(inner) => tl_type_to_arrow(inner), // nullable is always true in Arrow
+        _ => ArrowDataType::Utf8, // fallback for complex types
     }
 }
 
