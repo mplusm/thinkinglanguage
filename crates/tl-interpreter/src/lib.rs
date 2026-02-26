@@ -99,6 +99,8 @@ pub enum Value {
         name: String,
         exports: HashMap<String, Value>,
     },
+    /// An ordered map (string keys)
+    Map(Vec<(String, Value)>),
 }
 
 impl fmt::Display for Value {
@@ -162,6 +164,14 @@ impl fmt::Display for Value {
                 Ok(())
             }
             Value::Module { name, .. } => write!(f, "<module {name}>"),
+            Value::Map(pairs) => {
+                write!(f, "{{")?;
+                for (i, (k, v)) in pairs.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{k}: {v}")?;
+                }
+                write!(f, "}}")
+            }
         }
     }
 }
@@ -174,6 +184,7 @@ impl Value {
             Value::Float(n) => *n != 0.0,
             Value::String(s) => !s.is_empty(),
             Value::List(items) => !items.is_empty(),
+            Value::Map(pairs) => !pairs.is_empty(),
             Value::None => false,
             _ => true,
         }
@@ -207,6 +218,7 @@ impl Value {
             Value::EnumDef { .. } => "enum_def",
             Value::EnumInstance { .. } => "enum",
             Value::Module { .. } => "module",
+            Value::Map(_) => "map",
         }
     }
 }
@@ -297,6 +309,26 @@ impl Environment {
         global.insert("log2".to_string(), Value::Builtin("log2".to_string()));
         global.insert("log10".to_string(), Value::Builtin("log10".to_string()));
         global.insert("join".to_string(), Value::Builtin("join".to_string()));
+        // Phase 6: Stdlib & Ecosystem
+        global.insert("json_parse".to_string(), Value::Builtin("json_parse".to_string()));
+        global.insert("json_stringify".to_string(), Value::Builtin("json_stringify".to_string()));
+        global.insert("map_from".to_string(), Value::Builtin("map_from".to_string()));
+        global.insert("read_file".to_string(), Value::Builtin("read_file".to_string()));
+        global.insert("write_file".to_string(), Value::Builtin("write_file".to_string()));
+        global.insert("append_file".to_string(), Value::Builtin("append_file".to_string()));
+        global.insert("file_exists".to_string(), Value::Builtin("file_exists".to_string()));
+        global.insert("list_dir".to_string(), Value::Builtin("list_dir".to_string()));
+        global.insert("env_get".to_string(), Value::Builtin("env_get".to_string()));
+        global.insert("env_set".to_string(), Value::Builtin("env_set".to_string()));
+        global.insert("regex_match".to_string(), Value::Builtin("regex_match".to_string()));
+        global.insert("regex_find".to_string(), Value::Builtin("regex_find".to_string()));
+        global.insert("regex_replace".to_string(), Value::Builtin("regex_replace".to_string()));
+        global.insert("now".to_string(), Value::Builtin("now".to_string()));
+        global.insert("date_format".to_string(), Value::Builtin("date_format".to_string()));
+        global.insert("date_parse".to_string(), Value::Builtin("date_parse".to_string()));
+        global.insert("zip".to_string(), Value::Builtin("zip".to_string()));
+        global.insert("enumerate".to_string(), Value::Builtin("enumerate".to_string()));
+        global.insert("bool".to_string(), Value::Builtin("bool".to_string()));
         // Assert builtins
         global.insert("assert".to_string(), Value::Builtin("assert".to_string()));
         global.insert("assert_eq".to_string(), Value::Builtin("assert_eq".to_string()));
@@ -519,6 +551,12 @@ impl Interpreter {
                 let iter_val = self.eval_expr(iter)?;
                 let items = match iter_val {
                     Value::List(items) => items,
+                    Value::Map(pairs) => {
+                        // Map iteration yields [key, value] pairs
+                        pairs.into_iter()
+                            .map(|(k, v)| Value::List(vec![Value::String(k), v]))
+                            .collect()
+                    }
                     _ => {
                         return Err(TlError::Runtime(RuntimeError {
                             message: format!("Cannot iterate over {}", iter_val.type_name()),
@@ -798,6 +836,12 @@ impl Interpreter {
                             runtime_err(format!("Module `{name}` has no export `{field}`"))
                         })
                     }
+                    Value::Map(pairs) => {
+                        Ok(pairs.iter()
+                            .find(|(k, _)| k == field)
+                            .map(|(_, v)| v.clone())
+                            .unwrap_or(Value::None))
+                    }
                     _ => Err(runtime_err(format!(
                         "Cannot access field `{field}` on {}",
                         obj.type_name()
@@ -856,6 +900,12 @@ impl Interpreter {
                                 items.len()
                             ))
                         })
+                    }
+                    (Value::Map(pairs), Value::String(key)) => {
+                        Ok(pairs.iter()
+                            .find(|(k, _)| k == key)
+                            .map(|(_, v)| v.clone())
+                            .unwrap_or(Value::None))
                     }
                     _ => Err(runtime_err(format!(
                         "Cannot index {} with {}",
@@ -989,7 +1039,47 @@ impl Interpreter {
                                     self.env.update(name, Value::StructInstance { type_name, fields });
                                     Ok(val)
                                 }
+                                Some(Value::Map(mut pairs)) => {
+                                    if let Some(entry) = pairs.iter_mut().find(|(k, _)| k == field) {
+                                        entry.1 = val.clone();
+                                    } else {
+                                        pairs.push((field.clone(), val.clone()));
+                                    }
+                                    self.env.update(name, Value::Map(pairs));
+                                    Ok(val)
+                                }
                                 _ => Err(runtime_err(format!("Cannot set field on {}", name))),
+                            }
+                        } else {
+                            Err(runtime_err("Invalid assignment target".to_string()))
+                        }
+                    }
+                    Expr::Index { object, index } => {
+                        // Map/list index assignment: m["key"] = val, list[0] = val
+                        if let Expr::Ident(name) = object.as_ref() {
+                            let idx = self.eval_expr(index)?;
+                            let obj = self.env.get(name).cloned();
+                            match (obj, idx) {
+                                (Some(Value::Map(mut pairs)), Value::String(key)) => {
+                                    if let Some(entry) = pairs.iter_mut().find(|(k, _)| k == &key) {
+                                        entry.1 = val.clone();
+                                    } else {
+                                        pairs.push((key, val.clone()));
+                                    }
+                                    self.env.update(name, Value::Map(pairs));
+                                    Ok(val)
+                                }
+                                (Some(Value::List(mut items)), Value::Int(i)) => {
+                                    let i = i as usize;
+                                    if i < items.len() {
+                                        items[i] = val.clone();
+                                        self.env.update(name, Value::List(items));
+                                        Ok(val)
+                                    } else {
+                                        Err(runtime_err(format!("Index {i} out of bounds")))
+                                    }
+                                }
+                                _ => Err(runtime_err("Invalid index assignment target".to_string())),
                             }
                         } else {
                             Err(runtime_err("Invalid assignment target".to_string()))
@@ -1263,7 +1353,8 @@ impl Interpreter {
             "len" => match args.first() {
                 Some(Value::String(s)) => Ok(Value::Int(s.len() as i64)),
                 Some(Value::List(l)) => Ok(Value::Int(l.len() as i64)),
-                _ => Err(runtime_err("len() expects a string or list".to_string())),
+                Some(Value::Map(pairs)) => Ok(Value::Int(pairs.len() as i64)),
+                _ => Err(runtime_err("len() expects a string, list, or map".to_string())),
             },
             "str" => Ok(Value::String(
                 args.first().map(|v| format!("{v}")).unwrap_or_default(),
@@ -1275,7 +1366,8 @@ impl Interpreter {
                     .map(Value::Int)
                     .map_err(|_| runtime_err(format!("Cannot convert '{s}' to int"))),
                 Some(Value::Int(n)) => Ok(Value::Int(*n)),
-                _ => Err(runtime_err("int() expects a number or string".to_string())),
+                Some(Value::Bool(b)) => Ok(Value::Int(if *b { 1 } else { 0 })),
+                _ => Err(runtime_err("int() expects a number, string, or bool".to_string())),
             },
             "float" => match args.first() {
                 Some(Value::Int(n)) => Ok(Value::Float(*n as f64)),
@@ -1284,7 +1376,8 @@ impl Interpreter {
                     .map(Value::Float)
                     .map_err(|_| runtime_err(format!("Cannot convert '{s}' to float"))),
                 Some(Value::Float(n)) => Ok(Value::Float(*n)),
-                _ => Err(runtime_err("float() expects a number or string".to_string())),
+                Some(Value::Bool(b)) => Ok(Value::Float(if *b { 1.0 } else { 0.0 })),
+                _ => Err(runtime_err("float() expects a number, string, or bool".to_string())),
             },
             "abs" => match args.first() {
                 Some(Value::Int(n)) => Ok(Value::Int(n.abs())),
@@ -1326,8 +1419,22 @@ impl Interpreter {
                     } else {
                         Err(runtime_err("range() expects integers".to_string()))
                     }
+                } else if args.len() == 3 {
+                    if let (Value::Int(start), Value::Int(end), Value::Int(step)) = (&args[0], &args[1], &args[2]) {
+                        if *step == 0 { return Err(runtime_err("range() step cannot be zero".to_string())); }
+                        let mut result = Vec::new();
+                        let mut i = *start;
+                        if *step > 0 {
+                            while i < *end { result.push(Value::Int(i)); i += step; }
+                        } else {
+                            while i > *end { result.push(Value::Int(i)); i += step; }
+                        }
+                        Ok(Value::List(result))
+                    } else {
+                        Err(runtime_err("range() expects integers".to_string()))
+                    }
                 } else {
-                    Err(runtime_err("range() expects 1 or 2 arguments".to_string()))
+                    Err(runtime_err("range() expects 1, 2, or 3 arguments".to_string()))
                 }
             }
             "push" => {
@@ -1816,6 +1923,199 @@ impl Interpreter {
                     Err(runtime_err_s("http_post() expects string URL and body"))
                 }
             }
+            // ── Phase 6: Stdlib & Ecosystem builtins ──
+            "json_parse" => {
+                if args.is_empty() { return Err(runtime_err_s("json_parse() expects a string")); }
+                if let Value::String(s) = &args[0] {
+                    let json_val: serde_json::Value = serde_json::from_str(s)
+                        .map_err(|e| runtime_err(format!("JSON parse error: {e}")))?;
+                    Ok(json_to_value(&json_val))
+                } else {
+                    Err(runtime_err_s("json_parse() expects a string"))
+                }
+            }
+            "json_stringify" => {
+                if args.is_empty() { return Err(runtime_err_s("json_stringify() expects a value")); }
+                let json = value_to_json(&args[0]);
+                Ok(Value::String(json.to_string()))
+            }
+            "map_from" => {
+                if args.len() % 2 != 0 {
+                    return Err(runtime_err_s("map_from() expects even number of arguments (key, value pairs)"));
+                }
+                let mut pairs = Vec::new();
+                for chunk in args.chunks(2) {
+                    let key = match &chunk[0] {
+                        Value::String(s) => s.clone(),
+                        other => format!("{other}"),
+                    };
+                    pairs.push((key, chunk[1].clone()));
+                }
+                Ok(Value::Map(pairs))
+            }
+            "read_file" => {
+                if args.is_empty() { return Err(runtime_err_s("read_file() expects a path")); }
+                if let Value::String(path) = &args[0] {
+                    let content = std::fs::read_to_string(path)
+                        .map_err(|e| runtime_err(format!("read_file error: {e}")))?;
+                    Ok(Value::String(content))
+                } else {
+                    Err(runtime_err_s("read_file() expects a string path"))
+                }
+            }
+            "write_file" => {
+                if args.len() < 2 { return Err(runtime_err_s("write_file() expects path and content")); }
+                if let (Value::String(path), Value::String(content)) = (&args[0], &args[1]) {
+                    std::fs::write(path, content)
+                        .map_err(|e| runtime_err(format!("write_file error: {e}")))?;
+                    Ok(Value::None)
+                } else {
+                    Err(runtime_err_s("write_file() expects string path and content"))
+                }
+            }
+            "append_file" => {
+                if args.len() < 2 { return Err(runtime_err_s("append_file() expects path and content")); }
+                if let (Value::String(path), Value::String(content)) = (&args[0], &args[1]) {
+                    use std::io::Write;
+                    let mut file = std::fs::OpenOptions::new()
+                        .create(true).append(true).open(path)
+                        .map_err(|e| runtime_err(format!("append_file error: {e}")))?;
+                    file.write_all(content.as_bytes())
+                        .map_err(|e| runtime_err(format!("append_file error: {e}")))?;
+                    Ok(Value::None)
+                } else {
+                    Err(runtime_err_s("append_file() expects string path and content"))
+                }
+            }
+            "file_exists" => {
+                if args.is_empty() { return Err(runtime_err_s("file_exists() expects a path")); }
+                if let Value::String(path) = &args[0] {
+                    Ok(Value::Bool(std::path::Path::new(path).exists()))
+                } else {
+                    Err(runtime_err_s("file_exists() expects a string path"))
+                }
+            }
+            "list_dir" => {
+                if args.is_empty() { return Err(runtime_err_s("list_dir() expects a path")); }
+                if let Value::String(path) = &args[0] {
+                    let entries: Vec<Value> = std::fs::read_dir(path)
+                        .map_err(|e| runtime_err(format!("list_dir error: {e}")))?
+                        .filter_map(|e| e.ok())
+                        .map(|e| Value::String(e.file_name().to_string_lossy().to_string()))
+                        .collect();
+                    Ok(Value::List(entries))
+                } else {
+                    Err(runtime_err_s("list_dir() expects a string path"))
+                }
+            }
+            "env_get" => {
+                if args.is_empty() { return Err(runtime_err_s("env_get() expects a name")); }
+                if let Value::String(name) = &args[0] {
+                    match std::env::var(name) {
+                        Ok(val) => Ok(Value::String(val)),
+                        Err(_) => Ok(Value::None),
+                    }
+                } else {
+                    Err(runtime_err_s("env_get() expects a string"))
+                }
+            }
+            "env_set" => {
+                if args.len() < 2 { return Err(runtime_err_s("env_set() expects name and value")); }
+                if let (Value::String(name), Value::String(val)) = (&args[0], &args[1]) {
+                    unsafe { std::env::set_var(name, val); }
+                    Ok(Value::None)
+                } else {
+                    Err(runtime_err_s("env_set() expects two strings"))
+                }
+            }
+            "regex_match" => {
+                if args.len() < 2 { return Err(runtime_err_s("regex_match() expects pattern and string")); }
+                if let (Value::String(pattern), Value::String(text)) = (&args[0], &args[1]) {
+                    let re = regex::Regex::new(pattern)
+                        .map_err(|e| runtime_err(format!("Invalid regex: {e}")))?;
+                    Ok(Value::Bool(re.is_match(text)))
+                } else {
+                    Err(runtime_err_s("regex_match() expects string pattern and string"))
+                }
+            }
+            "regex_find" => {
+                if args.len() < 2 { return Err(runtime_err_s("regex_find() expects pattern and string")); }
+                if let (Value::String(pattern), Value::String(text)) = (&args[0], &args[1]) {
+                    let re = regex::Regex::new(pattern)
+                        .map_err(|e| runtime_err(format!("Invalid regex: {e}")))?;
+                    let matches: Vec<Value> = re.find_iter(text)
+                        .map(|m| Value::String(m.as_str().to_string()))
+                        .collect();
+                    Ok(Value::List(matches))
+                } else {
+                    Err(runtime_err_s("regex_find() expects string pattern and string"))
+                }
+            }
+            "regex_replace" => {
+                if args.len() < 3 { return Err(runtime_err_s("regex_replace() expects pattern, string, replacement")); }
+                if let (Value::String(pattern), Value::String(text), Value::String(replacement)) = (&args[0], &args[1], &args[2]) {
+                    let re = regex::Regex::new(pattern)
+                        .map_err(|e| runtime_err(format!("Invalid regex: {e}")))?;
+                    Ok(Value::String(re.replace_all(text, replacement.as_str()).to_string()))
+                } else {
+                    Err(runtime_err_s("regex_replace() expects three strings"))
+                }
+            }
+            "now" => {
+                let ts = chrono::Utc::now().timestamp_millis();
+                Ok(Value::Int(ts))
+            }
+            "date_format" => {
+                if args.len() < 2 { return Err(runtime_err_s("date_format() expects timestamp_ms and format")); }
+                if let (Value::Int(ts), Value::String(fmt)) = (&args[0], &args[1]) {
+                    use chrono::TimeZone;
+                    let secs = *ts / 1000;
+                    let nsecs = ((*ts % 1000) * 1_000_000) as u32;
+                    let dt = chrono::Utc.timestamp_opt(secs, nsecs)
+                        .single()
+                        .ok_or_else(|| runtime_err_s("Invalid timestamp"))?;
+                    Ok(Value::String(dt.format(fmt).to_string()))
+                } else {
+                    Err(runtime_err_s("date_format() expects int timestamp and string format"))
+                }
+            }
+            "date_parse" => {
+                if args.len() < 2 { return Err(runtime_err_s("date_parse() expects string and format")); }
+                if let (Value::String(s), Value::String(fmt)) = (&args[0], &args[1]) {
+                    let dt = chrono::NaiveDateTime::parse_from_str(s, fmt)
+                        .map_err(|e| runtime_err(format!("date_parse error: {e}")))?;
+                    let ts = dt.and_utc().timestamp_millis();
+                    Ok(Value::Int(ts))
+                } else {
+                    Err(runtime_err_s("date_parse() expects two strings"))
+                }
+            }
+            "zip" => {
+                if args.len() < 2 { return Err(runtime_err_s("zip() expects two lists")); }
+                if let (Value::List(a), Value::List(b)) = (&args[0], &args[1]) {
+                    let pairs: Vec<Value> = a.iter().zip(b.iter())
+                        .map(|(x, y)| Value::List(vec![x.clone(), y.clone()]))
+                        .collect();
+                    Ok(Value::List(pairs))
+                } else {
+                    Err(runtime_err_s("zip() expects two lists"))
+                }
+            }
+            "enumerate" => {
+                if args.is_empty() { return Err(runtime_err_s("enumerate() expects a list")); }
+                if let Value::List(items) = &args[0] {
+                    let pairs: Vec<Value> = items.iter().enumerate()
+                        .map(|(i, v)| Value::List(vec![Value::Int(i as i64), v.clone()]))
+                        .collect();
+                    Ok(Value::List(pairs))
+                } else {
+                    Err(runtime_err_s("enumerate() expects a list"))
+                }
+            }
+            "bool" => {
+                if args.is_empty() { return Err(runtime_err_s("bool() expects a value")); }
+                Ok(Value::Bool(args[0].is_truthy()))
+            }
             _ => Err(runtime_err(format!("Unknown builtin: {name}"))),
         }
     }
@@ -1868,6 +2168,52 @@ impl Interpreter {
                 }
                 "to_upper" => Ok(Value::String(s.to_uppercase())),
                 "to_lower" => Ok(Value::String(s.to_lowercase())),
+                "chars" => {
+                    let chars: Vec<Value> = s.chars().map(|c| Value::String(c.to_string())).collect();
+                    Ok(Value::List(chars))
+                }
+                "repeat" => {
+                    let n = match args.first() {
+                        Some(Value::Int(n)) => *n as usize,
+                        _ => return Err(runtime_err_s("repeat() expects an integer")),
+                    };
+                    Ok(Value::String(s.repeat(n)))
+                }
+                "index_of" => {
+                    let needle = match args.first() {
+                        Some(Value::String(n)) => n.as_str(),
+                        _ => return Err(runtime_err_s("index_of() expects a string")),
+                    };
+                    Ok(Value::Int(s.find(needle).map(|i| i as i64).unwrap_or(-1)))
+                }
+                "substring" => {
+                    if args.len() < 2 { return Err(runtime_err_s("substring() expects start and end")); }
+                    let start = match &args[0] { Value::Int(n) => *n as usize, _ => return Err(runtime_err_s("substring() expects integers")) };
+                    let end = match &args[1] { Value::Int(n) => *n as usize, _ => return Err(runtime_err_s("substring() expects integers")) };
+                    let end = end.min(s.len());
+                    let start = start.min(end);
+                    Ok(Value::String(s[start..end].to_string()))
+                }
+                "pad_left" => {
+                    if args.is_empty() { return Err(runtime_err_s("pad_left() expects width")); }
+                    let width = match &args[0] { Value::Int(n) => *n as usize, _ => return Err(runtime_err_s("pad_left() expects integer width")) };
+                    let ch = match args.get(1) {
+                        Some(Value::String(c)) => c.chars().next().unwrap_or(' '),
+                        _ => ' ',
+                    };
+                    if s.len() >= width { Ok(Value::String(s.clone())) }
+                    else { Ok(Value::String(format!("{}{}", std::iter::repeat(ch).take(width - s.len()).collect::<String>(), s))) }
+                }
+                "pad_right" => {
+                    if args.is_empty() { return Err(runtime_err_s("pad_right() expects width")); }
+                    let width = match &args[0] { Value::Int(n) => *n as usize, _ => return Err(runtime_err_s("pad_right() expects integer width")) };
+                    let ch = match args.get(1) {
+                        Some(Value::String(c)) => c.chars().next().unwrap_or(' '),
+                        _ => ' ',
+                    };
+                    if s.len() >= width { Ok(Value::String(s.clone())) }
+                    else { Ok(Value::String(format!("{}{}", s, std::iter::repeat(ch).take(width - s.len()).collect::<String>()))) }
+                }
                 "join" => {
                     if let Some(Value::List(items)) = args.first() {
                         let parts: Vec<String> = items.iter().map(|v| format!("{v}")).collect();
@@ -1927,7 +2273,109 @@ impl Interpreter {
                     }
                     Ok(acc)
                 }
+                "sort" => {
+                    let mut sorted = items.clone();
+                    sorted.sort_by(|a, b| {
+                        match (a, b) {
+                            (Value::Int(x), Value::Int(y)) => x.cmp(y),
+                            (Value::Float(x), Value::Float(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
+                            (Value::String(x), Value::String(y)) => x.cmp(y),
+                            _ => std::cmp::Ordering::Equal,
+                        }
+                    });
+                    Ok(Value::List(sorted))
+                }
+                "reverse" => {
+                    let mut reversed = items.clone();
+                    reversed.reverse();
+                    Ok(Value::List(reversed))
+                }
+                "contains" => {
+                    if args.is_empty() { return Err(runtime_err_s("contains() expects a value")); }
+                    let needle = &args[0];
+                    let found = items.iter().any(|item| {
+                        match (item, needle) {
+                            (Value::Int(a), Value::Int(b)) => a == b,
+                            (Value::Float(a), Value::Float(b)) => a == b,
+                            (Value::String(a), Value::String(b)) => a == b,
+                            (Value::Bool(a), Value::Bool(b)) => a == b,
+                            (Value::None, Value::None) => true,
+                            _ => false,
+                        }
+                    });
+                    Ok(Value::Bool(found))
+                }
+                "index_of" => {
+                    if args.is_empty() { return Err(runtime_err_s("index_of() expects a value")); }
+                    let needle = &args[0];
+                    let idx = items.iter().position(|item| {
+                        match (item, needle) {
+                            (Value::Int(a), Value::Int(b)) => a == b,
+                            (Value::Float(a), Value::Float(b)) => a == b,
+                            (Value::String(a), Value::String(b)) => a == b,
+                            (Value::Bool(a), Value::Bool(b)) => a == b,
+                            (Value::None, Value::None) => true,
+                            _ => false,
+                        }
+                    });
+                    Ok(Value::Int(idx.map(|i| i as i64).unwrap_or(-1)))
+                }
+                "slice" => {
+                    if args.len() < 2 { return Err(runtime_err_s("slice() expects start and end")); }
+                    let start = match &args[0] { Value::Int(n) => *n as usize, _ => return Err(runtime_err_s("slice() expects integers")) };
+                    let end = match &args[1] { Value::Int(n) => *n as usize, _ => return Err(runtime_err_s("slice() expects integers")) };
+                    let end = end.min(items.len());
+                    let start = start.min(end);
+                    Ok(Value::List(items[start..end].to_vec()))
+                }
+                "flat_map" => {
+                    if args.is_empty() { return Err(runtime_err_s("flat_map() expects a function")); }
+                    let func = &args[0];
+                    let mut result = Vec::new();
+                    for item in items {
+                        let val = self.call_function(func, &[item.clone()])?;
+                        match val {
+                            Value::List(sub) => result.extend(sub),
+                            other => result.push(other),
+                        }
+                    }
+                    Ok(Value::List(result))
+                }
                 _ => Err(runtime_err(format!("List has no method `{method}`"))),
+            };
+        }
+
+        // Map methods
+        if let Value::Map(pairs) = obj {
+            return match method {
+                "len" => Ok(Value::Int(pairs.len() as i64)),
+                "keys" => {
+                    Ok(Value::List(pairs.iter().map(|(k, _)| Value::String(k.clone())).collect()))
+                }
+                "values" => {
+                    Ok(Value::List(pairs.iter().map(|(_, v)| v.clone()).collect()))
+                }
+                "contains_key" => {
+                    if args.is_empty() { return Err(runtime_err_s("contains_key() expects a key")); }
+                    if let Value::String(key) = &args[0] {
+                        Ok(Value::Bool(pairs.iter().any(|(k, _)| k == key)))
+                    } else {
+                        Err(runtime_err_s("contains_key() expects a string key"))
+                    }
+                }
+                "remove" => {
+                    if args.is_empty() { return Err(runtime_err_s("remove() expects a key")); }
+                    if let Value::String(key) = &args[0] {
+                        let new_pairs: Vec<(String, Value)> = pairs.iter()
+                            .filter(|(k, _)| k != key)
+                            .cloned()
+                            .collect();
+                        Ok(Value::Map(new_pairs))
+                    } else {
+                        Err(runtime_err_s("remove() expects a string key"))
+                    }
+                }
+                _ => Err(runtime_err(format!("Map has no method `{method}`"))),
             };
         }
 
@@ -2470,6 +2918,49 @@ fn runtime_err_s(message: &str) -> TlError {
         message: message.to_string(),
         span: None,
     })
+}
+
+/// Convert serde_json::Value to interpreter Value
+fn json_to_value(v: &serde_json::Value) -> Value {
+    match v {
+        serde_json::Value::Null => Value::None,
+        serde_json::Value::Bool(b) => Value::Bool(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Int(i)
+            } else {
+                Value::Float(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        serde_json::Value::String(s) => Value::String(s.clone()),
+        serde_json::Value::Array(arr) => {
+            Value::List(arr.iter().map(json_to_value).collect())
+        }
+        serde_json::Value::Object(obj) => {
+            Value::Map(obj.iter().map(|(k, v)| (k.clone(), json_to_value(v))).collect())
+        }
+    }
+}
+
+/// Convert interpreter Value to serde_json::Value
+fn value_to_json(v: &Value) -> serde_json::Value {
+    match v {
+        Value::None => serde_json::Value::Null,
+        Value::Bool(b) => serde_json::Value::Bool(*b),
+        Value::Int(n) => serde_json::json!(*n),
+        Value::Float(n) => serde_json::json!(*n),
+        Value::String(s) => serde_json::Value::String(s.clone()),
+        Value::List(items) => {
+            serde_json::Value::Array(items.iter().map(value_to_json).collect())
+        }
+        Value::Map(pairs) => {
+            let obj: serde_json::Map<String, serde_json::Value> = pairs.iter()
+                .map(|(k, v)| (k.clone(), value_to_json(v)))
+                .collect();
+            serde_json::Value::Object(obj)
+        }
+        _ => serde_json::Value::String(format!("{v}")),
+    }
 }
 
 // ── AI builtin implementations ──────────────────────────
@@ -3423,5 +3914,343 @@ mod tests {
             "let nums = [1, 2, 3]\nprint(nums.len())\nlet doubled = nums.map((x) => x * 2)\nprint(doubled)",
         );
         assert_eq!(output, vec!["3", "[2, 4, 6]"]);
+    }
+
+    // ── Phase 6: Stdlib & Ecosystem tests ──
+
+    #[test]
+    fn test_json_parse_object() {
+        // Build JSON from map_from + json_stringify to avoid string escaping issues
+        let output = run_output(r#"let m = map_from("a", 1, "b", "hello")
+let s = json_stringify(m)
+let m2 = json_parse(s)
+print(m2["a"])
+print(m2["b"])"#);
+        assert_eq!(output, vec!["1", "hello"]);
+    }
+
+    #[test]
+    fn test_json_parse_array() {
+        let output = run_output(r#"let arr = json_parse("[1, 2, 3]")
+print(len(arr))"#);
+        assert_eq!(output, vec!["3"]);
+    }
+
+    #[test]
+    fn test_json_stringify() {
+        let output = run_output(r#"let m = map_from("x", 1, "y", 2)
+let s = json_stringify(m)
+print(s)"#);
+        assert_eq!(output, vec![r#"{"x":1,"y":2}"#]);
+    }
+
+    #[test]
+    fn test_json_roundtrip() {
+        let output = run_output(r#"let m = map_from("name", "test", "val", 42)
+let s = json_stringify(m)
+let m2 = json_parse(s)
+print(m2["name"])
+print(m2["val"])"#);
+        assert_eq!(output, vec!["test", "42"]);
+    }
+
+    #[test]
+    fn test_map_from() {
+        let output = run_output(r#"let m = map_from("a", 1, "b", 2)
+print(m["a"])
+print(m["b"])"#);
+        assert_eq!(output, vec!["1", "2"]);
+    }
+
+    #[test]
+    fn test_map_member_access() {
+        let output = run_output(r#"let m = map_from("name", "alice")
+print(m.name)"#);
+        assert_eq!(output, vec!["alice"]);
+    }
+
+    #[test]
+    fn test_map_index_set() {
+        let output = run_output(r#"let m = map_from("a", 1)
+m["b"] = 2
+print(m["b"])"#);
+        assert_eq!(output, vec!["2"]);
+    }
+
+    #[test]
+    fn test_map_methods() {
+        let output = run_output(r#"let m = map_from("a", 1, "b", 2, "c", 3)
+print(m.len())
+print(m.keys())
+print(m.contains_key("b"))
+print(m.contains_key("x"))
+let m2 = m.remove("b")
+print(m2.len())"#);
+        assert_eq!(output, vec!["3", "[a, b, c]", "true", "false", "2"]);
+    }
+
+    #[test]
+    fn test_map_iteration() {
+        let output = run_output(r#"let m = map_from("x", 10, "y", 20)
+for kv in m {
+    print(kv[0])
+}"#);
+        assert_eq!(output, vec!["x", "y"]);
+    }
+
+    #[test]
+    fn test_map_len_type_of() {
+        let output = run_output(r#"let m = map_from("a", 1)
+print(len(m))
+print(type_of(m))"#);
+        assert_eq!(output, vec!["1", "map"]);
+    }
+
+    #[test]
+    fn test_file_read_write() {
+        let output = run_output(r#"write_file("/tmp/tl_test_phase6.txt", "hello world")
+let content = read_file("/tmp/tl_test_phase6.txt")
+print(content)
+print(file_exists("/tmp/tl_test_phase6.txt"))"#);
+        assert_eq!(output, vec!["hello world", "true"]);
+    }
+
+    #[test]
+    fn test_file_append() {
+        let output = run_output(r#"write_file("/tmp/tl_test_append.txt", "line1")
+append_file("/tmp/tl_test_append.txt", "line2")
+let content = read_file("/tmp/tl_test_append.txt")
+print(content)"#);
+        assert_eq!(output, vec!["line1line2"]);
+    }
+
+    #[test]
+    fn test_file_exists_false() {
+        let output = run_output(r#"print(file_exists("/tmp/nonexistent_tl_file_xyz"))"#);
+        assert_eq!(output, vec!["false"]);
+    }
+
+    #[test]
+    fn test_list_dir() {
+        // Setup directory for test
+        std::fs::create_dir_all("/tmp/tl_listdir_test").ok();
+        std::fs::write("/tmp/tl_listdir_test/a.txt", "a").ok();
+        std::fs::write("/tmp/tl_listdir_test/b.txt", "b").ok();
+        let output = run_output(r#"let files = list_dir("/tmp/tl_listdir_test")
+print(len(files) >= 2)"#);
+        assert_eq!(output, vec!["true"]);
+    }
+
+    #[test]
+    fn test_env_get_set() {
+        let output = run_output(r#"env_set("TL_TEST_VAR", "hello123")
+let v = env_get("TL_TEST_VAR")
+print(v)"#);
+        assert_eq!(output, vec!["hello123"]);
+    }
+
+    #[test]
+    fn test_env_get_missing() {
+        let output = run_output(r#"let v = env_get("TL_NONEXISTENT_VAR_XYZ")
+print(v)"#);
+        assert_eq!(output, vec!["none"]);
+    }
+
+    #[test]
+    fn test_regex_match() {
+        let output = run_output(r#"print(regex_match("\\d+", "abc123"))
+print(regex_match("^\\d+$", "abc123"))"#);
+        assert_eq!(output, vec!["true", "false"]);
+    }
+
+    #[test]
+    fn test_regex_find() {
+        let output = run_output(r#"let matches = regex_find("\\d+", "abc123def456")
+print(len(matches))
+print(matches[0])
+print(matches[1])"#);
+        assert_eq!(output, vec!["2", "123", "456"]);
+    }
+
+    #[test]
+    fn test_regex_replace() {
+        let output = run_output(r#"let result = regex_replace("\\d+", "abc123def456", "X")
+print(result)"#);
+        assert_eq!(output, vec!["abcXdefX"]);
+    }
+
+    #[test]
+    fn test_now() {
+        let output = run_output("let t = now()\nprint(t > 0)");
+        assert_eq!(output, vec!["true"]);
+    }
+
+    #[test]
+    fn test_date_format() {
+        // 2024-01-01 00:00:00 UTC = 1704067200000 ms
+        let output = run_output(r#"print(date_format(1704067200000, "%Y-%m-%d"))"#);
+        assert_eq!(output, vec!["2024-01-01"]);
+    }
+
+    #[test]
+    fn test_date_parse() {
+        let output = run_output(r#"let ts = date_parse("2024-01-01 00:00:00", "%Y-%m-%d %H:%M:%S")
+print(ts)"#);
+        assert_eq!(output, vec!["1704067200000"]);
+    }
+
+    #[test]
+    fn test_string_chars() {
+        let output = run_output(r#"let chars = "hello".chars()
+print(len(chars))
+print(chars[0])"#);
+        assert_eq!(output, vec!["5", "h"]);
+    }
+
+    #[test]
+    fn test_string_repeat() {
+        let output = run_output(r#"print("ab".repeat(3))"#);
+        assert_eq!(output, vec!["ababab"]);
+    }
+
+    #[test]
+    fn test_string_index_of() {
+        let output = run_output(r#"print("hello world".index_of("world"))
+print("hello".index_of("xyz"))"#);
+        assert_eq!(output, vec!["6", "-1"]);
+    }
+
+    #[test]
+    fn test_string_substring() {
+        let output = run_output(r#"print("hello world".substring(0, 5))"#);
+        assert_eq!(output, vec!["hello"]);
+    }
+
+    #[test]
+    fn test_string_pad() {
+        let output = run_output(r#"print("42".pad_left(5, "0"))
+print("hi".pad_right(5, "."))"#);
+        assert_eq!(output, vec!["00042", "hi..."]);
+    }
+
+    #[test]
+    fn test_list_sort() {
+        let output = run_output(r#"print([3, 1, 2].sort())"#);
+        assert_eq!(output, vec!["[1, 2, 3]"]);
+    }
+
+    #[test]
+    fn test_list_reverse() {
+        let output = run_output(r#"print([1, 2, 3].reverse())"#);
+        assert_eq!(output, vec!["[3, 2, 1]"]);
+    }
+
+    #[test]
+    fn test_list_contains() {
+        let output = run_output(r#"print([1, 2, 3].contains(2))
+print([1, 2, 3].contains(5))"#);
+        assert_eq!(output, vec!["true", "false"]);
+    }
+
+    #[test]
+    fn test_list_index_of() {
+        let output = run_output(r#"print([10, 20, 30].index_of(20))
+print([10, 20, 30].index_of(99))"#);
+        assert_eq!(output, vec!["1", "-1"]);
+    }
+
+    #[test]
+    fn test_list_slice() {
+        let output = run_output(r#"print([1, 2, 3, 4, 5].slice(1, 4))"#);
+        assert_eq!(output, vec!["[2, 3, 4]"]);
+    }
+
+    #[test]
+    fn test_list_flat_map() {
+        let output = run_output(r#"let result = [1, 2, 3].flat_map((x) => [x, x * 10])
+print(result)"#);
+        assert_eq!(output, vec!["[1, 10, 2, 20, 3, 30]"]);
+    }
+
+    #[test]
+    fn test_zip() {
+        let output = run_output(r#"let pairs = zip([1, 2, 3], ["a", "b", "c"])
+print(pairs[0])
+print(pairs[1])"#);
+        assert_eq!(output, vec!["[1, a]", "[2, b]"]);
+    }
+
+    #[test]
+    fn test_enumerate() {
+        let output = run_output(r#"let items = enumerate(["a", "b", "c"])
+print(items[0])
+print(items[2])"#);
+        assert_eq!(output, vec!["[0, a]", "[2, c]"]);
+    }
+
+    #[test]
+    fn test_bool_builtin() {
+        let output = run_output(r#"print(bool(1))
+print(bool(0))
+print(bool(""))
+print(bool("hello"))"#);
+        assert_eq!(output, vec!["true", "false", "false", "true"]);
+    }
+
+    #[test]
+    fn test_range_step() {
+        let output = run_output(r#"print(range(0, 10, 3))"#);
+        assert_eq!(output, vec!["[0, 3, 6, 9]"]);
+    }
+
+    #[test]
+    fn test_int_bool() {
+        let output = run_output(r#"print(int(true))
+print(int(false))"#);
+        assert_eq!(output, vec!["1", "0"]);
+    }
+
+    #[test]
+    fn test_float_bool() {
+        let output = run_output(r#"print(float(true))
+print(float(false))"#);
+        assert_eq!(output, vec!["1.0", "0.0"]);
+    }
+
+    #[test]
+    fn test_integration_json_file_roundtrip() {
+        let output = run_output(r#"let data = map_from("name", "test", "count", 42)
+let json_str = json_stringify(data)
+write_file("/tmp/tl_json_roundtrip.json", json_str)
+let content = read_file("/tmp/tl_json_roundtrip.json")
+let parsed = json_parse(content)
+print(parsed["name"])
+print(parsed["count"])"#);
+        assert_eq!(output, vec!["test", "42"]);
+    }
+
+    #[test]
+    fn test_integration_regex_on_file() {
+        let output = run_output(r#"write_file("/tmp/tl_regex_test.txt", "Error: code 404\nInfo: ok\nError: code 500")
+let content = read_file("/tmp/tl_regex_test.txt")
+let errors = regex_find("Error: code \\d+", content)
+print(len(errors))"#);
+        assert_eq!(output, vec!["2"]);
+    }
+
+    #[test]
+    fn test_integration_list_transform() {
+        let output = run_output(r#"let data = [5, 3, 8, 1, 9, 2]
+let result = data.sort().slice(0, 3)
+print(result)"#);
+        assert_eq!(output, vec!["[1, 2, 3]"]);
+    }
+
+    #[test]
+    fn test_integration_map_values() {
+        let output = run_output(r#"let m = map_from("a", 1, "b", 2, "c", 3)
+let vals = m.values()
+print(sum(vals))"#);
+        assert_eq!(output, vec!["6"]);
     }
 }

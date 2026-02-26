@@ -1227,6 +1227,50 @@ impl Compiler {
                         let idx = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
                         self.current().emit_abx(Op::SetGlobal, dest, idx, 0);
                     }
+                } else if let Expr::Index { object, index } = target.as_ref() {
+                    // m["key"] = value or list[idx] = value
+                    let obj_reg = self.current().alloc_register();
+                    self.compile_expr(object, obj_reg)?;
+                    let idx_reg = self.current().alloc_register();
+                    self.compile_expr(index, idx_reg)?;
+                    self.compile_expr(value, dest)?;
+                    // SetIndex: a=value, b=object, c=index
+                    self.current().emit_abc(Op::SetIndex, dest, obj_reg, idx_reg, 0);
+                    // Write the modified object back to the variable
+                    if let Expr::Ident(name) = object.as_ref() {
+                        if let Some(reg) = self.resolve_local(name) {
+                            self.current().emit_abc(Op::Move, reg, obj_reg, 0, 0);
+                        } else {
+                            let c_idx = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
+                            self.current().emit_abx(Op::SetGlobal, obj_reg, c_idx, 0);
+                        }
+                    }
+                    self.current().free_register(); // idx_reg
+                    self.current().free_register(); // obj_reg
+                } else if let Expr::Member { object, field } = target.as_ref() {
+                    // s.field = value — struct field or map member assignment
+                    if let Expr::Ident(name) = object.as_ref() {
+                        let obj_reg = self.current().alloc_register();
+                        self.compile_expr(object, obj_reg)?;
+                        // Compile value
+                        self.compile_expr(value, dest)?;
+                        // Use SetIndex with string key for member assignment
+                        let key_reg = self.current().alloc_register();
+                        let key_idx = self.current().add_constant(Constant::String(Arc::from(field.as_str())));
+                        self.current().emit_abx(Op::LoadConst, key_reg, key_idx, 0);
+                        self.current().emit_abc(Op::SetIndex, dest, obj_reg, key_reg, 0);
+                        // Write back
+                        if let Some(reg) = self.resolve_local(name) {
+                            self.current().emit_abc(Op::Move, reg, obj_reg, 0, 0);
+                        } else {
+                            let c_idx = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
+                            self.current().emit_abx(Op::SetGlobal, obj_reg, c_idx, 0);
+                        }
+                        self.current().free_register(); // key_reg
+                        self.current().free_register(); // obj_reg
+                    } else {
+                        return Err(compile_err("Invalid assignment target".to_string()));
+                    }
                 } else {
                     return Err(compile_err("Invalid assignment target".to_string()));
                 }

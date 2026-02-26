@@ -49,6 +49,8 @@ pub enum VmValue {
     EnumInstance(Arc<VmEnumInstance>),
     /// A module (from import)
     Module(Arc<VmModule>),
+    /// An ordered map (string keys)
+    Map(Vec<(Arc<str>, VmValue)>),
 }
 
 /// Struct type definition
@@ -130,6 +132,7 @@ impl VmValue {
             VmValue::Float(n) => *n != 0.0,
             VmValue::String(s) => !s.is_empty(),
             VmValue::List(items) => !items.is_empty(),
+            VmValue::Map(pairs) => !pairs.is_empty(),
             VmValue::None => false,
             _ => true,
         }
@@ -158,6 +161,7 @@ impl VmValue {
             VmValue::EnumDef(_) => "enum_def",
             VmValue::EnumInstance(_) => "enum",
             VmValue::Module(_) => "module",
+            VmValue::Map(_) => "map",
         }
     }
 }
@@ -199,6 +203,14 @@ impl fmt::Debug for VmValue {
                 Ok(())
             }
             VmValue::Module(m) => write!(f, "<module {}>", m.name),
+            VmValue::Map(pairs) => {
+                write!(f, "Map{{")?;
+                for (i, (k, v)) in pairs.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{k:?}: {v:?}")?;
+                }
+                write!(f, "}}")
+            }
         }
     }
 }
@@ -260,6 +272,14 @@ impl fmt::Display for VmValue {
                 Ok(())
             }
             VmValue::Module(m) => write!(f, "<module {}>", m.name),
+            VmValue::Map(pairs) => {
+                write!(f, "{{")?;
+                for (i, (k, v)) in pairs.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{k}: {v}")?;
+                }
+                write!(f, "}}")
+            }
         }
     }
 }

@@ -21,6 +21,49 @@ fn runtime_err(msg: impl Into<String>) -> TlError {
     })
 }
 
+/// Convert serde_json::Value to VmValue
+fn vm_json_to_value(v: &serde_json::Value) -> VmValue {
+    match v {
+        serde_json::Value::Null => VmValue::None,
+        serde_json::Value::Bool(b) => VmValue::Bool(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                VmValue::Int(i)
+            } else {
+                VmValue::Float(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        serde_json::Value::String(s) => VmValue::String(Arc::from(s.as_str())),
+        serde_json::Value::Array(arr) => {
+            VmValue::List(arr.iter().map(vm_json_to_value).collect())
+        }
+        serde_json::Value::Object(obj) => {
+            VmValue::Map(obj.iter().map(|(k, v)| (Arc::from(k.as_str()), vm_json_to_value(v))).collect())
+        }
+    }
+}
+
+/// Convert VmValue to serde_json::Value
+fn vm_value_to_json(v: &VmValue) -> serde_json::Value {
+    match v {
+        VmValue::None => serde_json::Value::Null,
+        VmValue::Bool(b) => serde_json::Value::Bool(*b),
+        VmValue::Int(n) => serde_json::json!(*n),
+        VmValue::Float(n) => serde_json::json!(*n),
+        VmValue::String(s) => serde_json::Value::String(s.to_string()),
+        VmValue::List(items) => {
+            serde_json::Value::Array(items.iter().map(vm_value_to_json).collect())
+        }
+        VmValue::Map(pairs) => {
+            let obj: serde_json::Map<String, serde_json::Value> = pairs.iter()
+                .map(|(k, v)| (k.to_string(), vm_value_to_json(v)))
+                .collect();
+            serde_json::Value::Object(obj)
+        }
+        _ => serde_json::Value::String(format!("{v}")),
+    }
+}
+
 /// Minimum list size before we attempt parallel execution.
 const PARALLEL_THRESHOLD: usize = 10_000;
 
@@ -580,6 +623,12 @@ impl Vm {
                                 ))
                             })?
                         }
+                        (VmValue::Map(pairs), VmValue::String(key)) => {
+                            pairs.iter()
+                                .find(|(k, _)| k.as_ref() == key.as_ref())
+                                .map(|(_, v)| v.clone())
+                                .unwrap_or(VmValue::None)
+                        }
                         _ => return Err(runtime_err(format!(
                             "Cannot index {} with {}",
                             obj.type_name(),
@@ -591,23 +640,41 @@ impl Vm {
                 Op::SetIndex => {
                     let val = self.stack[base + a as usize].clone();
                     let idx_val = self.stack[base + c as usize].clone();
-                    if let VmValue::Int(i) = idx_val {
-                        if let VmValue::List(ref mut items) = self.stack[base + b as usize] {
-                            let i = i as usize;
-                            if i < items.len() {
-                                items[i] = val;
+                    match idx_val {
+                        VmValue::Int(i) => {
+                            if let VmValue::List(ref mut items) = self.stack[base + b as usize] {
+                                let i = i as usize;
+                                if i < items.len() {
+                                    items[i] = val;
+                                }
                             }
                         }
+                        VmValue::String(key) => {
+                            if let VmValue::Map(ref mut pairs) = self.stack[base + b as usize] {
+                                if let Some(entry) = pairs.iter_mut().find(|(k, _)| k.as_ref() == key.as_ref()) {
+                                    entry.1 = val;
+                                } else {
+                                    pairs.push((key, val));
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 Op::NewMap => {
-                    // For now, maps are stored as lists of pairs (not used much in TL)
                     // a = dest, b = start reg, c = pair count
                     // The pairs are key, value, key, value in registers b..b+c*2
-                    let items: Vec<VmValue> = (0..c as usize * 2)
-                        .map(|i| self.stack[base + b as usize + i].clone())
-                        .collect();
-                    self.stack[base + a as usize] = VmValue::List(items);
+                    let mut pairs = Vec::with_capacity(c as usize);
+                    for i in 0..c as usize {
+                        let key_val = &self.stack[base + b as usize + i * 2];
+                        let val = self.stack[base + b as usize + i * 2 + 1].clone();
+                        let key = match key_val {
+                            VmValue::String(s) => s.clone(),
+                            other => Arc::from(format!("{other}").as_str()),
+                        };
+                        pairs.push((key, val));
+                    }
+                    self.stack[base + a as usize] = VmValue::Map(pairs);
                 }
                 Op::TablePipe => {
                     // a = table reg, b = op name constant idx, c = args constant idx
@@ -637,6 +704,20 @@ impl Vm {
                             if idx < items.len() {
                                 let item = items[idx].clone();
                                 self.stack[base + c as usize] = item;
+                                self.stack[base + a as usize] = VmValue::Int((idx + 1) as i64);
+                                false
+                            } else {
+                                true
+                            }
+                        }
+                        VmValue::Map(pairs) => {
+                            if idx < pairs.len() {
+                                let (k, v) = &pairs[idx];
+                                let pair = VmValue::List(vec![
+                                    VmValue::String(k.clone()),
+                                    v.clone(),
+                                ]);
+                                self.stack[base + c as usize] = pair;
                                 self.stack[base + a as usize] = VmValue::Int((idx + 1) as i64);
                                 false
                             } else {
@@ -698,6 +779,12 @@ impl Vm {
                                 "type_name" => VmValue::String(e.type_name.clone()),
                                 _ => VmValue::None,
                             }
+                        }
+                        VmValue::Map(pairs) => {
+                            pairs.iter()
+                                .find(|(k, _)| k.as_ref() == field_name.as_ref())
+                                .map(|(_, v)| v.clone())
+                                .unwrap_or(VmValue::None)
                         }
                         _ => VmValue::None,
                     };
@@ -1206,7 +1293,8 @@ impl Vm {
             BuiltinId::Len => match args.first() {
                 Some(VmValue::String(s)) => Ok(VmValue::Int(s.len() as i64)),
                 Some(VmValue::List(l)) => Ok(VmValue::Int(l.len() as i64)),
-                _ => Err(runtime_err("len() expects a string or list")),
+                Some(VmValue::Map(pairs)) => Ok(VmValue::Int(pairs.len() as i64)),
+                _ => Err(runtime_err("len() expects a string, list, or map")),
             },
             BuiltinId::Str => Ok(VmValue::String(
                 Arc::from(args.first().map(|v| format!("{v}")).unwrap_or_default().as_str()),
@@ -1217,7 +1305,8 @@ impl Vm {
                     .map(VmValue::Int)
                     .map_err(|_| runtime_err(format!("Cannot convert '{s}' to int"))),
                 Some(VmValue::Int(n)) => Ok(VmValue::Int(*n)),
-                _ => Err(runtime_err("int() expects a number or string")),
+                Some(VmValue::Bool(b)) => Ok(VmValue::Int(if *b { 1 } else { 0 })),
+                _ => Err(runtime_err("int() expects a number, string, or bool")),
             },
             BuiltinId::Float => match args.first() {
                 Some(VmValue::Int(n)) => Ok(VmValue::Float(*n as f64)),
@@ -1225,7 +1314,8 @@ impl Vm {
                     .map(VmValue::Float)
                     .map_err(|_| runtime_err(format!("Cannot convert '{s}' to float"))),
                 Some(VmValue::Float(n)) => Ok(VmValue::Float(*n)),
-                _ => Err(runtime_err("float() expects a number or string")),
+                Some(VmValue::Bool(b)) => Ok(VmValue::Float(if *b { 1.0 } else { 0.0 })),
+                _ => Err(runtime_err("float() expects a number, string, or bool")),
             },
             BuiltinId::Abs => match args.first() {
                 Some(VmValue::Int(n)) => Ok(VmValue::Int(n.abs())),
@@ -1267,8 +1357,22 @@ impl Vm {
                     } else {
                         Err(runtime_err("range() expects integers"))
                     }
+                } else if args.len() == 3 {
+                    if let (VmValue::Int(start), VmValue::Int(end), VmValue::Int(step)) = (&args[0], &args[1], &args[2]) {
+                        if *step == 0 { return Err(runtime_err("range() step cannot be zero")); }
+                        let mut result = Vec::new();
+                        let mut i = *start;
+                        if *step > 0 {
+                            while i < *end { result.push(VmValue::Int(i)); i += step; }
+                        } else {
+                            while i > *end { result.push(VmValue::Int(i)); i += step; }
+                        }
+                        Ok(VmValue::List(result))
+                    } else {
+                        Err(runtime_err("range() expects integers"))
+                    }
                 } else {
-                    Err(runtime_err("range() expects 1 or 2 arguments"))
+                    Err(runtime_err("range() expects 1, 2, or 3 arguments"))
                 }
             }
             BuiltinId::Push => {
@@ -1937,6 +2041,199 @@ impl Vm {
                     Ok(VmValue::None)
                 }
             }
+            // ── Phase 6: Stdlib & Ecosystem builtins ──
+            BuiltinId::JsonParse => {
+                if args.is_empty() { return Err(runtime_err("json_parse() expects a string")); }
+                if let VmValue::String(s) = &args[0] {
+                    let json_val: serde_json::Value = serde_json::from_str(s)
+                        .map_err(|e| runtime_err(format!("JSON parse error: {e}")))?;
+                    Ok(vm_json_to_value(&json_val))
+                } else {
+                    Err(runtime_err("json_parse() expects a string"))
+                }
+            }
+            BuiltinId::JsonStringify => {
+                if args.is_empty() { return Err(runtime_err("json_stringify() expects a value")); }
+                let json = vm_value_to_json(&args[0]);
+                Ok(VmValue::String(Arc::from(json.to_string().as_str())))
+            }
+            BuiltinId::MapFrom => {
+                if args.len() % 2 != 0 {
+                    return Err(runtime_err("map_from() expects even number of arguments (key, value pairs)"));
+                }
+                let mut pairs = Vec::new();
+                for chunk in args.chunks(2) {
+                    let key = match &chunk[0] {
+                        VmValue::String(s) => s.clone(),
+                        other => Arc::from(format!("{other}").as_str()),
+                    };
+                    pairs.push((key, chunk[1].clone()));
+                }
+                Ok(VmValue::Map(pairs))
+            }
+            BuiltinId::ReadFile => {
+                if args.is_empty() { return Err(runtime_err("read_file() expects a path")); }
+                if let VmValue::String(path) = &args[0] {
+                    let content = std::fs::read_to_string(path.as_ref())
+                        .map_err(|e| runtime_err(format!("read_file error: {e}")))?;
+                    Ok(VmValue::String(Arc::from(content.as_str())))
+                } else {
+                    Err(runtime_err("read_file() expects a string path"))
+                }
+            }
+            BuiltinId::WriteFile => {
+                if args.len() < 2 { return Err(runtime_err("write_file() expects path and content")); }
+                if let (VmValue::String(path), VmValue::String(content)) = (&args[0], &args[1]) {
+                    std::fs::write(path.as_ref(), content.as_ref())
+                        .map_err(|e| runtime_err(format!("write_file error: {e}")))?;
+                    Ok(VmValue::None)
+                } else {
+                    Err(runtime_err("write_file() expects string path and content"))
+                }
+            }
+            BuiltinId::AppendFile => {
+                if args.len() < 2 { return Err(runtime_err("append_file() expects path and content")); }
+                if let (VmValue::String(path), VmValue::String(content)) = (&args[0], &args[1]) {
+                    use std::io::Write;
+                    let mut file = std::fs::OpenOptions::new()
+                        .create(true).append(true).open(path.as_ref())
+                        .map_err(|e| runtime_err(format!("append_file error: {e}")))?;
+                    file.write_all(content.as_bytes())
+                        .map_err(|e| runtime_err(format!("append_file error: {e}")))?;
+                    Ok(VmValue::None)
+                } else {
+                    Err(runtime_err("append_file() expects string path and content"))
+                }
+            }
+            BuiltinId::FileExists => {
+                if args.is_empty() { return Err(runtime_err("file_exists() expects a path")); }
+                if let VmValue::String(path) = &args[0] {
+                    Ok(VmValue::Bool(std::path::Path::new(path.as_ref()).exists()))
+                } else {
+                    Err(runtime_err("file_exists() expects a string path"))
+                }
+            }
+            BuiltinId::ListDir => {
+                if args.is_empty() { return Err(runtime_err("list_dir() expects a path")); }
+                if let VmValue::String(path) = &args[0] {
+                    let entries: Vec<VmValue> = std::fs::read_dir(path.as_ref())
+                        .map_err(|e| runtime_err(format!("list_dir error: {e}")))?
+                        .filter_map(|e| e.ok())
+                        .map(|e| VmValue::String(Arc::from(e.file_name().to_string_lossy().as_ref())))
+                        .collect();
+                    Ok(VmValue::List(entries))
+                } else {
+                    Err(runtime_err("list_dir() expects a string path"))
+                }
+            }
+            BuiltinId::EnvGet => {
+                if args.is_empty() { return Err(runtime_err("env_get() expects a name")); }
+                if let VmValue::String(name) = &args[0] {
+                    match std::env::var(name.as_ref()) {
+                        Ok(val) => Ok(VmValue::String(Arc::from(val.as_str()))),
+                        Err(_) => Ok(VmValue::None),
+                    }
+                } else {
+                    Err(runtime_err("env_get() expects a string"))
+                }
+            }
+            BuiltinId::EnvSet => {
+                if args.len() < 2 { return Err(runtime_err("env_set() expects name and value")); }
+                if let (VmValue::String(name), VmValue::String(val)) = (&args[0], &args[1]) {
+                    unsafe { std::env::set_var(name.as_ref(), val.as_ref()); }
+                    Ok(VmValue::None)
+                } else {
+                    Err(runtime_err("env_set() expects two strings"))
+                }
+            }
+            BuiltinId::RegexMatch => {
+                if args.len() < 2 { return Err(runtime_err("regex_match() expects pattern and string")); }
+                if let (VmValue::String(pattern), VmValue::String(text)) = (&args[0], &args[1]) {
+                    let re = regex::Regex::new(pattern)
+                        .map_err(|e| runtime_err(format!("Invalid regex: {e}")))?;
+                    Ok(VmValue::Bool(re.is_match(text)))
+                } else {
+                    Err(runtime_err("regex_match() expects string pattern and string"))
+                }
+            }
+            BuiltinId::RegexFind => {
+                if args.len() < 2 { return Err(runtime_err("regex_find() expects pattern and string")); }
+                if let (VmValue::String(pattern), VmValue::String(text)) = (&args[0], &args[1]) {
+                    let re = regex::Regex::new(pattern)
+                        .map_err(|e| runtime_err(format!("Invalid regex: {e}")))?;
+                    let matches: Vec<VmValue> = re.find_iter(text)
+                        .map(|m| VmValue::String(Arc::from(m.as_str())))
+                        .collect();
+                    Ok(VmValue::List(matches))
+                } else {
+                    Err(runtime_err("regex_find() expects string pattern and string"))
+                }
+            }
+            BuiltinId::RegexReplace => {
+                if args.len() < 3 { return Err(runtime_err("regex_replace() expects pattern, string, replacement")); }
+                if let (VmValue::String(pattern), VmValue::String(text), VmValue::String(replacement)) = (&args[0], &args[1], &args[2]) {
+                    let re = regex::Regex::new(pattern)
+                        .map_err(|e| runtime_err(format!("Invalid regex: {e}")))?;
+                    Ok(VmValue::String(Arc::from(re.replace_all(text, replacement.as_ref()).as_ref())))
+                } else {
+                    Err(runtime_err("regex_replace() expects three strings"))
+                }
+            }
+            BuiltinId::Now => {
+                let ts = chrono::Utc::now().timestamp_millis();
+                Ok(VmValue::Int(ts))
+            }
+            BuiltinId::DateFormat => {
+                if args.len() < 2 { return Err(runtime_err("date_format() expects timestamp_ms and format")); }
+                if let (VmValue::Int(ts), VmValue::String(fmt)) = (&args[0], &args[1]) {
+                    use chrono::TimeZone;
+                    let secs = *ts / 1000;
+                    let nsecs = ((*ts % 1000) * 1_000_000) as u32;
+                    let dt = chrono::Utc.timestamp_opt(secs, nsecs)
+                        .single()
+                        .ok_or_else(|| runtime_err("Invalid timestamp"))?;
+                    Ok(VmValue::String(Arc::from(dt.format(fmt.as_ref()).to_string().as_str())))
+                } else {
+                    Err(runtime_err("date_format() expects int timestamp and string format"))
+                }
+            }
+            BuiltinId::DateParse => {
+                if args.len() < 2 { return Err(runtime_err("date_parse() expects string and format")); }
+                if let (VmValue::String(s), VmValue::String(fmt)) = (&args[0], &args[1]) {
+                    let dt = chrono::NaiveDateTime::parse_from_str(s, fmt)
+                        .map_err(|e| runtime_err(format!("date_parse error: {e}")))?;
+                    let ts = dt.and_utc().timestamp_millis();
+                    Ok(VmValue::Int(ts))
+                } else {
+                    Err(runtime_err("date_parse() expects two strings"))
+                }
+            }
+            BuiltinId::Zip => {
+                if args.len() < 2 { return Err(runtime_err("zip() expects two lists")); }
+                if let (VmValue::List(a), VmValue::List(b)) = (&args[0], &args[1]) {
+                    let pairs: Vec<VmValue> = a.iter().zip(b.iter())
+                        .map(|(x, y)| VmValue::List(vec![x.clone(), y.clone()]))
+                        .collect();
+                    Ok(VmValue::List(pairs))
+                } else {
+                    Err(runtime_err("zip() expects two lists"))
+                }
+            }
+            BuiltinId::Enumerate => {
+                if args.is_empty() { return Err(runtime_err("enumerate() expects a list")); }
+                if let VmValue::List(items) = &args[0] {
+                    let pairs: Vec<VmValue> = items.iter().enumerate()
+                        .map(|(i, v)| VmValue::List(vec![VmValue::Int(i as i64), v.clone()]))
+                        .collect();
+                    Ok(VmValue::List(pairs))
+                } else {
+                    Err(runtime_err("enumerate() expects a list"))
+                }
+            }
+            BuiltinId::Bool => {
+                if args.is_empty() { return Err(runtime_err("bool() expects a value")); }
+                Ok(VmValue::Bool(args[0].is_truthy()))
+            }
         }
     }
 
@@ -2270,6 +2567,7 @@ impl Vm {
         match &obj {
             VmValue::String(s) => self.dispatch_string_method(s.clone(), method, args),
             VmValue::List(items) => self.dispatch_list_method(items.clone(), method, args),
+            VmValue::Map(pairs) => self.dispatch_map_method(pairs.clone(), method, args),
             VmValue::StructInstance(inst) => {
                 // Look up impl method: Type::method in globals
                 let mangled = format!("{}::{}", inst.type_name, method);
@@ -2342,6 +2640,54 @@ impl Vm {
             }
             "to_upper" => Ok(VmValue::String(Arc::from(s.to_uppercase().as_str()))),
             "to_lower" => Ok(VmValue::String(Arc::from(s.to_lowercase().as_str()))),
+            "chars" => {
+                let chars: Vec<VmValue> = s.chars()
+                    .map(|c| VmValue::String(Arc::from(c.to_string().as_str())))
+                    .collect();
+                Ok(VmValue::List(chars))
+            }
+            "repeat" => {
+                let n = match args.first() {
+                    Some(VmValue::Int(n)) => *n as usize,
+                    _ => return Err(runtime_err("repeat() expects an integer")),
+                };
+                Ok(VmValue::String(Arc::from(s.repeat(n).as_str())))
+            }
+            "index_of" => {
+                let needle = match args.first() {
+                    Some(VmValue::String(n)) => n.to_string(),
+                    _ => return Err(runtime_err("index_of() expects a string")),
+                };
+                Ok(VmValue::Int(s.find(&needle).map(|i| i as i64).unwrap_or(-1)))
+            }
+            "substring" => {
+                if args.len() < 2 { return Err(runtime_err("substring() expects start and end")); }
+                let start = match &args[0] { VmValue::Int(n) => *n as usize, _ => return Err(runtime_err("substring() expects integers")) };
+                let end = match &args[1] { VmValue::Int(n) => *n as usize, _ => return Err(runtime_err("substring() expects integers")) };
+                let end = end.min(s.len());
+                let start = start.min(end);
+                Ok(VmValue::String(Arc::from(&s[start..end])))
+            }
+            "pad_left" => {
+                if args.is_empty() { return Err(runtime_err("pad_left() expects width")); }
+                let width = match &args[0] { VmValue::Int(n) => *n as usize, _ => return Err(runtime_err("pad_left() expects integer width")) };
+                let ch = match args.get(1) {
+                    Some(VmValue::String(c)) => c.chars().next().unwrap_or(' '),
+                    _ => ' ',
+                };
+                if s.len() >= width { Ok(VmValue::String(s)) }
+                else { Ok(VmValue::String(Arc::from(format!("{}{}", std::iter::repeat(ch).take(width - s.len()).collect::<String>(), s).as_str()))) }
+            }
+            "pad_right" => {
+                if args.is_empty() { return Err(runtime_err("pad_right() expects width")); }
+                let width = match &args[0] { VmValue::Int(n) => *n as usize, _ => return Err(runtime_err("pad_right() expects integer width")) };
+                let ch = match args.get(1) {
+                    Some(VmValue::String(c)) => c.chars().next().unwrap_or(' '),
+                    _ => ' ',
+                };
+                if s.len() >= width { Ok(VmValue::String(s)) }
+                else { Ok(VmValue::String(Arc::from(format!("{}{}", s, std::iter::repeat(ch).take(width - s.len()).collect::<String>()).as_str()))) }
+            }
             "join" => {
                 // "sep".join(list) -> string
                 let items = match args.first() {
@@ -2404,7 +2750,108 @@ impl Vm {
                 }
                 Ok(acc)
             }
+            "sort" => {
+                let mut sorted = items;
+                sorted.sort_by(|a, b| {
+                    match (a, b) {
+                        (VmValue::Int(x), VmValue::Int(y)) => x.cmp(y),
+                        (VmValue::Float(x), VmValue::Float(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
+                        (VmValue::String(x), VmValue::String(y)) => x.cmp(y),
+                        _ => std::cmp::Ordering::Equal,
+                    }
+                });
+                Ok(VmValue::List(sorted))
+            }
+            "reverse" => {
+                let mut reversed = items;
+                reversed.reverse();
+                Ok(VmValue::List(reversed))
+            }
+            "contains" => {
+                if args.is_empty() { return Err(runtime_err("contains() expects a value")); }
+                let needle = &args[0];
+                let found = items.iter().any(|item| {
+                    match (item, needle) {
+                        (VmValue::Int(a), VmValue::Int(b)) => a == b,
+                        (VmValue::Float(a), VmValue::Float(b)) => a == b,
+                        (VmValue::String(a), VmValue::String(b)) => a == b,
+                        (VmValue::Bool(a), VmValue::Bool(b)) => a == b,
+                        (VmValue::None, VmValue::None) => true,
+                        _ => false,
+                    }
+                });
+                Ok(VmValue::Bool(found))
+            }
+            "index_of" => {
+                if args.is_empty() { return Err(runtime_err("index_of() expects a value")); }
+                let needle = &args[0];
+                let idx = items.iter().position(|item| {
+                    match (item, needle) {
+                        (VmValue::Int(a), VmValue::Int(b)) => a == b,
+                        (VmValue::Float(a), VmValue::Float(b)) => a == b,
+                        (VmValue::String(a), VmValue::String(b)) => a == b,
+                        (VmValue::Bool(a), VmValue::Bool(b)) => a == b,
+                        (VmValue::None, VmValue::None) => true,
+                        _ => false,
+                    }
+                });
+                Ok(VmValue::Int(idx.map(|i| i as i64).unwrap_or(-1)))
+            }
+            "slice" => {
+                if args.len() < 2 { return Err(runtime_err("slice() expects start and end")); }
+                let start = match &args[0] { VmValue::Int(n) => *n as usize, _ => return Err(runtime_err("slice() expects integers")) };
+                let end = match &args[1] { VmValue::Int(n) => *n as usize, _ => return Err(runtime_err("slice() expects integers")) };
+                let end = end.min(items.len());
+                let start = start.min(end);
+                Ok(VmValue::List(items[start..end].to_vec()))
+            }
+            "flat_map" => {
+                if args.is_empty() { return Err(runtime_err("flat_map() expects a function")); }
+                let func = &args[0];
+                let mut result = Vec::new();
+                for item in items {
+                    let val = self.call_vm_function(func, &[item])?;
+                    match val {
+                        VmValue::List(sub) => result.extend(sub),
+                        other => result.push(other),
+                    }
+                }
+                Ok(VmValue::List(result))
+            }
             _ => Err(runtime_err(format!("No method '{}' on list", method))),
+        }
+    }
+
+    /// Dispatch map methods.
+    fn dispatch_map_method(&self, pairs: Vec<(Arc<str>, VmValue)>, method: &str, args: &[VmValue]) -> Result<VmValue, TlError> {
+        match method {
+            "len" => Ok(VmValue::Int(pairs.len() as i64)),
+            "keys" => {
+                Ok(VmValue::List(pairs.iter().map(|(k, _)| VmValue::String(k.clone())).collect()))
+            }
+            "values" => {
+                Ok(VmValue::List(pairs.iter().map(|(_, v)| v.clone()).collect()))
+            }
+            "contains_key" => {
+                if args.is_empty() { return Err(runtime_err("contains_key() expects a key")); }
+                if let VmValue::String(key) = &args[0] {
+                    Ok(VmValue::Bool(pairs.iter().any(|(k, _)| k.as_ref() == key.as_ref())))
+                } else {
+                    Err(runtime_err("contains_key() expects a string key"))
+                }
+            }
+            "remove" => {
+                if args.is_empty() { return Err(runtime_err("remove() expects a key")); }
+                if let VmValue::String(key) = &args[0] {
+                    let new_pairs: Vec<(Arc<str>, VmValue)> = pairs.into_iter()
+                        .filter(|(k, _)| k.as_ref() != key.as_ref())
+                        .collect();
+                    Ok(VmValue::Map(new_pairs))
+                } else {
+                    Err(runtime_err("remove() expects a string key"))
+                }
+            }
+            _ => Err(runtime_err(format!("No method '{}' on map", method))),
         }
     }
 
@@ -3320,5 +3767,223 @@ mod tests {
     fn test_vm_math_pow() {
         let output = run_output("print(pow(2.0, 10.0))");
         assert_eq!(output, vec!["1024.0"]);
+    }
+
+    // ── Phase 6: Stdlib & Ecosystem tests ──
+
+    #[test]
+    fn test_vm_json_parse() {
+        let output = run_output(r#"let m = map_from("a", 1, "b", "hello")
+let s = json_stringify(m)
+let m2 = json_parse(s)
+print(m2["a"])
+print(m2["b"])"#);
+        assert_eq!(output, vec!["1", "hello"]);
+    }
+
+    #[test]
+    fn test_vm_json_stringify() {
+        let output = run_output(r#"let m = map_from("x", 1, "y", 2)
+let s = json_stringify(m)
+print(s)"#);
+        assert_eq!(output, vec![r#"{"x":1,"y":2}"#]);
+    }
+
+    #[test]
+    fn test_vm_map_from_and_access() {
+        let output = run_output(r#"let m = map_from("a", 10, "b", 20)
+print(m["a"])
+print(m.b)"#);
+        assert_eq!(output, vec!["10", "20"]);
+    }
+
+    #[test]
+    fn test_vm_map_methods() {
+        let output = run_output(r#"let m = map_from("a", 1, "b", 2)
+print(m.keys())
+print(m.values())
+print(m.contains_key("a"))
+print(m.len())"#);
+        assert_eq!(output, vec!["[a, b]", "[1, 2]", "true", "2"]);
+    }
+
+    #[test]
+    fn test_vm_map_set_index() {
+        let output = run_output(r#"let m = map_from("a", 1)
+m["b"] = 2
+print(m["b"])"#);
+        assert_eq!(output, vec!["2"]);
+    }
+
+    #[test]
+    fn test_vm_map_iteration() {
+        let output = run_output(r#"let m = map_from("x", 10, "y", 20)
+for kv in m {
+    print(kv[0])
+}"#);
+        assert_eq!(output, vec!["x", "y"]);
+    }
+
+    #[test]
+    fn test_vm_file_read_write() {
+        let output = run_output(r#"write_file("/tmp/tl_vm_test.txt", "vm hello")
+print(read_file("/tmp/tl_vm_test.txt"))
+print(file_exists("/tmp/tl_vm_test.txt"))"#);
+        assert_eq!(output, vec!["vm hello", "true"]);
+    }
+
+    #[test]
+    fn test_vm_env_get_set() {
+        let output = run_output(r#"env_set("TL_VM_TEST", "abc")
+print(env_get("TL_VM_TEST"))"#);
+        assert_eq!(output, vec!["abc"]);
+    }
+
+    #[test]
+    fn test_vm_regex_match() {
+        let output = run_output(r#"print(regex_match("\\d+", "abc123"))
+print(regex_match("^\\d+$", "abc"))"#);
+        assert_eq!(output, vec!["true", "false"]);
+    }
+
+    #[test]
+    fn test_vm_regex_find() {
+        let output = run_output(r#"let m = regex_find("\\d+", "abc123def456")
+print(len(m))
+print(m[0])"#);
+        assert_eq!(output, vec!["2", "123"]);
+    }
+
+    #[test]
+    fn test_vm_regex_replace() {
+        let output = run_output(r#"print(regex_replace("\\d+", "abc123", "X"))"#);
+        assert_eq!(output, vec!["abcX"]);
+    }
+
+    #[test]
+    fn test_vm_now() {
+        let output = run_output("print(now() > 0)");
+        assert_eq!(output, vec!["true"]);
+    }
+
+    #[test]
+    fn test_vm_date_format() {
+        let output = run_output(r#"print(date_format(1704067200000, "%Y-%m-%d"))"#);
+        assert_eq!(output, vec!["2024-01-01"]);
+    }
+
+    #[test]
+    fn test_vm_date_parse() {
+        let output = run_output(r#"print(date_parse("2024-01-01 00:00:00", "%Y-%m-%d %H:%M:%S"))"#);
+        assert_eq!(output, vec!["1704067200000"]);
+    }
+
+    #[test]
+    fn test_vm_string_chars() {
+        let output = run_output(r#"print(len("hello".chars()))"#);
+        assert_eq!(output, vec!["5"]);
+    }
+
+    #[test]
+    fn test_vm_string_repeat() {
+        let output = run_output(r#"print("ab".repeat(3))"#);
+        assert_eq!(output, vec!["ababab"]);
+    }
+
+    #[test]
+    fn test_vm_string_index_of() {
+        let output = run_output(r#"print("hello world".index_of("world"))"#);
+        assert_eq!(output, vec!["6"]);
+    }
+
+    #[test]
+    fn test_vm_string_substring() {
+        let output = run_output(r#"print("hello world".substring(0, 5))"#);
+        assert_eq!(output, vec!["hello"]);
+    }
+
+    #[test]
+    fn test_vm_string_pad() {
+        let output = run_output(r#"print("42".pad_left(5, "0"))
+print("hi".pad_right(5, "."))"#);
+        assert_eq!(output, vec!["00042", "hi..."]);
+    }
+
+    #[test]
+    fn test_vm_list_sort() {
+        let output = run_output(r#"print([3, 1, 2].sort())"#);
+        assert_eq!(output, vec!["[1, 2, 3]"]);
+    }
+
+    #[test]
+    fn test_vm_list_reverse() {
+        let output = run_output(r#"print([1, 2, 3].reverse())"#);
+        assert_eq!(output, vec!["[3, 2, 1]"]);
+    }
+
+    #[test]
+    fn test_vm_list_contains() {
+        let output = run_output(r#"print([1, 2, 3].contains(2))
+print([1, 2, 3].contains(5))"#);
+        assert_eq!(output, vec!["true", "false"]);
+    }
+
+    #[test]
+    fn test_vm_list_slice() {
+        let output = run_output(r#"print([1, 2, 3, 4, 5].slice(1, 4))"#);
+        assert_eq!(output, vec!["[2, 3, 4]"]);
+    }
+
+    #[test]
+    fn test_vm_zip() {
+        let output = run_output(r#"let p = zip([1, 2], ["a", "b"])
+print(p[0])"#);
+        assert_eq!(output, vec!["[1, a]"]);
+    }
+
+    #[test]
+    fn test_vm_enumerate() {
+        let output = run_output(r#"let e = enumerate(["a", "b", "c"])
+print(e[1])"#);
+        assert_eq!(output, vec!["[1, b]"]);
+    }
+
+    #[test]
+    fn test_vm_bool() {
+        let output = run_output(r#"print(bool(1))
+print(bool(0))
+print(bool(""))"#);
+        assert_eq!(output, vec!["true", "false", "false"]);
+    }
+
+    #[test]
+    fn test_vm_range_step() {
+        let output = run_output(r#"print(range(0, 10, 3))"#);
+        assert_eq!(output, vec!["[0, 3, 6, 9]"]);
+    }
+
+    #[test]
+    fn test_vm_int_bool() {
+        let output = run_output(r#"print(int(true))
+print(int(false))"#);
+        assert_eq!(output, vec!["1", "0"]);
+    }
+
+    #[test]
+    fn test_vm_map_len_typeof() {
+        let output = run_output(r#"let m = map_from("a", 1)
+print(len(m))
+print(type_of(m))"#);
+        assert_eq!(output, vec!["1", "map"]);
+    }
+
+    #[test]
+    fn test_vm_json_file_roundtrip() {
+        let output = run_output(r#"let data = map_from("name", "vm_test", "count", 99)
+write_file("/tmp/tl_vm_json.json", json_stringify(data))
+let parsed = json_parse(read_file("/tmp/tl_vm_json.json"))
+print(parsed["name"])
+print(parsed["count"])"#);
+        assert_eq!(output, vec!["vm_test", "99"]);
     }
 }

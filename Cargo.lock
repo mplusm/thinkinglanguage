@@ -4228,12 +4228,15 @@ dependencies = [
 name = "tl-compiler"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "cranelift-codegen",
  "cranelift-frontend",
  "cranelift-jit",
  "cranelift-module",
  "rayon",
+ "regex",
  "reqwest",
+ "serde_json",
  "target-lexicon",
  "tempfile",
  "tl-ai",
@@ -4271,7 +4274,10 @@ dependencies = [
 name = "tl-interpreter"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "regex",
  "reqwest",
+ "serde_json",
  "tempfile",
  "tl-ai",
  "tl-ast",
