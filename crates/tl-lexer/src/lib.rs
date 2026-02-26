@@ -110,6 +110,8 @@ pub enum Token {
     Parallel,
     #[token("async")]
     Async,
+    #[token("await")]
+    Await,
     #[token("emit")]
     Emit,
 
@@ -424,5 +426,32 @@ mod tests {
         let tokens = tokenize("test my_test").unwrap();
         assert!(matches!(tokens[0].token, Token::Test));
         assert!(matches!(&tokens[1].token, Token::Ident(s) if s == "my_test"));
+    }
+
+    // Phase 7: Concurrency token tests
+
+    #[test]
+    fn test_await_token() {
+        let tokens = tokenize("await task").unwrap();
+        assert!(matches!(tokens[0].token, Token::Await));
+        assert!(matches!(&tokens[1].token, Token::Ident(s) if s == "task"));
+    }
+
+    #[test]
+    fn test_concurrency_keywords_combo() {
+        let tokens = tokenize("async await parallel").unwrap();
+        assert!(matches!(tokens[0].token, Token::Async));
+        assert!(matches!(tokens[1].token, Token::Await));
+        assert!(matches!(tokens[2].token, Token::Parallel));
+    }
+
+    #[test]
+    fn test_await_in_expression() {
+        let tokens = tokenize("let x = await spawn(f)").unwrap();
+        assert!(matches!(tokens[0].token, Token::Let));
+        assert!(matches!(&tokens[1].token, Token::Ident(s) if s == "x"));
+        assert!(matches!(tokens[2].token, Token::Assign));
+        assert!(matches!(tokens[3].token, Token::Await));
+        assert!(matches!(&tokens[4].token, Token::Ident(s) if s == "spawn"));
     }
 }

@@ -1123,6 +1123,12 @@ impl Compiler {
                 }
                 self.current().free_register();
             }
+            Expr::Await(expr) => {
+                let src = self.current().alloc_register();
+                self.compile_expr(expr, src)?;
+                self.current().emit_abc(Op::Await, dest, src, 0, 0);
+                self.current().free_register();
+            }
             Expr::Call { function, args } => {
                 self.compile_call(function, args, dest)?;
             }

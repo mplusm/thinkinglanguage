@@ -749,6 +749,10 @@ impl Parser {
 
     /// Unary: not expr | -expr
     fn parse_unary(&mut self) -> Result<Expr, TlError> {
+        if self.match_token(&Token::Await) {
+            let expr = self.parse_unary()?;
+            return Ok(Expr::Await(Box::new(expr)));
+        }
         if self.match_token(&Token::Not) {
             let expr = self.parse_unary()?;
             return Ok(Expr::UnaryOp {
@@ -1741,6 +1745,28 @@ mod tests {
             assert!(matches!(&args[0], Expr::String(s) if s == " "));
         } else {
             panic!("Expected method call expression");
+        }
+    }
+
+    // Phase 7: Concurrency parser tests
+
+    #[test]
+    fn test_parse_await_expr() {
+        let program = parse("await x").unwrap();
+        if let Stmt::Expr(Expr::Await(inner)) = &program.statements[0] {
+            assert!(matches!(inner.as_ref(), Expr::Ident(s) if s == "x"));
+        } else {
+            panic!("Expected Await expression, got {:?}", program.statements[0]);
+        }
+    }
+
+    #[test]
+    fn test_parse_await_spawn() {
+        let program = parse("await spawn(f)").unwrap();
+        if let Stmt::Expr(Expr::Await(inner)) = &program.statements[0] {
+            assert!(matches!(inner.as_ref(), Expr::Call { .. }));
+        } else {
+            panic!("Expected Await(Call(...))");
         }
     }
 }

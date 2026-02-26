@@ -159,6 +159,16 @@ pub enum BuiltinId {
     Zip = 82,
     Enumerate = 83,
     Bool = 84,
+    // Phase 7: Concurrency
+    Spawn = 85,
+    Sleep = 86,
+    Channel = 87,
+    Send = 88,
+    Recv = 89,
+    TryRecv = 90,
+    AwaitAll = 91,
+    Pmap = 92,
+    Timeout = 93,
 }
 
 impl BuiltinId {
@@ -249,6 +259,15 @@ impl BuiltinId {
             "zip" => Some(BuiltinId::Zip),
             "enumerate" => Some(BuiltinId::Enumerate),
             "bool" => Some(BuiltinId::Bool),
+            "spawn" => Some(BuiltinId::Spawn),
+            "sleep" => Some(BuiltinId::Sleep),
+            "channel" => Some(BuiltinId::Channel),
+            "send" => Some(BuiltinId::Send),
+            "recv" => Some(BuiltinId::Recv),
+            "try_recv" => Some(BuiltinId::TryRecv),
+            "await_all" => Some(BuiltinId::AwaitAll),
+            "pmap" => Some(BuiltinId::Pmap),
+            "timeout" => Some(BuiltinId::Timeout),
             _ => None,
         }
     }
@@ -340,6 +359,15 @@ impl BuiltinId {
             BuiltinId::Zip => "zip",
             BuiltinId::Enumerate => "enumerate",
             BuiltinId::Bool => "bool",
+            BuiltinId::Spawn => "spawn",
+            BuiltinId::Sleep => "sleep",
+            BuiltinId::Channel => "channel",
+            BuiltinId::Send => "send",
+            BuiltinId::Recv => "recv",
+            BuiltinId::TryRecv => "try_recv",
+            BuiltinId::AwaitAll => "await_all",
+            BuiltinId::Pmap => "pmap",
+            BuiltinId::Timeout => "timeout",
         }
     }
 }

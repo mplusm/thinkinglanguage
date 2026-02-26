@@ -7,7 +7,8 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::Duration;
 use tl_ast::*;
 use tl_errors::{RuntimeError, TlError};
 use tl_data::translate::{translate_expr, LocalValue, TranslateContext};
@@ -34,6 +35,77 @@ impl fmt::Debug for TlTable {
 pub struct TlSchema {
     pub name: String,
     pub arrow_schema: Arc<ArrowSchema>,
+}
+
+/// Counter for generating unique task IDs in the interpreter.
+static INTERP_TASK_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// Counter for generating unique channel IDs in the interpreter.
+static INTERP_CHANNEL_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// A spawned task handle for the interpreter.
+pub struct TlTask {
+    pub receiver: Mutex<Option<mpsc::Receiver<Result<Value, String>>>>,
+    pub id: u64,
+}
+
+impl TlTask {
+    pub fn new(receiver: mpsc::Receiver<Result<Value, String>>) -> Self {
+        TlTask {
+            receiver: Mutex::new(Some(receiver)),
+            id: INTERP_TASK_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+}
+
+impl fmt::Debug for TlTask {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<task {}>", self.id)
+    }
+}
+
+impl Clone for TlTask {
+    fn clone(&self) -> Self {
+        // Tasks are not truly cloneable (receiver is single-use), but we need
+        // Clone for Value. This creates a "consumed" copy.
+        TlTask {
+            receiver: Mutex::new(None),
+            id: self.id,
+        }
+    }
+}
+
+/// A channel for inter-task communication in the interpreter.
+pub struct TlChannel {
+    pub sender: mpsc::SyncSender<Value>,
+    pub receiver: Arc<Mutex<mpsc::Receiver<Value>>>,
+    pub id: u64,
+}
+
+impl TlChannel {
+    pub fn new(capacity: usize) -> Self {
+        let (tx, rx) = mpsc::sync_channel(capacity);
+        TlChannel {
+            sender: tx,
+            receiver: Arc::new(Mutex::new(rx)),
+            id: INTERP_CHANNEL_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+}
+
+impl Clone for TlChannel {
+    fn clone(&self) -> Self {
+        TlChannel {
+            sender: self.sender.clone(),
+            receiver: self.receiver.clone(),
+            id: self.id,
+        }
+    }
+}
+
+impl fmt::Debug for TlChannel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<channel {}>", self.id)
+    }
 }
 
 /// Runtime value
@@ -101,6 +173,10 @@ pub enum Value {
     },
     /// An ordered map (string keys)
     Map(Vec<(String, Value)>),
+    /// A spawned task handle
+    Task(Arc<TlTask>),
+    /// A channel for inter-task communication
+    Channel(Arc<TlChannel>),
 }
 
 impl fmt::Display for Value {
@@ -172,6 +248,8 @@ impl fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
+            Value::Task(t) => write!(f, "<task {}>", t.id),
+            Value::Channel(c) => write!(f, "<channel {}>", c.id),
         }
     }
 }
@@ -219,6 +297,8 @@ impl Value {
             Value::EnumInstance { .. } => "enum",
             Value::Module { .. } => "module",
             Value::Map(_) => "map",
+            Value::Task(_) => "task",
+            Value::Channel(_) => "channel",
         }
     }
 }
@@ -335,6 +415,16 @@ impl Environment {
         // HTTP builtins
         global.insert("http_get".to_string(), Value::Builtin("http_get".to_string()));
         global.insert("http_post".to_string(), Value::Builtin("http_post".to_string()));
+        // Concurrency builtins
+        global.insert("spawn".to_string(), Value::Builtin("spawn".to_string()));
+        global.insert("sleep".to_string(), Value::Builtin("sleep".to_string()));
+        global.insert("channel".to_string(), Value::Builtin("channel".to_string()));
+        global.insert("send".to_string(), Value::Builtin("send".to_string()));
+        global.insert("recv".to_string(), Value::Builtin("recv".to_string()));
+        global.insert("try_recv".to_string(), Value::Builtin("try_recv".to_string()));
+        global.insert("await_all".to_string(), Value::Builtin("await_all".to_string()));
+        global.insert("pmap".to_string(), Value::Builtin("pmap".to_string()));
+        global.insert("timeout".to_string(), Value::Builtin("timeout".to_string()));
 
         Self {
             scopes: vec![global],
@@ -1139,6 +1229,30 @@ impl Interpreter {
                         }
                     }
                     _ => Err(runtime_err(format!("Unknown enum type: `{enum_name}`"))),
+                }
+            }
+
+            Expr::Await(inner) => {
+                let val = self.eval_expr(inner)?;
+                match val {
+                    Value::Task(task) => {
+                        let rx = {
+                            let mut guard = task.receiver.lock().unwrap();
+                            guard.take()
+                        };
+                        match rx {
+                            Some(receiver) => {
+                                match receiver.recv() {
+                                    Ok(Ok(result)) => Ok(result),
+                                    Ok(Err(err_msg)) => Err(runtime_err(err_msg)),
+                                    Err(_) => Err(runtime_err("Task channel disconnected".to_string())),
+                                }
+                            }
+                            None => Err(runtime_err("Task already awaited".to_string())),
+                        }
+                    }
+                    // Non-task values pass through
+                    other => Ok(other),
                 }
             }
 
@@ -2116,6 +2230,308 @@ impl Interpreter {
                 if args.is_empty() { return Err(runtime_err_s("bool() expects a value")); }
                 Ok(Value::Bool(args[0].is_truthy()))
             }
+
+            // Phase 7: Concurrency builtins
+            "spawn" => {
+                if args.is_empty() {
+                    return Err(runtime_err_s("spawn() expects a function argument"));
+                }
+                match &args[0] {
+                    Value::Function { params, body, name } => {
+                        let params = params.clone();
+                        let body = body.clone();
+                        let _name = name.clone();
+                        let (tx, rx) = mpsc::channel::<Result<Value, String>>();
+                        // Capture the global scope for the spawned thread
+                        let env_scopes = self.env.scopes.clone();
+                        let method_table = self.method_table.clone();
+                        std::thread::spawn(move || {
+                            let mut interp = Interpreter::new();
+                            interp.env.scopes = env_scopes;
+                            interp.method_table = method_table;
+                            // Execute function body
+                            interp.env.push_scope();
+                            for param in &params {
+                                interp.env.set(param.name.clone(), Value::None);
+                            }
+                            let mut result = Value::None;
+                            let mut err = None;
+                            for stmt in &body {
+                                match interp.exec_stmt(stmt) {
+                                    Ok(Signal::Return(val)) => { result = val; break; }
+                                    Ok(Signal::None) => {
+                                        if let Some(val) = &interp.last_expr_value {
+                                            result = val.clone();
+                                        }
+                                    }
+                                    Ok(Signal::Throw(val)) => {
+                                        err = Some(format!("{val}"));
+                                        break;
+                                    }
+                                    Err(e) => { err = Some(format!("{e}")); break; }
+                                    _ => {}
+                                }
+                            }
+                            interp.env.pop_scope();
+                            let _ = tx.send(match err {
+                                Some(e) => Err(e),
+                                None => Ok(result),
+                            });
+                        });
+                        Ok(Value::Task(Arc::new(TlTask::new(rx))))
+                    }
+                    Value::Closure { params, body, captured_env } => {
+                        let params = params.clone();
+                        let body = body.clone();
+                        let captured_env = captured_env.clone();
+                        let (tx, rx) = mpsc::channel::<Result<Value, String>>();
+                        let method_table = self.method_table.clone();
+                        std::thread::spawn(move || {
+                            let mut interp = Interpreter::new();
+                            interp.env.scopes = captured_env;
+                            interp.method_table = method_table;
+                            interp.env.push_scope();
+                            for param in &params {
+                                interp.env.set(param.name.clone(), Value::None);
+                            }
+                            let result = interp.eval_expr(&body);
+                            interp.env.pop_scope();
+                            let _ = tx.send(result.map_err(|e| format!("{e}")));
+                        });
+                        Ok(Value::Task(Arc::new(TlTask::new(rx))))
+                    }
+                    _ => Err(runtime_err_s("spawn() expects a function")),
+                }
+            }
+            "sleep" => {
+                if args.is_empty() {
+                    return Err(runtime_err_s("sleep() expects a duration in milliseconds"));
+                }
+                match &args[0] {
+                    Value::Int(ms) => {
+                        std::thread::sleep(Duration::from_millis(*ms as u64));
+                        Ok(Value::None)
+                    }
+                    _ => Err(runtime_err_s("sleep() expects an integer (milliseconds)")),
+                }
+            }
+            "channel" => {
+                let capacity = match args.first() {
+                    Some(Value::Int(n)) => *n as usize,
+                    None => 64,
+                    _ => return Err(runtime_err_s("channel() expects an optional integer capacity")),
+                };
+                Ok(Value::Channel(Arc::new(TlChannel::new(capacity))))
+            }
+            "send" => {
+                if args.len() < 2 {
+                    return Err(runtime_err_s("send() expects a channel and a value"));
+                }
+                match &args[0] {
+                    Value::Channel(ch) => {
+                        ch.sender.send(args[1].clone())
+                            .map_err(|_| runtime_err_s("Channel disconnected"))?;
+                        Ok(Value::None)
+                    }
+                    _ => Err(runtime_err_s("send() expects a channel as first argument")),
+                }
+            }
+            "recv" => {
+                if args.is_empty() {
+                    return Err(runtime_err_s("recv() expects a channel"));
+                }
+                match &args[0] {
+                    Value::Channel(ch) => {
+                        let guard = ch.receiver.lock().unwrap();
+                        match guard.recv() {
+                            Ok(val) => Ok(val),
+                            Err(_) => Ok(Value::None),
+                        }
+                    }
+                    _ => Err(runtime_err_s("recv() expects a channel")),
+                }
+            }
+            "try_recv" => {
+                if args.is_empty() {
+                    return Err(runtime_err_s("try_recv() expects a channel"));
+                }
+                match &args[0] {
+                    Value::Channel(ch) => {
+                        let guard = ch.receiver.lock().unwrap();
+                        match guard.try_recv() {
+                            Ok(val) => Ok(val),
+                            Err(_) => Ok(Value::None),
+                        }
+                    }
+                    _ => Err(runtime_err_s("try_recv() expects a channel")),
+                }
+            }
+            "await_all" => {
+                if args.is_empty() {
+                    return Err(runtime_err_s("await_all() expects a list of tasks"));
+                }
+                match &args[0] {
+                    Value::List(tasks) => {
+                        let mut results = Vec::with_capacity(tasks.len());
+                        for task in tasks {
+                            match task {
+                                Value::Task(t) => {
+                                    let rx = {
+                                        let mut guard = t.receiver.lock().unwrap();
+                                        guard.take()
+                                    };
+                                    match rx {
+                                        Some(receiver) => {
+                                            match receiver.recv() {
+                                                Ok(Ok(val)) => results.push(val),
+                                                Ok(Err(e)) => return Err(runtime_err(e)),
+                                                Err(_) => return Err(runtime_err_s("Task channel disconnected")),
+                                            }
+                                        }
+                                        None => return Err(runtime_err_s("Task already awaited")),
+                                    }
+                                }
+                                other => results.push(other.clone()),
+                            }
+                        }
+                        Ok(Value::List(results))
+                    }
+                    _ => Err(runtime_err_s("await_all() expects a list")),
+                }
+            }
+            "pmap" => {
+                if args.len() < 2 {
+                    return Err(runtime_err_s("pmap() expects a list and a function"));
+                }
+                let items = match &args[0] {
+                    Value::List(items) => items.clone(),
+                    _ => return Err(runtime_err_s("pmap() expects a list as first argument")),
+                };
+
+                let env_scopes = self.env.scopes.clone();
+                let method_table = self.method_table.clone();
+
+                match &args[1] {
+                    Value::Function { params, body, name: _ } => {
+                        let params = params.clone();
+                        let body = body.clone();
+                        let mut handles = Vec::with_capacity(items.len());
+                        for item in items {
+                            let params = params.clone();
+                            let body = body.clone();
+                            let env_scopes = env_scopes.clone();
+                            let method_table = method_table.clone();
+                            let handle = std::thread::spawn(move || {
+                                let mut interp = Interpreter::new();
+                                interp.env.scopes = env_scopes;
+                                interp.method_table = method_table;
+                                interp.env.push_scope();
+                                if let Some(p) = params.first() {
+                                    interp.env.set(p.name.clone(), item);
+                                }
+                                let mut result = Value::None;
+                                for stmt in &body {
+                                    match interp.exec_stmt(stmt) {
+                                        Ok(Signal::Return(val)) => { result = val; break; }
+                                        Ok(Signal::None) => {
+                                            if let Some(val) = &interp.last_expr_value {
+                                                result = val.clone();
+                                            }
+                                        }
+                                        Ok(Signal::Throw(val)) => {
+                                            interp.env.pop_scope();
+                                            return Err(format!("{val}"));
+                                        }
+                                        Err(e) => { interp.env.pop_scope(); return Err(format!("{e}")); }
+                                        _ => {}
+                                    }
+                                }
+                                interp.env.pop_scope();
+                                Ok(result)
+                            });
+                            handles.push(handle);
+                        }
+                        let mut results = Vec::with_capacity(handles.len());
+                        for handle in handles {
+                            match handle.join() {
+                                Ok(Ok(val)) => results.push(val),
+                                Ok(Err(e)) => return Err(runtime_err(e)),
+                                Err(_) => return Err(runtime_err_s("pmap() thread panicked")),
+                            }
+                        }
+                        Ok(Value::List(results))
+                    }
+                    Value::Closure { params, body, captured_env } => {
+                        let params = params.clone();
+                        let body = body.clone();
+                        let captured_env = captured_env.clone();
+                        let mut handles = Vec::with_capacity(items.len());
+                        for item in items {
+                            let params = params.clone();
+                            let body = body.clone();
+                            let captured_env = captured_env.clone();
+                            let method_table = method_table.clone();
+                            let handle = std::thread::spawn(move || {
+                                let mut interp = Interpreter::new();
+                                interp.env.scopes = captured_env;
+                                interp.method_table = method_table;
+                                interp.env.push_scope();
+                                if let Some(p) = params.first() {
+                                    interp.env.set(p.name.clone(), item);
+                                }
+                                let result = interp.eval_expr(&body);
+                                interp.env.pop_scope();
+                                result.map_err(|e| format!("{e}"))
+                            });
+                            handles.push(handle);
+                        }
+                        let mut results = Vec::with_capacity(handles.len());
+                        for handle in handles {
+                            match handle.join() {
+                                Ok(Ok(val)) => results.push(val),
+                                Ok(Err(e)) => return Err(runtime_err(e)),
+                                Err(_) => return Err(runtime_err_s("pmap() thread panicked")),
+                            }
+                        }
+                        Ok(Value::List(results))
+                    }
+                    _ => Err(runtime_err_s("pmap() expects a function as second argument")),
+                }
+            }
+            "timeout" => {
+                if args.len() < 2 {
+                    return Err(runtime_err_s("timeout() expects a task and a duration in milliseconds"));
+                }
+                let ms = match &args[1] {
+                    Value::Int(n) => *n as u64,
+                    _ => return Err(runtime_err_s("timeout() expects an integer duration")),
+                };
+                match &args[0] {
+                    Value::Task(task) => {
+                        let rx = {
+                            let mut guard = task.receiver.lock().unwrap();
+                            guard.take()
+                        };
+                        match rx {
+                            Some(receiver) => {
+                                match receiver.recv_timeout(Duration::from_millis(ms)) {
+                                    Ok(Ok(val)) => Ok(val),
+                                    Ok(Err(e)) => Err(runtime_err(e)),
+                                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                                        Err(runtime_err_s("Task timed out"))
+                                    }
+                                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                        Err(runtime_err_s("Task channel disconnected"))
+                                    }
+                                }
+                            }
+                            None => Err(runtime_err_s("Task already awaited")),
+                        }
+                    }
+                    _ => Err(runtime_err_s("timeout() expects a task as first argument")),
+                }
+            }
+
             _ => Err(runtime_err(format!("Unknown builtin: {name}"))),
         }
     }
@@ -4252,5 +4668,209 @@ print(result)"#);
 let vals = m.values()
 print(sum(vals))"#);
         assert_eq!(output, vec!["6"]);
+    }
+
+    // ── Phase 7: Concurrency tests ──
+
+    #[test]
+    fn test_interp_spawn_await_basic() {
+        let output = run_output(r#"fn worker() { 42 }
+let t = spawn(worker)
+let result = await t
+print(result)"#);
+        assert_eq!(output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_interp_spawn_closure_with_capture() {
+        let output = run_output(r#"let x = 10
+fn f() { x + 5 }
+let t = spawn(f)
+print(await t)"#);
+        assert_eq!(output, vec!["15"]);
+    }
+
+    #[test]
+    fn test_interp_sleep() {
+        let output = run_output(r#"sleep(10)
+print("done")"#);
+        assert_eq!(output, vec!["done"]);
+    }
+
+    #[test]
+    fn test_interp_await_non_task() {
+        let output = run_output(r#"print(await 42)"#);
+        assert_eq!(output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_interp_channel_basic() {
+        let output = run_output(r#"let ch = channel()
+send(ch, 42)
+let val = recv(ch)
+print(val)"#);
+        assert_eq!(output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_interp_channel_between_tasks() {
+        let output = run_output(r#"let ch = channel()
+fn producer() { send(ch, 100) }
+let t = spawn(producer)
+let val = recv(ch)
+await t
+print(val)"#);
+        assert_eq!(output, vec!["100"]);
+    }
+
+    #[test]
+    fn test_interp_try_recv_empty() {
+        let output = run_output(r#"let ch = channel()
+let val = try_recv(ch)
+print(val)"#);
+        assert_eq!(output, vec!["none"]);
+    }
+
+    #[test]
+    fn test_interp_channel_multiple_values() {
+        let output = run_output(r#"let ch = channel()
+send(ch, 1)
+send(ch, 2)
+send(ch, 3)
+print(recv(ch))
+print(recv(ch))
+print(recv(ch))"#);
+        assert_eq!(output, vec!["1", "2", "3"]);
+    }
+
+    #[test]
+    fn test_interp_channel_producer_consumer() {
+        let output = run_output(r#"let ch = channel()
+fn producer() {
+    send(ch, 10)
+    send(ch, 20)
+    send(ch, 30)
+}
+let t = spawn(producer)
+let a = recv(ch)
+let b = recv(ch)
+let c = recv(ch)
+await t
+print(a + b + c)"#);
+        assert_eq!(output, vec!["60"]);
+    }
+
+    #[test]
+    fn test_interp_await_all() {
+        let output = run_output(r#"fn w1() { 10 }
+fn w2() { 20 }
+fn w3() { 30 }
+let t1 = spawn(w1)
+let t2 = spawn(w2)
+let t3 = spawn(w3)
+let results = await_all([t1, t2, t3])
+print(sum(results))"#);
+        assert_eq!(output, vec!["60"]);
+    }
+
+    #[test]
+    fn test_interp_pmap_basic() {
+        let output = run_output(r#"fn double(x) { x * 2 }
+let results = pmap([1, 2, 3], double)
+print(results)"#);
+        assert_eq!(output, vec!["[2, 4, 6]"]);
+    }
+
+    #[test]
+    fn test_interp_pmap_order() {
+        let output = run_output(r#"fn inc(x) { x + 1 }
+let results = pmap([10, 20, 30], inc)
+print(results)"#);
+        assert_eq!(output, vec!["[11, 21, 31]"]);
+    }
+
+    #[test]
+    fn test_interp_timeout_success() {
+        let output = run_output(r#"fn worker() { 42 }
+let t = spawn(worker)
+let result = timeout(t, 5000)
+print(result)"#);
+        assert_eq!(output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_interp_timeout_failure() {
+        let output = run_output(r#"fn slow() { sleep(10000) }
+let t = spawn(slow)
+let result = "ok"
+try {
+    result = timeout(t, 50)
+} catch e {
+    result = e
+}
+print(result)"#);
+        assert_eq!(output, vec!["Task timed out"]);
+    }
+
+    #[test]
+    fn test_interp_spawn_error_propagation() {
+        let output = run_output(r#"fn bad() { throw "bad thing" }
+let result = "ok"
+try {
+    let t = spawn(bad)
+    result = await t
+} catch e {
+    result = e
+}
+print(result)"#);
+        assert_eq!(output, vec!["bad thing"]);
+    }
+
+    #[test]
+    fn test_interp_spawn_multiple_collect() {
+        let output = run_output(r#"fn w1() { 1 }
+fn w2() { 2 }
+fn w3() { 3 }
+let t1 = spawn(w1)
+let t2 = spawn(w2)
+let t3 = spawn(w3)
+let a = await t1
+let b = await t2
+let c = await t3
+print(a + b + c)"#);
+        assert_eq!(output, vec!["6"]);
+    }
+
+    #[test]
+    fn test_interp_type_of_task_channel() {
+        let output = run_output(r#"fn worker() { 1 }
+let t = spawn(worker)
+let ch = channel()
+print(type_of(t))
+print(type_of(ch))
+await t"#);
+        assert_eq!(output, vec!["task", "channel"]);
+    }
+
+    #[test]
+    fn test_interp_producer_consumer_pipeline() {
+        let output = run_output(r#"let ch = channel()
+fn producer() {
+    let mut i = 0
+    while i < 5 {
+        send(ch, i * 10)
+        i = i + 1
+    }
+}
+let t = spawn(producer)
+let mut total = 0
+let mut count = 0
+while count < 5 {
+    total = total + recv(ch)
+    count = count + 1
+}
+await t
+print(total)"#);
+        assert_eq!(output, vec!["100"]);
     }
 }

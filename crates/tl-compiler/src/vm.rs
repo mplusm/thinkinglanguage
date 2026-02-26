@@ -2,7 +2,8 @@
 // Register-based VM that executes compiled bytecode.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
+use std::time::Duration;
 
 use rayon::prelude::*;
 use tl_ast::Expr as AstExpr;
@@ -1007,6 +1008,41 @@ impl Vm {
                     let result = self.handle_import(&path, &alias)?;
                     self.stack[base + a as usize] = result;
                 }
+
+                Op::Await => {
+                    // a = dest, b = task/value register
+                    let val = self.stack[base + b as usize].clone();
+                    match val {
+                        VmValue::Task(task) => {
+                            let rx = {
+                                let mut guard = task.receiver.lock().unwrap();
+                                guard.take()
+                            };
+                            match rx {
+                                Some(receiver) => {
+                                    match receiver.recv() {
+                                        Ok(Ok(result)) => {
+                                            self.stack[base + a as usize] = result;
+                                        }
+                                        Ok(Err(err_msg)) => {
+                                            return Err(runtime_err(err_msg));
+                                        }
+                                        Err(_) => {
+                                            return Err(runtime_err("Task channel disconnected"));
+                                        }
+                                    }
+                                }
+                                None => {
+                                    return Err(runtime_err("Task already awaited"));
+                                }
+                            }
+                        }
+                        // Non-task values pass through
+                        other => {
+                            self.stack[base + a as usize] = other;
+                        }
+                    }
+                }
             }
             Ok(None)
     }
@@ -1070,6 +1106,35 @@ impl Vm {
             }
             _ => Err(runtime_err(format!("Cannot call {}", func.type_name()))),
         }
+    }
+
+    /// Execute a closure (no arguments) in this VM. Used by spawn().
+    fn execute_closure(&mut self, proto: &Arc<Prototype>, upvalues: &[UpvalueRef]) -> Result<VmValue, TlError> {
+        let base = self.stack.len();
+        self.ensure_stack(base + proto.num_registers as usize + 1);
+        self.frames.push(CallFrame {
+            prototype: proto.clone(),
+            ip: 0,
+            base,
+            upvalues: upvalues.to_vec(),
+        });
+        self.run()
+    }
+
+    /// Execute a closure with arguments in this VM. Used by pmap().
+    fn execute_closure_with_args(&mut self, proto: &Arc<Prototype>, upvalues: &[UpvalueRef], args: &[VmValue]) -> Result<VmValue, TlError> {
+        let base = self.stack.len();
+        self.ensure_stack(base + proto.num_registers as usize + 1);
+        for (i, arg) in args.iter().enumerate() {
+            self.stack[base + i] = arg.clone();
+        }
+        self.frames.push(CallFrame {
+            prototype: proto.clone(),
+            ip: 0,
+            base,
+            upvalues: upvalues.to_vec(),
+        });
+        self.run()
     }
 
     fn load_constant(&self, frame_idx: usize, idx: u16) -> Result<VmValue, TlError> {
@@ -2233,6 +2298,233 @@ impl Vm {
             BuiltinId::Bool => {
                 if args.is_empty() { return Err(runtime_err("bool() expects a value")); }
                 Ok(VmValue::Bool(args[0].is_truthy()))
+            }
+
+            // Phase 7: Concurrency builtins
+            BuiltinId::Spawn => {
+                if args.is_empty() {
+                    return Err(runtime_err("spawn() expects a function argument"));
+                }
+                match &args[0] {
+                    VmValue::Function(closure) => {
+                        let proto = closure.prototype.clone();
+                        // Close all upvalues (convert Open → Closed with current values)
+                        let mut closed_upvalues = Vec::new();
+                        for uv in &closure.upvalues {
+                            match uv {
+                                UpvalueRef::Open { stack_index } => {
+                                    let val = self.stack[*stack_index].clone();
+                                    closed_upvalues.push(UpvalueRef::Closed(val));
+                                }
+                                UpvalueRef::Closed(v) => {
+                                    closed_upvalues.push(UpvalueRef::Closed(v.clone()));
+                                }
+                            }
+                        }
+                        let globals = self.globals.clone();
+                        let (tx, rx) = mpsc::channel::<Result<VmValue, String>>();
+
+                        std::thread::spawn(move || {
+                            let mut vm = Vm::new();
+                            vm.globals = globals;
+                            let result = vm.execute_closure(&proto, &closed_upvalues);
+                            let _ = tx.send(result.map_err(|e| match e {
+                                TlError::Runtime(re) => re.message,
+                                other => format!("{other}"),
+                            }));
+                        });
+
+                        Ok(VmValue::Task(Arc::new(VmTask::new(rx))))
+                    }
+                    _ => Err(runtime_err("spawn() expects a function")),
+                }
+            }
+            BuiltinId::Sleep => {
+                if args.is_empty() {
+                    return Err(runtime_err("sleep() expects a duration in milliseconds"));
+                }
+                match &args[0] {
+                    VmValue::Int(ms) => {
+                        std::thread::sleep(Duration::from_millis(*ms as u64));
+                        Ok(VmValue::None)
+                    }
+                    _ => Err(runtime_err("sleep() expects an integer (milliseconds)")),
+                }
+            }
+            BuiltinId::Channel => {
+                let capacity = match args.first() {
+                    Some(VmValue::Int(n)) => *n as usize,
+                    None => 64,
+                    _ => return Err(runtime_err("channel() expects an optional integer capacity")),
+                };
+                Ok(VmValue::Channel(Arc::new(VmChannel::new(capacity))))
+            }
+            BuiltinId::Send => {
+                if args.len() < 2 {
+                    return Err(runtime_err("send() expects a channel and a value"));
+                }
+                match &args[0] {
+                    VmValue::Channel(ch) => {
+                        ch.sender.send(args[1].clone())
+                            .map_err(|_| runtime_err("Channel disconnected"))?;
+                        Ok(VmValue::None)
+                    }
+                    _ => Err(runtime_err("send() expects a channel as first argument")),
+                }
+            }
+            BuiltinId::Recv => {
+                if args.is_empty() {
+                    return Err(runtime_err("recv() expects a channel"));
+                }
+                match &args[0] {
+                    VmValue::Channel(ch) => {
+                        let guard = ch.receiver.lock().unwrap();
+                        match guard.recv() {
+                            Ok(val) => Ok(val),
+                            Err(_) => Ok(VmValue::None),
+                        }
+                    }
+                    _ => Err(runtime_err("recv() expects a channel")),
+                }
+            }
+            BuiltinId::TryRecv => {
+                if args.is_empty() {
+                    return Err(runtime_err("try_recv() expects a channel"));
+                }
+                match &args[0] {
+                    VmValue::Channel(ch) => {
+                        let guard = ch.receiver.lock().unwrap();
+                        match guard.try_recv() {
+                            Ok(val) => Ok(val),
+                            Err(_) => Ok(VmValue::None),
+                        }
+                    }
+                    _ => Err(runtime_err("try_recv() expects a channel")),
+                }
+            }
+            BuiltinId::AwaitAll => {
+                if args.is_empty() {
+                    return Err(runtime_err("await_all() expects a list of tasks"));
+                }
+                match &args[0] {
+                    VmValue::List(tasks) => {
+                        let mut results = Vec::with_capacity(tasks.len());
+                        for task in tasks {
+                            match task {
+                                VmValue::Task(t) => {
+                                    let rx = {
+                                        let mut guard = t.receiver.lock().unwrap();
+                                        guard.take()
+                                    };
+                                    match rx {
+                                        Some(receiver) => {
+                                            match receiver.recv() {
+                                                Ok(Ok(val)) => results.push(val),
+                                                Ok(Err(e)) => return Err(runtime_err(e)),
+                                                Err(_) => return Err(runtime_err("Task channel disconnected")),
+                                            }
+                                        }
+                                        None => return Err(runtime_err("Task already awaited")),
+                                    }
+                                }
+                                other => results.push(other.clone()),
+                            }
+                        }
+                        Ok(VmValue::List(results))
+                    }
+                    _ => Err(runtime_err("await_all() expects a list")),
+                }
+            }
+            BuiltinId::Pmap => {
+                if args.len() < 2 {
+                    return Err(runtime_err("pmap() expects a list and a function"));
+                }
+                let items = match &args[0] {
+                    VmValue::List(items) => items.clone(),
+                    _ => return Err(runtime_err("pmap() expects a list as first argument")),
+                };
+                let closure = match &args[1] {
+                    VmValue::Function(c) => c.clone(),
+                    _ => return Err(runtime_err("pmap() expects a function as second argument")),
+                };
+
+                // Close all upvalues
+                let mut closed_upvalues = Vec::new();
+                for uv in &closure.upvalues {
+                    match uv {
+                        UpvalueRef::Open { stack_index } => {
+                            let val = self.stack[*stack_index].clone();
+                            closed_upvalues.push(UpvalueRef::Closed(val));
+                        }
+                        UpvalueRef::Closed(v) => {
+                            closed_upvalues.push(UpvalueRef::Closed(v.clone()));
+                        }
+                    }
+                }
+
+                let proto = closure.prototype.clone();
+                let globals = self.globals.clone();
+
+                // Spawn one thread per item
+                let mut handles = Vec::with_capacity(items.len());
+                for item in items {
+                    let proto = proto.clone();
+                    let upvalues = closed_upvalues.clone();
+                    let globals = globals.clone();
+                    let handle = std::thread::spawn(move || {
+                        let mut vm = Vm::new();
+                        vm.globals = globals;
+                        vm.execute_closure_with_args(&proto, &upvalues, &[item])
+                            .map_err(|e| match e {
+                                TlError::Runtime(re) => re.message,
+                                other => format!("{other}"),
+                            })
+                    });
+                    handles.push(handle);
+                }
+
+                let mut results = Vec::with_capacity(handles.len());
+                for handle in handles {
+                    match handle.join() {
+                        Ok(Ok(val)) => results.push(val),
+                        Ok(Err(e)) => return Err(runtime_err(e)),
+                        Err(_) => return Err(runtime_err("pmap() thread panicked")),
+                    }
+                }
+                Ok(VmValue::List(results))
+            }
+            BuiltinId::Timeout => {
+                if args.len() < 2 {
+                    return Err(runtime_err("timeout() expects a task and a duration in milliseconds"));
+                }
+                let ms = match &args[1] {
+                    VmValue::Int(n) => *n as u64,
+                    _ => return Err(runtime_err("timeout() expects an integer duration")),
+                };
+                match &args[0] {
+                    VmValue::Task(task) => {
+                        let rx = {
+                            let mut guard = task.receiver.lock().unwrap();
+                            guard.take()
+                        };
+                        match rx {
+                            Some(receiver) => {
+                                match receiver.recv_timeout(Duration::from_millis(ms)) {
+                                    Ok(Ok(val)) => Ok(val),
+                                    Ok(Err(e)) => Err(runtime_err(e)),
+                                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                                        Err(runtime_err("Task timed out"))
+                                    }
+                                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                        Err(runtime_err("Task channel disconnected"))
+                                    }
+                                }
+                            }
+                            None => Err(runtime_err("Task already awaited")),
+                        }
+                    }
+                    _ => Err(runtime_err("timeout() expects a task as first argument")),
+                }
             }
         }
     }
@@ -3985,5 +4277,207 @@ let parsed = json_parse(read_file("/tmp/tl_vm_json.json"))
 print(parsed["name"])
 print(parsed["count"])"#);
         assert_eq!(output, vec!["vm_test", "99"]);
+    }
+
+    // ── Phase 7: Concurrency tests ──
+
+    #[test]
+    fn test_vm_spawn_await_basic() {
+        let output = run_output(r#"fn worker() { 42 }
+let t = spawn(worker)
+let result = await t
+print(result)"#);
+        assert_eq!(output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_vm_spawn_closure_with_capture() {
+        let output = run_output(r#"let x = 10
+let f = () => x + 5
+let t = spawn(f)
+print(await t)"#);
+        assert_eq!(output, vec!["15"]);
+    }
+
+    #[test]
+    fn test_vm_sleep() {
+        let output = run_output(r#"sleep(10)
+print("done")"#);
+        assert_eq!(output, vec!["done"]);
+    }
+
+    #[test]
+    fn test_vm_await_non_task_passthrough() {
+        let output = run_output(r#"print(await 42)"#);
+        assert_eq!(output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_vm_spawn_multiple_await() {
+        let output = run_output(r#"fn w1() { 1 }
+fn w2() { 2 }
+fn w3() { 3 }
+let t1 = spawn(w1)
+let t2 = spawn(w2)
+let t3 = spawn(w3)
+let a = await t1
+let b = await t2
+let c = await t3
+print(a + b + c)"#);
+        assert_eq!(output, vec!["6"]);
+    }
+
+    #[test]
+    fn test_vm_channel_basic() {
+        let output = run_output(r#"let ch = channel()
+send(ch, 42)
+let val = recv(ch)
+print(val)"#);
+        assert_eq!(output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_vm_channel_between_tasks() {
+        let output = run_output(r#"let ch = channel()
+fn producer() { send(ch, 100) }
+let t = spawn(producer)
+let val = recv(ch)
+await t
+print(val)"#);
+        assert_eq!(output, vec!["100"]);
+    }
+
+    #[test]
+    fn test_vm_try_recv_empty() {
+        let output = run_output(r#"let ch = channel()
+let val = try_recv(ch)
+print(val)"#);
+        assert_eq!(output, vec!["none"]);
+    }
+
+    #[test]
+    fn test_vm_channel_multiple_values() {
+        let output = run_output(r#"let ch = channel()
+send(ch, 1)
+send(ch, 2)
+send(ch, 3)
+print(recv(ch))
+print(recv(ch))
+print(recv(ch))"#);
+        assert_eq!(output, vec!["1", "2", "3"]);
+    }
+
+    #[test]
+    fn test_vm_channel_producer_consumer() {
+        let output = run_output(r#"let ch = channel()
+fn producer() {
+    send(ch, 10)
+    send(ch, 20)
+    send(ch, 30)
+}
+let t = spawn(producer)
+let a = recv(ch)
+let b = recv(ch)
+let c = recv(ch)
+await t
+print(a + b + c)"#);
+        assert_eq!(output, vec!["60"]);
+    }
+
+    #[test]
+    fn test_vm_await_all() {
+        let output = run_output(r#"fn w1() { 10 }
+fn w2() { 20 }
+fn w3() { 30 }
+let t1 = spawn(w1)
+let t2 = spawn(w2)
+let t3 = spawn(w3)
+let results = await_all([t1, t2, t3])
+print(sum(results))"#);
+        assert_eq!(output, vec!["60"]);
+    }
+
+    #[test]
+    fn test_vm_pmap_basic() {
+        let output = run_output(r#"let results = pmap([1, 2, 3], (x) => x * 2)
+print(results)"#);
+        assert_eq!(output, vec!["[2, 4, 6]"]);
+    }
+
+    #[test]
+    fn test_vm_pmap_order_preserved() {
+        let output = run_output(r#"let results = pmap([10, 20, 30], (x) => x + 1)
+print(results)"#);
+        assert_eq!(output, vec!["[11, 21, 31]"]);
+    }
+
+    #[test]
+    fn test_vm_timeout_success() {
+        let output = run_output(r#"fn worker() { 42 }
+let t = spawn(worker)
+let result = timeout(t, 5000)
+print(result)"#);
+        assert_eq!(output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_vm_timeout_failure() {
+        let output = run_output(r#"fn slow() { sleep(10000) }
+let t = spawn(slow)
+let result = "ok"
+try {
+    result = timeout(t, 50)
+} catch e {
+    result = e
+}
+print(result)"#);
+        assert_eq!(output, vec!["Task timed out"]);
+    }
+
+    #[test]
+    fn test_vm_spawn_error_propagation() {
+        let output = run_output(r#"fn bad() { throw "bad thing" }
+let result = "ok"
+try {
+    let t = spawn(bad)
+    result = await t
+} catch e {
+    result = e
+}
+print(result)"#);
+        assert_eq!(output, vec!["bad thing"]);
+    }
+
+    #[test]
+    fn test_vm_spawn_producer_consumer_pipeline() {
+        let output = run_output(r#"let ch = channel()
+fn producer() {
+    let mut i = 0
+    while i < 5 {
+        send(ch, i * 10)
+        i = i + 1
+    }
+}
+let t = spawn(producer)
+let mut total = 0
+let mut count = 0
+while count < 5 {
+    total = total + recv(ch)
+    count = count + 1
+}
+await t
+print(total)"#);
+        assert_eq!(output, vec!["100"]);
+    }
+
+    #[test]
+    fn test_vm_type_of_task_channel() {
+        let output = run_output(r#"fn worker() { 1 }
+let t = spawn(worker)
+let ch = channel()
+print(type_of(t))
+print(type_of(ch))
+await t"#);
+        assert_eq!(output, vec!["task", "channel"]);
     }
 }

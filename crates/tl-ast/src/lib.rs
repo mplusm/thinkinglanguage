@@ -287,6 +287,9 @@ pub enum Expr {
         variant: String,
         args: Vec<Expr>,
     },
+
+    /// Await expression: `await expr`
+    Await(Box<Expr>),
 }
 
 /// Binary operators

@@ -2,7 +2,8 @@
 // Optimized for the bytecode VM: Arc<str> strings, Arc<Prototype> functions.
 
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, mpsc};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tl_data::{ArrowSchema, DataFrame};
 use tl_ai::{TlTensor, TlModel};
@@ -51,6 +52,10 @@ pub enum VmValue {
     Module(Arc<VmModule>),
     /// An ordered map (string keys)
     Map(Vec<(Arc<str>, VmValue)>),
+    /// A spawned task handle
+    Task(Arc<VmTask>),
+    /// A channel for inter-task communication
+    Channel(Arc<VmChannel>),
 }
 
 /// Struct type definition
@@ -87,6 +92,66 @@ pub struct VmEnumInstance {
 pub struct VmModule {
     pub name: Arc<str>,
     pub exports: std::collections::HashMap<String, VmValue>,
+}
+
+/// Counter for generating unique task IDs
+static TASK_COUNTER: AtomicU64 = AtomicU64::new(1);
+/// Counter for generating unique channel IDs
+static CHANNEL_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// A spawned task handle — wraps the receiver for the task result.
+pub struct VmTask {
+    pub receiver: Mutex<Option<mpsc::Receiver<Result<VmValue, String>>>>,
+    pub id: u64,
+}
+
+impl VmTask {
+    pub fn new(receiver: mpsc::Receiver<Result<VmValue, String>>) -> Self {
+        VmTask {
+            receiver: Mutex::new(Some(receiver)),
+            id: TASK_COUNTER.fetch_add(1, Ordering::Relaxed),
+        }
+    }
+}
+
+impl fmt::Debug for VmTask {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<task {}>", self.id)
+    }
+}
+
+/// A channel for inter-task communication.
+pub struct VmChannel {
+    pub sender: mpsc::SyncSender<VmValue>,
+    pub receiver: Arc<Mutex<mpsc::Receiver<VmValue>>>,
+    pub id: u64,
+}
+
+impl VmChannel {
+    pub fn new(capacity: usize) -> Self {
+        let (tx, rx) = mpsc::sync_channel(capacity);
+        VmChannel {
+            sender: tx,
+            receiver: Arc::new(Mutex::new(rx)),
+            id: CHANNEL_COUNTER.fetch_add(1, Ordering::Relaxed),
+        }
+    }
+}
+
+impl Clone for VmChannel {
+    fn clone(&self) -> Self {
+        VmChannel {
+            sender: self.sender.clone(),
+            receiver: self.receiver.clone(),
+            id: self.id,
+        }
+    }
+}
+
+impl fmt::Debug for VmChannel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<channel {}>", self.id)
+    }
 }
 
 /// A closure: compiled function prototype + captured upvalues.
@@ -162,6 +227,8 @@ impl VmValue {
             VmValue::EnumInstance(_) => "enum",
             VmValue::Module(_) => "module",
             VmValue::Map(_) => "map",
+            VmValue::Task(_) => "task",
+            VmValue::Channel(_) => "channel",
         }
     }
 }
@@ -211,6 +278,8 @@ impl fmt::Debug for VmValue {
                 }
                 write!(f, "}}")
             }
+            VmValue::Task(t) => write!(f, "<task {}>", t.id),
+            VmValue::Channel(c) => write!(f, "<channel {}>", c.id),
         }
     }
 }
@@ -280,6 +349,8 @@ impl fmt::Display for VmValue {
                 }
                 write!(f, "}}")
             }
+            VmValue::Task(t) => write!(f, "<task {}>", t.id),
+            VmValue::Channel(c) => write!(f, "<channel {}>", c.id),
         }
     }
 }

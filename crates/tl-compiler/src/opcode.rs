@@ -166,6 +166,10 @@ pub enum Op {
     TryEnd = 57,
     /// Import: A = dest, Bx = path constant
     Import = 58,
+
+    // ── Phase 7: Concurrency ──
+    /// Await: A = dest, B = task register (passthrough if not a task)
+    Await = 59,
 }
 
 /// Encode an ABC-format instruction: [op:8][A:8][B:8][C:8]
