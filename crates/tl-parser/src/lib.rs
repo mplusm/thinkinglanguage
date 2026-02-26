@@ -107,6 +107,10 @@ impl Parser {
             Token::Return => self.parse_return(),
             Token::Schema => self.parse_schema(),
             Token::Model => self.parse_train(),
+            Token::Pipeline => self.parse_pipeline(),
+            Token::Stream => self.parse_stream_decl(),
+            Token::Source => self.parse_source_decl(),
+            Token::Sink => self.parse_sink_decl(),
             Token::Break => {
                 self.advance();
                 Ok(Stmt::Break)
@@ -164,6 +168,312 @@ impl Parser {
             algorithm,
             config,
         })
+    }
+
+    /// Parse `pipeline NAME { schedule: "...", timeout: "...", retries: N, extract { ... } transform { ... } load { ... } on_failure { ... } on_success { ... } }`
+    fn parse_pipeline(&mut self) -> Result<Stmt, TlError> {
+        self.advance(); // consume 'pipeline'
+        let name = self.expect_ident()?;
+        self.expect(&Token::LBrace)?;
+
+        let mut extract = Vec::new();
+        let mut transform = Vec::new();
+        let mut load = Vec::new();
+        let mut schedule = None;
+        let mut timeout = None;
+        let mut retries = None;
+        let mut on_failure = None;
+        let mut on_success = None;
+
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            match self.peek() {
+                Token::Extract => {
+                    self.advance();
+                    self.expect(&Token::LBrace)?;
+                    extract = self.parse_block_body()?;
+                    self.expect(&Token::RBrace)?;
+                }
+                Token::Transform => {
+                    self.advance();
+                    self.expect(&Token::LBrace)?;
+                    transform = self.parse_block_body()?;
+                    self.expect(&Token::RBrace)?;
+                }
+                Token::Load => {
+                    self.advance();
+                    self.expect(&Token::LBrace)?;
+                    load = self.parse_block_body()?;
+                    self.expect(&Token::RBrace)?;
+                }
+                Token::Ident(s) if s == "schedule" => {
+                    self.advance();
+                    self.expect(&Token::Colon)?;
+                    if let Token::String(s) = self.peek().clone() {
+                        self.advance();
+                        schedule = Some(s);
+                    } else {
+                        schedule = Some(self.parse_duration_literal()?);
+                    }
+                    self.match_token(&Token::Comma);
+                }
+                Token::Ident(s) if s == "timeout" => {
+                    self.advance();
+                    self.expect(&Token::Colon)?;
+                    if let Token::String(s) = self.peek().clone() {
+                        self.advance();
+                        timeout = Some(s);
+                    } else {
+                        timeout = Some(self.parse_duration_literal()?);
+                    }
+                    self.match_token(&Token::Comma);
+                }
+                Token::Ident(s) if s == "retries" => {
+                    self.advance();
+                    self.expect(&Token::Colon)?;
+                    if let Token::Int(n) = self.peek().clone() {
+                        self.advance();
+                        retries = Some(n);
+                    } else {
+                        return Err(TlError::Parser(ParserError {
+                            message: "Expected integer for retries".to_string(),
+                            span: self.peek_span(),
+                            hint: None,
+                        }));
+                    }
+                    self.match_token(&Token::Comma);
+                }
+                Token::Ident(s) if s == "on_failure" => {
+                    self.advance();
+                    self.expect(&Token::LBrace)?;
+                    on_failure = Some(self.parse_block_body()?);
+                    self.expect(&Token::RBrace)?;
+                }
+                Token::Ident(s) if s == "on_success" => {
+                    self.advance();
+                    self.expect(&Token::LBrace)?;
+                    on_success = Some(self.parse_block_body()?);
+                    self.expect(&Token::RBrace)?;
+                }
+                _ => {
+                    return Err(TlError::Parser(ParserError {
+                        message: format!(
+                            "Unexpected token in pipeline block: `{}`",
+                            self.peek()
+                        ),
+                        span: self.peek_span(),
+                        hint: Some("Expected extract, transform, load, schedule, timeout, retries, on_failure, or on_success".into()),
+                    }));
+                }
+            }
+        }
+        self.expect(&Token::RBrace)?;
+        Ok(Stmt::Pipeline {
+            name,
+            extract,
+            transform,
+            load,
+            schedule,
+            timeout,
+            retries,
+            on_failure,
+            on_success,
+        })
+    }
+
+    /// Parse `stream NAME { source: expr, window: spec, watermark: "duration", transform: { ... }, sink: expr }`
+    fn parse_stream_decl(&mut self) -> Result<Stmt, TlError> {
+        self.advance(); // consume 'stream'
+        let name = self.expect_ident()?;
+        self.expect(&Token::LBrace)?;
+
+        let mut source = None;
+        let mut transform = Vec::new();
+        let mut sink = None;
+        let mut window = None;
+        let mut watermark = None;
+
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            match self.peek() {
+                Token::Source => {
+                    self.advance();
+                    self.expect(&Token::Colon)?;
+                    source = Some(self.parse_expression()?);
+                    self.match_token(&Token::Comma);
+                }
+                Token::Sink => {
+                    self.advance();
+                    self.expect(&Token::Colon)?;
+                    sink = Some(self.parse_expression()?);
+                    self.match_token(&Token::Comma);
+                }
+                Token::Transform => {
+                    self.advance();
+                    self.expect(&Token::Colon)?;
+                    self.expect(&Token::LBrace)?;
+                    transform = self.parse_block_body()?;
+                    self.expect(&Token::RBrace)?;
+                    self.match_token(&Token::Comma);
+                }
+                Token::Ident(s) if s == "window" => {
+                    self.advance();
+                    self.expect(&Token::Colon)?;
+                    window = Some(self.parse_window_spec()?);
+                    self.match_token(&Token::Comma);
+                }
+                Token::Ident(s) if s == "watermark" => {
+                    self.advance();
+                    self.expect(&Token::Colon)?;
+                    if let Token::String(s) = self.peek().clone() {
+                        self.advance();
+                        watermark = Some(s);
+                    } else {
+                        watermark = Some(self.parse_duration_literal()?);
+                    }
+                    self.match_token(&Token::Comma);
+                }
+                _ => {
+                    return Err(TlError::Parser(ParserError {
+                        message: format!(
+                            "Unexpected token in stream block: `{}`",
+                            self.peek()
+                        ),
+                        span: self.peek_span(),
+                        hint: Some("Expected source, sink, transform, window, or watermark".into()),
+                    }));
+                }
+            }
+        }
+        self.expect(&Token::RBrace)?;
+
+        let source = source.ok_or_else(|| {
+            TlError::Parser(ParserError {
+                message: "Stream declaration requires a source".to_string(),
+                span: self.peek_span(),
+                hint: None,
+            })
+        })?;
+
+        Ok(Stmt::StreamDecl {
+            name,
+            source,
+            transform,
+            sink,
+            window,
+            watermark,
+        })
+    }
+
+    /// Parse `source NAME = connector TYPE { key: value, ... }`
+    fn parse_source_decl(&mut self) -> Result<Stmt, TlError> {
+        self.advance(); // consume 'source'
+        let name = self.expect_ident()?;
+        self.expect(&Token::Assign)?;
+        self.expect(&Token::Connector)?;
+        let connector_type = self.expect_ident()?;
+        self.expect(&Token::LBrace)?;
+        let mut config = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            let key = self.expect_ident()?;
+            self.expect(&Token::Colon)?;
+            let value = self.parse_expression()?;
+            self.match_token(&Token::Comma);
+            config.push((key, value));
+        }
+        self.expect(&Token::RBrace)?;
+        Ok(Stmt::SourceDecl {
+            name,
+            connector_type,
+            config,
+        })
+    }
+
+    /// Parse `sink NAME = connector TYPE { key: value, ... }`
+    fn parse_sink_decl(&mut self) -> Result<Stmt, TlError> {
+        self.advance(); // consume 'sink'
+        let name = self.expect_ident()?;
+        self.expect(&Token::Assign)?;
+        self.expect(&Token::Connector)?;
+        let connector_type = self.expect_ident()?;
+        self.expect(&Token::LBrace)?;
+        let mut config = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            let key = self.expect_ident()?;
+            self.expect(&Token::Colon)?;
+            let value = self.parse_expression()?;
+            self.match_token(&Token::Comma);
+            config.push((key, value));
+        }
+        self.expect(&Token::RBrace)?;
+        Ok(Stmt::SinkDecl {
+            name,
+            connector_type,
+            config,
+        })
+    }
+
+    /// Parse a window specification: `tumbling(DURATION)`, `sliding(DURATION, DURATION)`, `session(DURATION)`
+    fn parse_window_spec(&mut self) -> Result<WindowSpec, TlError> {
+        let kind = self.expect_ident()?;
+        self.expect(&Token::LParen)?;
+        match kind.as_str() {
+            "tumbling" => {
+                let dur = self.parse_duration_literal()?;
+                self.expect(&Token::RParen)?;
+                Ok(WindowSpec::Tumbling(dur))
+            }
+            "sliding" => {
+                let window = self.parse_duration_literal()?;
+                self.expect(&Token::Comma)?;
+                let slide = self.parse_duration_literal()?;
+                self.expect(&Token::RParen)?;
+                Ok(WindowSpec::Sliding(window, slide))
+            }
+            "session" => {
+                let gap = self.parse_duration_literal()?;
+                self.expect(&Token::RParen)?;
+                Ok(WindowSpec::Session(gap))
+            }
+            _ => Err(TlError::Parser(ParserError {
+                message: format!("Unknown window type: `{kind}`"),
+                span: self.peek_span(),
+                hint: Some("Expected tumbling, sliding, or session".into()),
+            })),
+        }
+    }
+
+    /// Parse a duration literal token (e.g., `5m`, `30s`, `100ms`) into a string like "5m"
+    fn parse_duration_literal(&mut self) -> Result<String, TlError> {
+        match self.peek().clone() {
+            Token::DurationMs(n) => {
+                self.advance();
+                Ok(format!("{n}ms"))
+            }
+            Token::DurationS(n) => {
+                self.advance();
+                Ok(format!("{n}s"))
+            }
+            Token::DurationM(n) => {
+                self.advance();
+                Ok(format!("{n}m"))
+            }
+            Token::DurationH(n) => {
+                self.advance();
+                Ok(format!("{n}h"))
+            }
+            Token::DurationD(n) => {
+                self.advance();
+                Ok(format!("{n}d"))
+            }
+            Token::String(s) => {
+                self.advance();
+                Ok(s)
+            }
+            _ => Err(TlError::Parser(ParserError {
+                message: format!("Expected duration literal, found `{}`", self.peek()),
+                span: self.peek_span(),
+                hint: Some("Expected a duration like 5m, 30s, 100ms, 1h, or 1d".into()),
+            })),
+        }
     }
 
     fn parse_let(&mut self) -> Result<Stmt, TlError> {
@@ -585,6 +895,11 @@ impl Parser {
                     args: vec![Expr::Map(pairs)],
                 })
             }
+            Token::Emit => {
+                // 'emit' is a keyword but used as a builtin function
+                self.advance();
+                Ok(Expr::Ident("emit".to_string()))
+            }
             Token::Underscore => {
                 self.advance();
                 Ok(Expr::Ident("_".to_string()))
@@ -837,6 +1152,154 @@ mod tests {
             assert_eq!(fields[2].name, "age");
         } else {
             panic!("Expected schema statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_pipeline_basic() {
+        let program = parse(r#"pipeline etl {
+            extract { let data = read_csv("input.csv") }
+            transform { let cleaned = data }
+            load { write_csv(cleaned, "output.csv") }
+        }"#).unwrap();
+        if let Stmt::Pipeline { name, extract, transform, load, .. } = &program.statements[0] {
+            assert_eq!(name, "etl");
+            assert_eq!(extract.len(), 1);
+            assert_eq!(transform.len(), 1);
+            assert_eq!(load.len(), 1);
+        } else {
+            panic!("Expected pipeline statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_pipeline_with_options() {
+        let program = parse(r#"pipeline daily_etl {
+            schedule: "0 0 * * *",
+            timeout: "30m",
+            retries: 3,
+            extract { let data = read_csv("input.csv") }
+            transform { let cleaned = data }
+            load { write_csv(cleaned, "output.csv") }
+            on_failure { println("Pipeline failed!") }
+            on_success { println("Pipeline succeeded!") }
+        }"#).unwrap();
+        if let Stmt::Pipeline { name, schedule, timeout, retries, on_failure, on_success, .. } = &program.statements[0] {
+            assert_eq!(name, "daily_etl");
+            assert_eq!(schedule.as_deref(), Some("0 0 * * *"));
+            assert_eq!(timeout.as_deref(), Some("30m"));
+            assert_eq!(*retries, Some(3));
+            assert!(on_failure.is_some());
+            assert!(on_success.is_some());
+        } else {
+            panic!("Expected pipeline statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_stream_decl() {
+        let program = parse(r#"stream events {
+            source: src,
+            window: tumbling(5m),
+            transform: { let x = 1 },
+            sink: out
+        }"#).unwrap();
+        if let Stmt::StreamDecl { name, source, window, sink, .. } = &program.statements[0] {
+            assert_eq!(name, "events");
+            assert!(matches!(source, Expr::Ident(s) if s == "src"));
+            assert!(matches!(window, Some(WindowSpec::Tumbling(d)) if d == "5m"));
+            assert!(matches!(sink, Some(Expr::Ident(s)) if s == "out"));
+        } else {
+            panic!("Expected stream declaration");
+        }
+    }
+
+    #[test]
+    fn test_parse_stream_sliding_window() {
+        let program = parse(r#"stream metrics {
+            source: input,
+            window: sliding(10m, 1m),
+            transform: { let x = 1 }
+        }"#).unwrap();
+        if let Stmt::StreamDecl { window, .. } = &program.statements[0] {
+            assert!(matches!(window, Some(WindowSpec::Sliding(w, s)) if w == "10m" && s == "1m"));
+        } else {
+            panic!("Expected stream declaration");
+        }
+    }
+
+    #[test]
+    fn test_parse_stream_session_window() {
+        let program = parse(r#"stream sessions {
+            source: clicks,
+            window: session(30m),
+            transform: { let x = 1 }
+        }"#).unwrap();
+        if let Stmt::StreamDecl { window, .. } = &program.statements[0] {
+            assert!(matches!(window, Some(WindowSpec::Session(d)) if d == "30m"));
+        } else {
+            panic!("Expected stream declaration");
+        }
+    }
+
+    #[test]
+    fn test_parse_source_decl() {
+        let program = parse(r#"source kafka_in = connector kafka {
+            topic: "events",
+            group: "my_group"
+        }"#).unwrap();
+        if let Stmt::SourceDecl { name, connector_type, config } = &program.statements[0] {
+            assert_eq!(name, "kafka_in");
+            assert_eq!(connector_type, "kafka");
+            assert_eq!(config.len(), 2);
+            assert_eq!(config[0].0, "topic");
+            assert_eq!(config[1].0, "group");
+        } else {
+            panic!("Expected source declaration");
+        }
+    }
+
+    #[test]
+    fn test_parse_sink_decl() {
+        let program = parse(r#"sink output = connector channel {
+            buffer: 100
+        }"#).unwrap();
+        if let Stmt::SinkDecl { name, connector_type, config } = &program.statements[0] {
+            assert_eq!(name, "output");
+            assert_eq!(connector_type, "channel");
+            assert_eq!(config.len(), 1);
+            assert_eq!(config[0].0, "buffer");
+        } else {
+            panic!("Expected sink declaration");
+        }
+    }
+
+    #[test]
+    fn test_parse_pipeline_with_duration_tokens() {
+        let program = parse(r#"pipeline fast {
+            timeout: 30s,
+            extract { let x = 1 }
+            transform { let y = x }
+            load { println(y) }
+        }"#).unwrap();
+        if let Stmt::Pipeline { timeout, .. } = &program.statements[0] {
+            assert_eq!(timeout.as_deref(), Some("30s"));
+        } else {
+            panic!("Expected pipeline statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_stream_with_watermark() {
+        let program = parse(r#"stream delayed {
+            source: input,
+            watermark: 10s,
+            transform: { let x = 1 }
+        }"#).unwrap();
+        if let Stmt::StreamDecl { watermark, .. } = &program.statements[0] {
+            assert_eq!(watermark.as_deref(), Some("10s"));
+        } else {
+            panic!("Expected stream declaration");
         }
     }
 

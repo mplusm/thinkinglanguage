@@ -263,6 +263,18 @@ impl Compiler {
             Stmt::Train { name, algorithm, config } => {
                 self.compile_train(name, algorithm, config)
             }
+            Stmt::Pipeline { name, extract, transform, load, schedule, timeout, retries, on_failure, on_success } => {
+                self.compile_pipeline(name, extract, transform, load, schedule, timeout, retries, on_failure, on_success)
+            }
+            Stmt::StreamDecl { name, source, transform: _, sink: _, window, watermark } => {
+                self.compile_stream_decl(name, source, window, watermark)
+            }
+            Stmt::SourceDecl { name, connector_type, config } => {
+                self.compile_connector_decl(name, connector_type, config)
+            }
+            Stmt::SinkDecl { name, connector_type, config } => {
+                self.compile_connector_decl(name, connector_type, config)
+            }
             Stmt::Break => {
                 let state = self.current();
                 let pos = state.current_pos();
@@ -754,6 +766,161 @@ impl Compiler {
         // Also set as global
         let name_idx = self.current().add_constant(Constant::String(Arc::from(name)));
         self.current().emit_abx(Op::SetGlobal, dest, name_idx, 0);
+
+        Ok(())
+    }
+
+    fn compile_pipeline(
+        &mut self,
+        name: &str,
+        extract: &[Stmt],
+        transform: &[Stmt],
+        load: &[Stmt],
+        schedule: &Option<String>,
+        timeout: &Option<String>,
+        retries: &Option<i64>,
+        _on_failure: &Option<Vec<Stmt>>,
+        on_success: &Option<Vec<Stmt>>,
+    ) -> Result<(), TlError> {
+        let dest = self.add_local(name.to_string());
+
+        // Store pipeline config as constants
+        let name_const = self.current().add_constant(Constant::String(Arc::from(name)));
+
+        // Compile extract/transform/load blocks as AstExprList of the statements
+        // For simplicity, store the blocks as AST and handle at runtime
+        let mut all_stmts = Vec::new();
+        all_stmts.extend(extract.to_vec());
+        all_stmts.extend(transform.to_vec());
+        all_stmts.extend(load.to_vec());
+
+        // Store config: schedule, timeout, retries as named args
+        let mut config_exprs: Vec<tl_ast::Expr> = Vec::new();
+
+        if let Some(s) = schedule {
+            config_exprs.push(tl_ast::Expr::NamedArg {
+                name: "schedule".to_string(),
+                value: Box::new(tl_ast::Expr::String(s.clone())),
+            });
+        }
+        if let Some(t) = timeout {
+            config_exprs.push(tl_ast::Expr::NamedArg {
+                name: "timeout".to_string(),
+                value: Box::new(tl_ast::Expr::String(t.clone())),
+            });
+        }
+        if let Some(r) = retries {
+            config_exprs.push(tl_ast::Expr::NamedArg {
+                name: "retries".to_string(),
+                value: Box::new(tl_ast::Expr::Int(*r)),
+            });
+        }
+        let config_idx = self.current().add_constant(Constant::AstExprList(config_exprs));
+
+        // Compile blocks inline for VM execution (shared scope)
+        for stmt in extract {
+            self.compile_stmt(stmt)?;
+        }
+        for stmt in transform {
+            self.compile_stmt(stmt)?;
+        }
+        for stmt in load {
+            self.compile_stmt(stmt)?;
+        }
+
+        // Execute on_success block if present
+        if let Some(success_block) = on_success {
+            for stmt in success_block {
+                self.compile_stmt(stmt)?;
+            }
+        }
+
+        // Emit PipelineExec to store the pipeline def
+        self.current().emit_abc(Op::PipelineExec, dest, name_const as u8, config_idx as u8, 0);
+
+        // Set as global
+        let gname = self.current().add_constant(Constant::String(Arc::from(name)));
+        self.current().emit_abx(Op::SetGlobal, dest, gname, 0);
+
+        Ok(())
+    }
+
+    fn compile_stream_decl(
+        &mut self,
+        name: &str,
+        source: &Expr,
+        window: &Option<tl_ast::WindowSpec>,
+        watermark: &Option<String>,
+    ) -> Result<(), TlError> {
+        let dest = self.add_local(name.to_string());
+
+        // Compile source expression
+        let src_reg = self.current().alloc_register();
+        self.compile_expr(source, src_reg)?;
+
+        // Store stream config as constants
+        let mut config_exprs: Vec<tl_ast::Expr> = Vec::new();
+        config_exprs.push(tl_ast::Expr::NamedArg {
+            name: "name".to_string(),
+            value: Box::new(tl_ast::Expr::String(name.to_string())),
+        });
+
+        if let Some(w) = window {
+            let window_str = match w {
+                tl_ast::WindowSpec::Tumbling(d) => format!("tumbling:{d}"),
+                tl_ast::WindowSpec::Sliding(w, s) => format!("sliding:{w}:{s}"),
+                tl_ast::WindowSpec::Session(g) => format!("session:{g}"),
+            };
+            config_exprs.push(tl_ast::Expr::NamedArg {
+                name: "window".to_string(),
+                value: Box::new(tl_ast::Expr::String(window_str)),
+            });
+        }
+        if let Some(wm) = watermark {
+            config_exprs.push(tl_ast::Expr::NamedArg {
+                name: "watermark".to_string(),
+                value: Box::new(tl_ast::Expr::String(wm.clone())),
+            });
+        }
+        let config_idx = self.current().add_constant(Constant::AstExprList(config_exprs));
+
+        // Emit StreamExec instruction
+        self.current().emit_abc(Op::StreamExec, dest, config_idx as u8, src_reg, 0);
+        self.current().free_register(); // free src_reg
+
+        // Set as global
+        let gname = self.current().add_constant(Constant::String(Arc::from(name)));
+        self.current().emit_abx(Op::SetGlobal, dest, gname, 0);
+
+        Ok(())
+    }
+
+    fn compile_connector_decl(
+        &mut self,
+        name: &str,
+        connector_type: &str,
+        config: &[(String, Expr)],
+    ) -> Result<(), TlError> {
+        let dest = self.add_local(name.to_string());
+
+        // Store connector type as constant
+        let type_idx = self.current().add_constant(Constant::String(Arc::from(connector_type)));
+
+        // Store config as AstExprList
+        let config_exprs: Vec<tl_ast::Expr> = config.iter().map(|(k, v)| {
+            tl_ast::Expr::NamedArg {
+                name: k.clone(),
+                value: Box::new(v.clone()),
+            }
+        }).collect();
+        let config_idx = self.current().add_constant(Constant::AstExprList(config_exprs));
+
+        // Emit ConnectorDecl instruction
+        self.current().emit_abc(Op::ConnectorDecl, dest, type_idx as u8, config_idx as u8, 0);
+
+        // Set as global
+        let gname = self.current().add_constant(Constant::String(Arc::from(name)));
+        self.current().emit_abx(Op::SetGlobal, dest, gname, 0);
 
         Ok(())
     }

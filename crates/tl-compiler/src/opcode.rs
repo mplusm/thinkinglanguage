@@ -136,6 +136,13 @@ pub enum Op {
 
     /// Train: A = dest for model, B = algorithm constant, C = config constant
     Train = 46,
+
+    /// PipelineExec: A = dest for result, B = pipeline blocks constant, C = config constant
+    PipelineExec = 47,
+    /// StreamExec: A = dest, B = stream def constant, C = source register
+    StreamExec = 48,
+    /// ConnectorDecl: A = dest, B = connector type constant, C = config constant
+    ConnectorDecl = 49,
 }
 
 /// Encode an ABC-format instruction: [op:8][A:8][B:8][C:8]

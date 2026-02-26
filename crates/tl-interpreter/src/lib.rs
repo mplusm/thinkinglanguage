@@ -15,6 +15,7 @@ use tl_data::{
     ArrowDataType, ArrowField, ArrowSchema,
     DataFrame, DataEngine, JoinType, col,
 };
+use tl_stream::{ConnectorConfig, PipelineDef, PipelineRunner, PipelineStatus, StreamDef};
 
 /// Wrapper around DataFusion DataFrame that implements Debug + Clone.
 #[derive(Clone)]
@@ -66,6 +67,12 @@ pub enum Value {
     Tensor(tl_ai::TlTensor),
     /// A trained model
     Model(tl_ai::TlModel),
+    /// A connector configuration
+    Connector(ConnectorConfig),
+    /// A pipeline definition
+    Pipeline(PipelineDef),
+    /// A stream definition
+    Stream(StreamDef),
 }
 
 impl fmt::Display for Value {
@@ -99,6 +106,9 @@ impl fmt::Display for Value {
             Value::Schema(s) => write!(f, "<schema {}>", s.name),
             Value::Tensor(t) => write!(f, "{t}"),
             Value::Model(m) => write!(f, "{m}"),
+            Value::Connector(c) => write!(f, "{c}"),
+            Value::Pipeline(p) => write!(f, "{p}"),
+            Value::Stream(s) => write!(f, "{s}"),
         }
     }
 }
@@ -131,6 +141,9 @@ impl Value {
             Value::Schema(_) => "schema",
             Value::Tensor(_) => "tensor",
             Value::Model(_) => "model",
+            Value::Connector(_) => "connector",
+            Value::Pipeline(_) => "pipeline",
+            Value::Stream(_) => "stream",
         }
     }
 }
@@ -201,6 +214,12 @@ impl Environment {
         global.insert("model_register".to_string(), Value::Builtin("model_register".to_string()));
         global.insert("model_list".to_string(), Value::Builtin("model_list".to_string()));
         global.insert("model_get".to_string(), Value::Builtin("model_get".to_string()));
+        // Streaming builtins
+        global.insert("alert_slack".to_string(), Value::Builtin("alert_slack".to_string()));
+        global.insert("alert_webhook".to_string(), Value::Builtin("alert_webhook".to_string()));
+        global.insert("emit".to_string(), Value::Builtin("emit".to_string()));
+        global.insert("lineage".to_string(), Value::Builtin("lineage".to_string()));
+        global.insert("run_pipeline".to_string(), Value::Builtin("run_pipeline".to_string()));
 
         Self {
             scopes: vec![global],
@@ -432,6 +451,18 @@ impl Interpreter {
             }
             Stmt::Train { name, algorithm, config } => {
                 self.exec_train(name, algorithm, config)
+            }
+            Stmt::Pipeline { name, extract, transform, load, schedule, timeout, retries, on_failure, on_success } => {
+                self.exec_pipeline(name, extract, transform, load, schedule, timeout, retries, on_failure, on_success)
+            }
+            Stmt::StreamDecl { name, source, transform, sink, window, watermark } => {
+                self.exec_stream_decl(name, source, transform, sink, window, watermark)
+            }
+            Stmt::SourceDecl { name, connector_type, config } => {
+                self.exec_source_decl(name, connector_type, config)
+            }
+            Stmt::SinkDecl { name, connector_type, config } => {
+                self.exec_sink_decl(name, connector_type, config)
             }
             Stmt::Break => Ok(Signal::Break),
             Stmt::Continue => Ok(Signal::Continue),
@@ -1200,6 +1231,51 @@ impl Interpreter {
             "model_get" => self.builtin_model_get(args),
             "embed" | _ if name == "embed" => {
                 Err(runtime_err("embed() requires an API key. Set TL_OPENAI_KEY env var.".to_string()))
+            }
+            // Streaming builtins
+            "alert_slack" => {
+                if args.len() != 2 {
+                    return Err(runtime_err("alert_slack(url, message) requires 2 args".to_string()));
+                }
+                let url = match &args[0] { Value::String(s) => s.clone(), _ => return Err(runtime_err("alert_slack: url must be a string".to_string())) };
+                let msg = match &args[1] { Value::String(s) => s.clone(), _ => format!("{}", args[1]) };
+                tl_stream::send_alert(&tl_stream::AlertTarget::Slack(url), &msg)
+                    .map_err(|e| runtime_err(e))?;
+                Ok(Value::None)
+            }
+            "alert_webhook" => {
+                if args.len() != 2 {
+                    return Err(runtime_err("alert_webhook(url, message) requires 2 args".to_string()));
+                }
+                let url = match &args[0] { Value::String(s) => s.clone(), _ => return Err(runtime_err("alert_webhook: url must be a string".to_string())) };
+                let msg = match &args[1] { Value::String(s) => s.clone(), _ => format!("{}", args[1]) };
+                tl_stream::send_alert(&tl_stream::AlertTarget::Webhook(url), &msg)
+                    .map_err(|e| runtime_err(e))?;
+                Ok(Value::None)
+            }
+            "emit" => {
+                // emit(value) — output a value in a stream context
+                if args.is_empty() {
+                    return Err(runtime_err("emit() requires at least 1 argument".to_string()));
+                }
+                let val = &args[0];
+                self.output.push(format!("emit: {val}"));
+                Ok(val.clone())
+            }
+            "lineage" => {
+                // lineage() — create a new lineage tracker
+                // For now, return a string representation
+                Ok(Value::String("lineage_tracker".to_string()))
+            }
+            "run_pipeline" => {
+                if args.is_empty() {
+                    return Err(runtime_err("run_pipeline() requires a pipeline name".to_string()));
+                }
+                if let Value::Pipeline(ref def) = args[0] {
+                    Ok(Value::String(format!("Pipeline '{}' triggered", def.name)))
+                } else {
+                    Err(runtime_err("run_pipeline: argument must be a pipeline".to_string()))
+                }
             }
             _ => Err(runtime_err(format!("Unknown builtin: {name}"))),
         }
@@ -2110,6 +2186,229 @@ impl Interpreter {
             return Err(runtime_err("Column must be numeric (int32, int64, float32, float64)".to_string()));
         }
         Ok(())
+    }
+}
+
+// ── Streaming & Pipeline execution ──────────────────────────
+
+impl Interpreter {
+    fn exec_pipeline(
+        &mut self,
+        name: &str,
+        extract: &[Stmt],
+        transform: &[Stmt],
+        load: &[Stmt],
+        schedule: &Option<String>,
+        timeout: &Option<String>,
+        retries: &Option<i64>,
+        on_failure: &Option<Vec<Stmt>>,
+        on_success: &Option<Vec<Stmt>>,
+    ) -> Result<Signal, TlError> {
+        let timeout_ms = timeout
+            .as_ref()
+            .and_then(|t| tl_stream::parse_duration(t).ok());
+
+        let def = PipelineDef {
+            name: name.to_string(),
+            schedule: schedule.clone(),
+            timeout_ms,
+            retries: retries.unwrap_or(0) as u32,
+        };
+
+        let runner = PipelineRunner::new(def.clone());
+
+        // Clone what we need for the closure
+        let extract = extract.to_vec();
+        let transform = transform.to_vec();
+        let load = load.to_vec();
+
+        // Run the pipeline blocks with shared scope and retry logic
+        let max_attempts = def.retries + 1;
+        let mut last_error = String::new();
+        let mut succeeded = false;
+
+        for _attempt in 0..max_attempts {
+            // Push a shared scope for all pipeline blocks
+            self.env.push_scope();
+            let mut attempt_ok = true;
+
+            // Execute extract block
+            for stmt in &extract {
+                match self.exec_stmt(stmt) {
+                    Ok(Signal::Return(v)) => {
+                        self.env.pop_scope();
+                        return Ok(Signal::Return(v));
+                    }
+                    Err(e) => {
+                        last_error = format!("{e}");
+                        attempt_ok = false;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+
+            // Execute transform block
+            if attempt_ok {
+                for stmt in &transform {
+                    match self.exec_stmt(stmt) {
+                        Ok(Signal::Return(v)) => {
+                            self.env.pop_scope();
+                            return Ok(Signal::Return(v));
+                        }
+                        Err(e) => {
+                            last_error = format!("{e}");
+                            attempt_ok = false;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            // Execute load block
+            if attempt_ok {
+                for stmt in &load {
+                    match self.exec_stmt(stmt) {
+                        Ok(Signal::Return(v)) => {
+                            self.env.pop_scope();
+                            return Ok(Signal::Return(v));
+                        }
+                        Err(e) => {
+                            last_error = format!("{e}");
+                            attempt_ok = false;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            self.env.pop_scope();
+
+            if attempt_ok {
+                succeeded = true;
+                break;
+            }
+        }
+
+        if succeeded {
+            if let Some(success_block) = on_success {
+                self.exec_block(success_block)?;
+            }
+            // Store pipeline result
+            let _result = tl_stream::PipelineResult {
+                name: name.to_string(),
+                status: PipelineStatus::Success,
+                started_at: String::new(),
+                ended_at: String::new(),
+                rows_processed: 0,
+                attempts: 1,
+            };
+            self.output.push(format!("Pipeline '{}': success", name));
+            let _ = runner; // use the runner to suppress warnings
+        } else {
+            if let Some(failure_block) = on_failure {
+                self.exec_block(failure_block)?;
+            }
+            self.output.push(format!("Pipeline '{}': failed — {}", name, last_error));
+        }
+
+        // Store pipeline def in env
+        self.env.set(name.to_string(), Value::Pipeline(def));
+        Ok(Signal::None)
+    }
+
+    fn exec_stream_decl(
+        &mut self,
+        name: &str,
+        source: &Expr,
+        _transform: &[Stmt],
+        sink: &Option<Expr>,
+        window: &Option<tl_ast::WindowSpec>,
+        watermark: &Option<String>,
+    ) -> Result<Signal, TlError> {
+        let _source_val = self.eval_expr(source)?;
+
+        let window_type = window.as_ref().map(|w| match w {
+            tl_ast::WindowSpec::Tumbling(dur) => {
+                let ms = tl_stream::parse_duration(dur).unwrap_or(0);
+                tl_stream::window::WindowType::Tumbling { duration_ms: ms }
+            }
+            tl_ast::WindowSpec::Sliding(win, slide) => {
+                let wms = tl_stream::parse_duration(win).unwrap_or(0);
+                let sms = tl_stream::parse_duration(slide).unwrap_or(0);
+                tl_stream::window::WindowType::Sliding { window_ms: wms, slide_ms: sms }
+            }
+            tl_ast::WindowSpec::Session(gap) => {
+                let ms = tl_stream::parse_duration(gap).unwrap_or(0);
+                tl_stream::window::WindowType::Session { gap_ms: ms }
+            }
+        });
+
+        let watermark_ms = watermark
+            .as_ref()
+            .and_then(|w| tl_stream::parse_duration(w).ok());
+
+        let def = StreamDef {
+            name: name.to_string(),
+            window: window_type,
+            watermark_ms,
+        };
+
+        // Evaluate sink if provided
+        if let Some(_sink_expr) = sink {
+            // sink is evaluated but not used until stream is started
+        }
+
+        // Store stream definition
+        self.env.set(name.to_string(), Value::Stream(def));
+        self.output.push(format!("Stream '{}' declared", name));
+        Ok(Signal::None)
+    }
+
+    fn exec_source_decl(
+        &mut self,
+        name: &str,
+        connector_type: &str,
+        config: &[(String, Expr)],
+    ) -> Result<Signal, TlError> {
+        let mut properties = std::collections::HashMap::new();
+        for (key, expr) in config {
+            let val = self.eval_expr(expr)?;
+            properties.insert(key.clone(), format!("{val}"));
+        }
+
+        let config = ConnectorConfig {
+            name: name.to_string(),
+            connector_type: connector_type.to_string(),
+            properties,
+        };
+
+        self.env.set(name.to_string(), Value::Connector(config));
+        Ok(Signal::None)
+    }
+
+    fn exec_sink_decl(
+        &mut self,
+        name: &str,
+        connector_type: &str,
+        config: &[(String, Expr)],
+    ) -> Result<Signal, TlError> {
+        let mut properties = std::collections::HashMap::new();
+        for (key, expr) in config {
+            let val = self.eval_expr(expr)?;
+            properties.insert(key.clone(), format!("{val}"));
+        }
+
+        let config = ConnectorConfig {
+            name: name.to_string(),
+            connector_type: connector_type.to_string(),
+            properties,
+        };
+
+        self.env.set(name.to_string(), Value::Connector(config));
+        Ok(Signal::None)
     }
 }
 

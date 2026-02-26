@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use tl_data::{ArrowSchema, DataFrame};
 use tl_ai::{TlTensor, TlModel};
+use tl_stream::{ConnectorConfig, PipelineDef, StreamDef, PipelineResult};
 
 use crate::chunk::{BuiltinId, Prototype};
 
@@ -30,6 +31,14 @@ pub enum VmValue {
     Tensor(Arc<TlTensor>),
     /// A trained model
     Model(Arc<TlModel>),
+    /// A connector configuration
+    Connector(Arc<ConnectorConfig>),
+    /// A pipeline result
+    PipelineResult(Arc<PipelineResult>),
+    /// A pipeline definition
+    PipelineDef(Arc<PipelineDef>),
+    /// A stream definition
+    StreamDef(Arc<StreamDef>),
 }
 
 /// A closure: compiled function prototype + captured upvalues.
@@ -94,6 +103,10 @@ impl VmValue {
             VmValue::Schema(_) => "schema",
             VmValue::Tensor(_) => "tensor",
             VmValue::Model(_) => "model",
+            VmValue::Connector(_) => "connector",
+            VmValue::PipelineResult(_) => "pipeline_result",
+            VmValue::PipelineDef(_) => "pipeline",
+            VmValue::StreamDef(_) => "stream",
         }
     }
 }
@@ -113,6 +126,10 @@ impl fmt::Debug for VmValue {
             VmValue::Schema(s) => write!(f, "<schema {}>", s.name),
             VmValue::Tensor(t) => write!(f, "Tensor({t:?})"),
             VmValue::Model(m) => write!(f, "Model({m:?})"),
+            VmValue::Connector(c) => write!(f, "<connector {}>", c.name),
+            VmValue::PipelineResult(r) => write!(f, "{r:?}"),
+            VmValue::PipelineDef(p) => write!(f, "<pipeline {}>", p.name),
+            VmValue::StreamDef(s) => write!(f, "<stream {}>", s.name),
         }
     }
 }
@@ -147,6 +164,10 @@ impl fmt::Display for VmValue {
             VmValue::Schema(s) => write!(f, "<schema {}>", s.name),
             VmValue::Tensor(t) => write!(f, "{t}"),
             VmValue::Model(m) => write!(f, "{m}"),
+            VmValue::Connector(c) => write!(f, "{c}"),
+            VmValue::PipelineResult(r) => write!(f, "{r}"),
+            VmValue::PipelineDef(p) => write!(f, "{p}"),
+            VmValue::StreamDef(s) => write!(f, "{s}"),
         }
     }
 }

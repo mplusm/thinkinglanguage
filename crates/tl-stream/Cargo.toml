@@ -1,0 +1,19 @@
+[package]
+name = "tl-stream"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Streaming and pipeline engine for ThinkingLanguage (Phase 4)"
+
+[dependencies]
+tl-ast = { path = "../tl-ast" }
+tl-errors = { path = "../tl-errors" }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"] }
+rdkafka = { version = "0.37", features = ["cmake-build"], optional = true }
+
+[features]
+kafka = ["dep:rdkafka"]

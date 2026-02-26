@@ -15,6 +15,8 @@ use tl_interpreter::Interpreter;
 use tl_compiler::{compile, Vm, VmValue};
 use tl_parser::parse;
 
+mod deploy;
+
 #[derive(Parser)]
 #[command(name = "tl", version, about = "ThinkingLanguage — Data Engineering & AI")]
 struct Cli {
@@ -43,6 +45,25 @@ enum Commands {
         #[command(subcommand)]
         action: ModelsAction,
     },
+    /// Generate deployment artifacts (Dockerfile, K8s manifests)
+    Deploy {
+        /// Path to the .tl pipeline file
+        file: String,
+        /// Target: "docker" or "k8s"
+        #[arg(long, default_value = "docker")]
+        target: String,
+        /// Output directory
+        #[arg(long, default_value = "./deploy")]
+        output: String,
+    },
+    /// Show data lineage for a pipeline
+    Lineage {
+        /// Path to the .tl file
+        file: String,
+        /// Output format: "dot", "json", or "text"
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -68,6 +89,8 @@ fn main() {
         Some(Commands::Run { file, backend }) => run_file(&file, &backend),
         Some(Commands::Shell { backend }) => run_repl(&backend),
         Some(Commands::Models { action }) => run_models(action),
+        Some(Commands::Deploy { file, target, output }) => run_deploy(&file, &target, &output),
+        Some(Commands::Lineage { file, format }) => run_lineage(&file, &format),
         None => run_repl("vm"), // Default to REPL with VM backend
     }
 }
@@ -243,6 +266,78 @@ fn run_models(action: ModelsAction) {
             }
         }
     }
+}
+
+fn run_deploy(file: &str, target: &str, output: &str) {
+    if !std::path::Path::new(file).exists() {
+        eprintln!("File not found: {file}");
+        process::exit(1);
+    }
+    if let Err(e) = deploy::write_deploy(file, target, output) {
+        eprintln!("Deploy error: {e}");
+        process::exit(1);
+    }
+}
+
+fn run_lineage(file: &str, format: &str) {
+    let source = match fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading file '{file}': {e}");
+            process::exit(1);
+        }
+    };
+
+    let program = match parse(&source) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Parse error: {e}");
+            process::exit(1);
+        }
+    };
+
+    // Build lineage by scanning pipeline statements
+    let mut tracker = tl_stream::LineageTracker::new();
+    for (i, stmt) in program.statements.iter().enumerate() {
+        if let tl_ast::Stmt::Pipeline { name, .. } = stmt {
+            let extract_id = tracker.record(
+                &format!("{name}/extract"),
+                "Read source data",
+                None,
+                vec![],
+            );
+            let transform_id = tracker.record(
+                &format!("{name}/transform"),
+                "Transform data",
+                None,
+                vec![extract_id],
+            );
+            tracker.record(
+                &format!("{name}/load"),
+                "Write to sink",
+                None,
+                vec![transform_id],
+            );
+        } else {
+            tracker.record(
+                &format!("stmt_{i}"),
+                "Execute statement",
+                None,
+                vec![],
+            );
+        }
+    }
+
+    let output = match format {
+        "dot" => tracker.to_dot(),
+        "json" => tracker.to_json(),
+        "text" => tracker.to_text(),
+        other => {
+            eprintln!("Unknown format: '{other}'. Use 'dot', 'json', or 'text'.");
+            process::exit(1);
+        }
+    };
+    println!("{output}");
 }
 
 fn run_repl_interp(editor: &mut DefaultEditor) {

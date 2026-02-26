@@ -114,6 +114,12 @@ pub enum BuiltinId {
     ModelRegister = 42,
     ModelList = 43,
     ModelGet = 44,
+    // Streaming builtins
+    AlertSlack = 45,
+    AlertWebhook = 46,
+    Emit = 47,
+    Lineage = 48,
+    RunPipeline = 49,
 }
 
 impl BuiltinId {
@@ -164,6 +170,11 @@ impl BuiltinId {
             "model_register" => Some(BuiltinId::ModelRegister),
             "model_list" => Some(BuiltinId::ModelList),
             "model_get" => Some(BuiltinId::ModelGet),
+            "alert_slack" => Some(BuiltinId::AlertSlack),
+            "alert_webhook" => Some(BuiltinId::AlertWebhook),
+            "emit" => Some(BuiltinId::Emit),
+            "lineage" => Some(BuiltinId::Lineage),
+            "run_pipeline" => Some(BuiltinId::RunPipeline),
             _ => None,
         }
     }
@@ -215,6 +226,11 @@ impl BuiltinId {
             BuiltinId::ModelRegister => "model_register",
             BuiltinId::ModelList => "model_list",
             BuiltinId::ModelGet => "model_get",
+            BuiltinId::AlertSlack => "alert_slack",
+            BuiltinId::AlertWebhook => "alert_webhook",
+            BuiltinId::Emit => "emit",
+            BuiltinId::Lineage => "lineage",
+            BuiltinId::RunPipeline => "run_pipeline",
         }
     }
 }

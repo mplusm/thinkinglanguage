@@ -635,6 +635,18 @@ impl Vm {
                     let result = self.handle_train(frame_idx, b, c)?;
                     self.stack[base + a as usize] = result;
                 }
+                Op::PipelineExec => {
+                    let result = self.handle_pipeline_exec(frame_idx, b, c)?;
+                    self.stack[base + a as usize] = result;
+                }
+                Op::StreamExec => {
+                    let result = self.handle_stream_exec(frame_idx, b)?;
+                    self.stack[base + a as usize] = result;
+                }
+                Op::ConnectorDecl => {
+                    let result = self.handle_connector_decl(frame_idx, b, c)?;
+                    self.stack[base + a as usize] = result;
+                }
             }
         }
     }
@@ -1489,6 +1501,39 @@ impl Vm {
                     Err(_) => Ok(VmValue::None),
                 }
             }
+            // Streaming builtins
+            BuiltinId::AlertSlack => {
+                if args.len() < 2 { return Err(runtime_err("alert_slack(url, msg) requires 2 args")); }
+                let url = match &args[0] { VmValue::String(s) => s.to_string(), _ => return Err(runtime_err("alert_slack: url must be a string")) };
+                let msg = format!("{}", args[1]);
+                tl_stream::send_alert(&tl_stream::AlertTarget::Slack(url), &msg)
+                    .map_err(|e| runtime_err(&e))?;
+                Ok(VmValue::None)
+            }
+            BuiltinId::AlertWebhook => {
+                if args.len() < 2 { return Err(runtime_err("alert_webhook(url, msg) requires 2 args")); }
+                let url = match &args[0] { VmValue::String(s) => s.to_string(), _ => return Err(runtime_err("alert_webhook: url must be a string")) };
+                let msg = format!("{}", args[1]);
+                tl_stream::send_alert(&tl_stream::AlertTarget::Webhook(url), &msg)
+                    .map_err(|e| runtime_err(&e))?;
+                Ok(VmValue::None)
+            }
+            BuiltinId::Emit => {
+                if args.is_empty() { return Err(runtime_err("emit() requires at least 1 argument")); }
+                self.output.push(format!("emit: {}", args[0]));
+                Ok(args[0].clone())
+            }
+            BuiltinId::Lineage => {
+                Ok(VmValue::String(Arc::from("lineage_tracker")))
+            }
+            BuiltinId::RunPipeline => {
+                if args.is_empty() { return Err(runtime_err("run_pipeline() requires a pipeline")); }
+                if let VmValue::PipelineDef(ref def) = args[0] {
+                    Ok(VmValue::String(Arc::from(format!("Pipeline '{}' triggered", def.name).as_str())))
+                } else {
+                    Err(runtime_err("run_pipeline: argument must be a pipeline"))
+                }
+            }
         }
     }
 
@@ -1657,6 +1702,164 @@ impl Vm {
             return Err(runtime_err("Column must be numeric (int32, int64, float32, float64)"));
         }
         Ok(())
+    }
+
+    fn handle_pipeline_exec(&mut self, frame_idx: usize, name_const: u8, config_const: u8) -> Result<VmValue, TlError> {
+        let frame = &self.frames[frame_idx];
+        let name = match &frame.prototype.constants[name_const as usize] {
+            Constant::String(s) => s.to_string(),
+            _ => return Err(runtime_err("Expected string constant for pipeline name")),
+        };
+
+        let mut schedule = None;
+        let mut timeout_ms = None;
+        let mut retries = 0u32;
+
+        if let Constant::AstExprList(args) = &frame.prototype.constants[config_const as usize] {
+            for arg in args {
+                if let AstExpr::NamedArg { name: key, value } = arg {
+                    match key.as_str() {
+                        "schedule" => {
+                            if let AstExpr::String(s) = value.as_ref() {
+                                schedule = Some(s.clone());
+                            }
+                        }
+                        "timeout" => {
+                            if let AstExpr::String(s) = value.as_ref() {
+                                timeout_ms = tl_stream::parse_duration(s).ok();
+                            }
+                        }
+                        "retries" => {
+                            if let AstExpr::Int(n) = value.as_ref() {
+                                retries = *n as u32;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        let def = tl_stream::PipelineDef {
+            name,
+            schedule,
+            timeout_ms,
+            retries,
+        };
+
+        self.output.push(format!("Pipeline '{}': success", def.name));
+        Ok(VmValue::PipelineDef(Arc::new(def)))
+    }
+
+    fn handle_stream_exec(&mut self, frame_idx: usize, config_const: u8) -> Result<VmValue, TlError> {
+        let frame = &self.frames[frame_idx];
+        let config_args = match &frame.prototype.constants[config_const as usize] {
+            Constant::AstExprList(args) => args.clone(),
+            _ => return Err(runtime_err("Expected AST expr list for stream config")),
+        };
+
+        let mut name = String::new();
+        let mut window = None;
+        let mut watermark_ms = None;
+
+        for arg in &config_args {
+            if let AstExpr::NamedArg { name: key, value } = arg {
+                match key.as_str() {
+                    "name" => {
+                        if let AstExpr::String(s) = value.as_ref() {
+                            name = s.clone();
+                        }
+                    }
+                    "window" => {
+                        if let AstExpr::String(s) = value.as_ref() {
+                            window = Self::parse_window_type(s);
+                        }
+                    }
+                    "watermark" => {
+                        if let AstExpr::String(s) = value.as_ref() {
+                            watermark_ms = tl_stream::parse_duration(s).ok();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let def = tl_stream::StreamDef {
+            name: name.clone(),
+            window,
+            watermark_ms,
+        };
+
+        self.output.push(format!("Stream '{}' declared", name));
+        Ok(VmValue::StreamDef(Arc::new(def)))
+    }
+
+    fn parse_window_type(s: &str) -> Option<tl_stream::window::WindowType> {
+        if let Some(dur) = s.strip_prefix("tumbling:") {
+            let ms = tl_stream::parse_duration(dur).ok()?;
+            Some(tl_stream::window::WindowType::Tumbling { duration_ms: ms })
+        } else if let Some(rest) = s.strip_prefix("sliding:") {
+            let parts: Vec<&str> = rest.splitn(2, ':').collect();
+            if parts.len() == 2 {
+                let wms = tl_stream::parse_duration(parts[0]).ok()?;
+                let sms = tl_stream::parse_duration(parts[1]).ok()?;
+                Some(tl_stream::window::WindowType::Sliding { window_ms: wms, slide_ms: sms })
+            } else {
+                None
+            }
+        } else if let Some(dur) = s.strip_prefix("session:") {
+            let ms = tl_stream::parse_duration(dur).ok()?;
+            Some(tl_stream::window::WindowType::Session { gap_ms: ms })
+        } else {
+            None
+        }
+    }
+
+    fn handle_connector_decl(&mut self, frame_idx: usize, type_const: u8, config_const: u8) -> Result<VmValue, TlError> {
+        let frame = &self.frames[frame_idx];
+        let connector_type = match &frame.prototype.constants[type_const as usize] {
+            Constant::String(s) => s.to_string(),
+            _ => return Err(runtime_err("Expected string constant for connector type")),
+        };
+
+        let config_args = match &frame.prototype.constants[config_const as usize] {
+            Constant::AstExprList(args) => args.clone(),
+            _ => return Err(runtime_err("Expected AST expr list for connector config")),
+        };
+
+        let mut properties = std::collections::HashMap::new();
+        for arg in &config_args {
+            if let AstExpr::NamedArg { name: key, value } = arg {
+                let val_str = match value.as_ref() {
+                    AstExpr::String(s) => s.clone(),
+                    AstExpr::Int(n) => n.to_string(),
+                    AstExpr::Float(f) => f.to_string(),
+                    AstExpr::Bool(b) => b.to_string(),
+                    other => {
+                        // Try to resolve Ident from globals
+                        if let AstExpr::Ident(ident) = other {
+                            if let Some(val) = self.globals.get(ident.as_str()) {
+                                format!("{val}")
+                            } else {
+                                ident.clone()
+                            }
+                        } else {
+                            format!("{other:?}")
+                        }
+                    }
+                };
+                properties.insert(key.clone(), val_str);
+            }
+        }
+
+        let config = tl_stream::ConnectorConfig {
+            name: String::new(), // Will be set by SetGlobal
+            connector_type,
+            properties,
+        };
+
+        Ok(VmValue::Connector(Arc::new(config)))
     }
 
     /// Call a VmValue function/closure with args.

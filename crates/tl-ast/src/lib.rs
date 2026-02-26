@@ -70,11 +70,59 @@ pub enum Stmt {
         config: Vec<(String, Expr)>,
     },
 
+    /// `pipeline name { extract { ... } transform { ... } load { ... } }`
+    Pipeline {
+        name: String,
+        extract: Vec<Stmt>,
+        transform: Vec<Stmt>,
+        load: Vec<Stmt>,
+        schedule: Option<String>,
+        timeout: Option<String>,
+        retries: Option<i64>,
+        on_failure: Option<Vec<Stmt>>,
+        on_success: Option<Vec<Stmt>>,
+    },
+
+    /// `stream name { source: expr, window: spec, transform: { ... }, sink: expr }`
+    StreamDecl {
+        name: String,
+        source: Expr,
+        transform: Vec<Stmt>,
+        sink: Option<Expr>,
+        window: Option<WindowSpec>,
+        watermark: Option<String>,
+    },
+
+    /// `source name = connector TYPE { key: value, ... }`
+    SourceDecl {
+        name: String,
+        connector_type: String,
+        config: Vec<(String, Expr)>,
+    },
+
+    /// `sink name = connector TYPE { key: value, ... }`
+    SinkDecl {
+        name: String,
+        connector_type: String,
+        config: Vec<(String, Expr)>,
+    },
+
     /// `break`
     Break,
 
     /// `continue`
     Continue,
+}
+
+/// Window specification for stream processing
+#[derive(Debug, Clone)]
+pub enum WindowSpec {
+    /// `tumbling(duration)` — fixed-size, non-overlapping windows
+    Tumbling(String),
+    /// `sliding(window_size, slide_interval)` — overlapping windows
+    Sliding(String, String),
+    /// `session(gap_duration)` — session windows based on activity gap
+    Session(String),
 }
 
 /// Expressions

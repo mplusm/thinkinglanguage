@@ -30,15 +30,15 @@ pub enum Token {
     String(String),
 
     /// Duration literal: 90d, 5h, 30m, 15s, 100ms
-    #[regex(r"[0-9]+ms", |lex| { let s = lex.slice(); Some(s[..s.len()-2].to_string()) })]
+    #[regex(r"[0-9]+ms", |lex| { let s = lex.slice(); Some(s[..s.len()-2].to_string()) }, priority = 5)]
     DurationMs(String),
-    #[regex(r"[0-9]+[s]", |lex| { let s = lex.slice(); Some(s[..s.len()-1].to_string()) }, priority = 3)]
+    #[regex(r"[0-9]+s", |lex| { let s = lex.slice(); Some(s[..s.len()-1].to_string()) }, priority = 4)]
     DurationS(String),
-    #[regex(r"[0-9]+m[^s]", |lex| { let s = lex.slice(); Some(s[..s.len()-2].to_string()) }, priority = 2)]
+    #[regex(r"[0-9]+m", |lex| { let s = lex.slice(); Some(s[..s.len()-1].to_string()) }, priority = 3)]
     DurationM(String),
-    #[regex(r"[0-9]+[h]", |lex| { let s = lex.slice(); Some(s[..s.len()-1].to_string()) })]
+    #[regex(r"[0-9]+h", |lex| { let s = lex.slice(); Some(s[..s.len()-1].to_string()) }, priority = 4)]
     DurationH(String),
-    #[regex(r"[0-9]+[d]", |lex| { let s = lex.slice(); Some(s[..s.len()-1].to_string()) })]
+    #[regex(r"[0-9]+d", |lex| { let s = lex.slice(); Some(s[..s.len()-1].to_string()) }, priority = 4)]
     DurationD(String),
 
     /// Boolean literals

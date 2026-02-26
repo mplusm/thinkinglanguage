@@ -10,6 +10,7 @@ tl-ast = { path = "../tl-ast" }
 tl-errors = { path = "../tl-errors" }
 tl-data = { path = "../tl-data" }
 tl-ai = { path = "../tl-ai" }
+tl-stream = { path = "../tl-stream" }
 
 [dev-dependencies]
 tl-parser = { path = "../tl-parser" }
