@@ -275,6 +275,114 @@ impl Compiler {
             Stmt::SinkDecl { name, connector_type, config } => {
                 self.compile_connector_decl(name, connector_type, config)
             }
+            Stmt::StructDecl { name, fields } => {
+                let reg = self.add_local(name.clone());
+                let field_names: Vec<Arc<str>> = fields.iter().map(|f| Arc::from(f.name.as_str())).collect();
+                let name_idx = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
+                // Store field names as string constants
+                let fields_idx = self.current().add_constant(Constant::AstExprList(
+                    field_names.iter().map(|f| tl_ast::Expr::String(f.to_string())).collect()
+                ));
+                // High bit of c marks this as a declaration (not instance creation)
+                self.current().emit_abc(Op::NewStruct, reg, name_idx as u8, (fields_idx as u8) | 0x80, 0);
+                Ok(())
+            }
+            Stmt::EnumDecl { name, variants } => {
+                let reg = self.add_local(name.clone());
+                let name_idx = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
+                // Store variant info
+                let variant_info: Vec<tl_ast::Expr> = variants.iter().map(|v| {
+                    tl_ast::Expr::String(format!("{}:{}", v.name, v.fields.len()))
+                }).collect();
+                let variants_idx = self.current().add_constant(Constant::AstExprList(variant_info));
+                // High bit of c marks this as a declaration (not instance creation)
+                self.current().emit_abc(Op::NewStruct, reg, name_idx as u8, (variants_idx as u8) | 0x80, 0);
+                // We reuse NewStruct op but tag it differently via the globals
+                // Actually, let's use a dedicated approach: store as global with special name
+                let global_idx = self.current().add_constant(Constant::String(Arc::from(format!("__enum_{name}").as_str())));
+                self.current().emit_abx(Op::SetGlobal, reg, global_idx, 0);
+                // Also set as normal global
+                let name_g = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
+                self.current().emit_abx(Op::SetGlobal, reg, name_g, 0);
+                Ok(())
+            }
+            Stmt::ImplBlock { type_name, methods } => {
+                // Compile each method as a global function with mangled name Type::method
+                for method in methods {
+                    if let Stmt::FnDecl { name: mname, params, body, .. } = method {
+                        let mangled = format!("{type_name}::{mname}");
+                        // add_local creates the local binding that compile_function looks up
+                        let reg = self.add_local(mangled.clone());
+                        self.compile_function(mangled.clone(), params, body, false)?;
+                        // Store as global so dispatch_method can find it
+                        let idx = self.current().add_constant(Constant::String(Arc::from(mangled.as_str())));
+                        self.current().emit_abx(Op::SetGlobal, reg, idx, 0);
+                    }
+                }
+                Ok(())
+            }
+            Stmt::TryCatch { try_body, catch_var, catch_body } => {
+                // Emit TryBegin with offset to catch handler
+                let try_begin_pos = self.current().current_pos();
+                self.current().emit_abx(Op::TryBegin, 0, 0, 0); // patch later
+
+                // Compile try body
+                self.begin_scope();
+                for stmt in try_body {
+                    self.compile_stmt(stmt)?;
+                }
+                self.end_scope();
+
+                // Emit TryEnd
+                self.current().emit_abx(Op::TryEnd, 0, 0, 0);
+
+                // Jump over catch
+                let jump_over_pos = self.current().current_pos();
+                self.current().emit_abx(Op::Jump, 0, 0, 0);
+
+                // Patch TryBegin to point here (catch handler)
+                self.current().patch_jump(try_begin_pos);
+
+                // Catch body: error value will be in a designated register
+                self.begin_scope();
+                let catch_reg = self.add_local(catch_var.clone());
+                // The VM will place the error value in catch_reg when it jumps here
+                // We mark it with a LoadNone that the VM will overwrite
+                self.current().emit_abx(Op::LoadNone, catch_reg, 0, 0);
+                for stmt in catch_body {
+                    self.compile_stmt(stmt)?;
+                }
+                self.end_scope();
+
+                // Patch jump over catch
+                self.current().patch_jump(jump_over_pos);
+                Ok(())
+            }
+            Stmt::Throw(expr) => {
+                let reg = self.current().alloc_register();
+                self.compile_expr(expr, reg)?;
+                self.current().emit_abc(Op::Throw, reg, 0, 0, 0);
+                self.current().free_register();
+                Ok(())
+            }
+            Stmt::Import { path, alias } => {
+                let reg = self.current().alloc_register();
+                let path_idx = self.current().add_constant(Constant::String(Arc::from(path.as_str())));
+                let alias_idx = if let Some(a) = alias {
+                    self.current().add_constant(Constant::String(Arc::from(a.as_str())))
+                } else {
+                    self.current().add_constant(Constant::String(Arc::from("")))
+                };
+                self.current().emit_abx(Op::Import, reg, path_idx, 0);
+                // Store alias info in next instruction
+                self.current().emit_abc(Op::Move, alias_idx as u8, 0, 0, 0);
+                self.current().free_register();
+                Ok(())
+            }
+            Stmt::Test { .. } => {
+                // Tests are only run in test mode; skip during normal compilation
+                Ok(())
+            }
             Stmt::Break => {
                 let state = self.current();
                 let pos = state.current_pos();
@@ -1134,6 +1242,39 @@ impl Compiler {
                 // Named args are handled in call compilation
                 self.current().emit_abx(Op::LoadNone, dest, 0, 0);
             }
+            Expr::StructInit { name, fields } => {
+                // Compile struct init: load type name, compile field values, emit NewStruct
+                let name_idx = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
+                let start = self.current().next_register;
+                for (fname, fexpr) in fields {
+                    let fname_reg = self.current().alloc_register();
+                    let fname_idx = self.current().add_constant(Constant::String(Arc::from(fname.as_str())));
+                    self.current().emit_abx(Op::LoadConst, fname_reg, fname_idx, 0);
+                    let fval_reg = self.current().alloc_register();
+                    self.compile_expr(fexpr, fval_reg)?;
+                }
+                self.current().emit_abc(Op::NewStruct, dest, name_idx as u8, fields.len() as u8, 0);
+                // Encode start register in next instruction
+                self.current().emit_abc(Op::Move, start, 0, 0, 0);
+                for _ in 0..fields.len() * 2 {
+                    self.current().free_register();
+                }
+            }
+            Expr::EnumVariant { enum_name, variant, args } => {
+                let full_name = format!("{enum_name}::{variant}");
+                let name_idx = self.current().add_constant(Constant::String(Arc::from(full_name.as_str())));
+                let start = self.current().next_register;
+                for arg in args {
+                    let r = self.current().alloc_register();
+                    self.compile_expr(arg, r)?;
+                }
+                self.current().emit_abc(Op::NewEnum, dest, name_idx as u8, start, 0);
+                // Encode arg count
+                self.current().emit_abc(Op::Move, args.len() as u8, 0, 0, 0);
+                for _ in args {
+                    self.current().free_register();
+                }
+            }
         }
         Ok(())
     }
@@ -1149,6 +1290,26 @@ impl Compiler {
             if let Some(builtin_id) = BuiltinId::from_name(name) {
                 return self.compile_builtin_call(builtin_id, args, dest);
             }
+        }
+
+        // Method call: obj.method(args) -> MethodCall
+        if let Expr::Member { object, field } = function {
+            let obj_reg = self.current().alloc_register();
+            self.compile_expr(object, obj_reg)?;
+            let method_idx = self.current().add_constant(Constant::String(Arc::from(field.as_str())));
+            let args_start = self.current().next_register;
+            for arg in args {
+                let r = self.current().alloc_register();
+                self.compile_expr(arg, r)?;
+            }
+            self.current().emit_abc(Op::MethodCall, dest, obj_reg, method_idx as u8, 0);
+            // Next instruction: args_start, arg_count
+            self.current().emit_abc(Op::Move, args_start, args.len() as u8, 0, 0);
+            for _ in args {
+                self.current().free_register();
+            }
+            self.current().free_register(); // obj_reg
+            return Ok(());
         }
 
         // General function call

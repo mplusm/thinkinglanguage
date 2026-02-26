@@ -74,6 +74,10 @@ impl Parser {
                 self.advance();
                 Ok(name)
             }
+            Token::Self_ => {
+                self.advance();
+                Ok("self".to_string())
+            }
             _ => Err(TlError::Parser(ParserError {
                 message: format!("Expected identifier, found `{}`", self.peek()),
                 span: self.peek_span(),
@@ -106,11 +110,18 @@ impl Parser {
             Token::For => self.parse_for(),
             Token::Return => self.parse_return(),
             Token::Schema => self.parse_schema(),
+            Token::Struct => self.parse_struct_decl(),
+            Token::Enum => self.parse_enum_decl(),
+            Token::Impl => self.parse_impl(),
             Token::Model => self.parse_train(),
             Token::Pipeline => self.parse_pipeline(),
             Token::Stream => self.parse_stream_decl(),
             Token::Source => self.parse_source_decl(),
             Token::Sink => self.parse_sink_decl(),
+            Token::Try => self.parse_try_catch(),
+            Token::Throw => self.parse_throw(),
+            Token::Import => self.parse_import(),
+            Token::Test => self.parse_test(),
             Token::Break => {
                 self.advance();
                 Ok(Stmt::Break)
@@ -755,7 +766,7 @@ impl Parser {
         self.parse_postfix()
     }
 
-    /// Postfix: expr.field | expr(args) | expr[index]
+    /// Postfix: expr.field | expr(args) | expr[index] | Ident { field: val } | Ident::Variant
     fn parse_postfix(&mut self) -> Result<Expr, TlError> {
         let mut expr = self.parse_primary()?;
         loop {
@@ -765,6 +776,56 @@ impl Parser {
                     object: Box::new(expr),
                     field,
                 };
+            } else if self.check(&Token::ColonColon) {
+                // Enum::Variant or Enum::Variant(args)
+                if let Expr::Ident(enum_name) = &expr {
+                    let enum_name = enum_name.clone();
+                    self.advance(); // consume '::'
+                    let variant = self.expect_ident()?;
+                    let mut args = Vec::new();
+                    if self.match_token(&Token::LParen) {
+                        if !self.check(&Token::RParen) {
+                            args.push(self.parse_expression()?);
+                            while self.match_token(&Token::Comma) {
+                                if self.check(&Token::RParen) {
+                                    break;
+                                }
+                                args.push(self.parse_expression()?);
+                            }
+                        }
+                        self.expect(&Token::RParen)?;
+                    }
+                    expr = Expr::EnumVariant {
+                        enum_name,
+                        variant,
+                        args,
+                    };
+                } else {
+                    break;
+                }
+            } else if self.check(&Token::LBrace) {
+                // Struct init: if expr is an Ident and next tokens look like `{ ident :`
+                if let Expr::Ident(name) = &expr {
+                    // Lookahead: check if this is a struct init { field: val } vs a block
+                    if self.is_struct_init_ahead() {
+                        let name = name.clone();
+                        self.advance(); // consume '{'
+                        let mut fields = Vec::new();
+                        while !self.check(&Token::RBrace) && !self.is_at_end() {
+                            let field_name = self.expect_ident()?;
+                            self.expect(&Token::Colon)?;
+                            let value = self.parse_expression()?;
+                            self.match_token(&Token::Comma);
+                            fields.push((field_name, value));
+                        }
+                        self.expect(&Token::RBrace)?;
+                        expr = Expr::StructInit { name, fields };
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
             } else if self.check(&Token::LParen) {
                 self.advance();
                 let args = self.parse_arg_list()?;
@@ -785,6 +846,18 @@ impl Parser {
             }
         }
         Ok(expr)
+    }
+
+    /// Lookahead: is next `{ ident :` (struct init) vs `{ stmt` (block)?
+    fn is_struct_init_ahead(&self) -> bool {
+        // Check: LBrace Ident Colon
+        if self.pos + 2 < self.tokens.len() {
+            matches!(self.tokens[self.pos].token, Token::LBrace)
+                && matches!(&self.tokens[self.pos + 1].token, Token::Ident(_))
+                && matches!(self.tokens[self.pos + 2].token, Token::Colon)
+        } else {
+            false
+        }
     }
 
     /// Primary: literals, identifiers, parenthesized expressions, etc.
@@ -820,6 +893,10 @@ impl Parser {
                 let name = name.clone();
                 self.advance();
                 Ok(Expr::Ident(name))
+            }
+            Token::Self_ => {
+                self.advance();
+                Ok(Expr::Ident("self".to_string()))
             }
             Token::LParen => {
                 if self.is_closure_ahead() {
@@ -1000,7 +1077,12 @@ impl Parser {
     }
 
     fn parse_param(&mut self) -> Result<Param, TlError> {
-        let name = self.expect_ident()?;
+        let name = if self.check(&Token::Self_) {
+            self.advance();
+            "self".to_string()
+        } else {
+            self.expect_ident()?
+        };
         let type_ann = if self.match_token(&Token::Colon) {
             Some(self.parse_type()?)
         } else {
@@ -1024,6 +1106,160 @@ impl Parser {
         } else {
             Ok(TypeExpr::Named(name))
         }
+    }
+
+    // ── Phase 5: New parsing methods ─────────────────────────
+
+    /// Parse `struct Name { field: type, ... }`
+    fn parse_struct_decl(&mut self) -> Result<Stmt, TlError> {
+        self.advance(); // consume 'struct'
+        let name = self.expect_ident()?;
+        self.expect(&Token::LBrace)?;
+        let mut fields = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            let field_name = self.expect_ident()?;
+            self.expect(&Token::Colon)?;
+            let type_ann = self.parse_type()?;
+            self.match_token(&Token::Comma);
+            fields.push(SchemaField {
+                name: field_name,
+                type_ann,
+            });
+        }
+        self.expect(&Token::RBrace)?;
+        Ok(Stmt::StructDecl { name, fields })
+    }
+
+    /// Parse `enum Name { Variant, Variant(Type, Type), ... }`
+    fn parse_enum_decl(&mut self) -> Result<Stmt, TlError> {
+        self.advance(); // consume 'enum'
+        let name = self.expect_ident()?;
+        self.expect(&Token::LBrace)?;
+        let mut variants = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            let variant_name = self.expect_ident()?;
+            let mut fields = Vec::new();
+            if self.match_token(&Token::LParen) {
+                if !self.check(&Token::RParen) {
+                    fields.push(self.parse_type()?);
+                    while self.match_token(&Token::Comma) {
+                        if self.check(&Token::RParen) {
+                            break;
+                        }
+                        fields.push(self.parse_type()?);
+                    }
+                }
+                self.expect(&Token::RParen)?;
+            }
+            self.match_token(&Token::Comma);
+            variants.push(EnumVariant {
+                name: variant_name,
+                fields,
+            });
+        }
+        self.expect(&Token::RBrace)?;
+        Ok(Stmt::EnumDecl { name, variants })
+    }
+
+    /// Parse `impl Type { fn methods... }`
+    fn parse_impl(&mut self) -> Result<Stmt, TlError> {
+        self.advance(); // consume 'impl'
+        let type_name = self.expect_ident()?;
+        self.expect(&Token::LBrace)?;
+        let mut methods = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            if self.check(&Token::Fn) {
+                methods.push(self.parse_fn_decl()?);
+            } else {
+                return Err(TlError::Parser(ParserError {
+                    message: "Expected `fn` in impl block".to_string(),
+                    span: self.peek_span(),
+                    hint: None,
+                }));
+            }
+        }
+        self.expect(&Token::RBrace)?;
+        Ok(Stmt::ImplBlock { type_name, methods })
+    }
+
+    /// Parse `try { ... } catch var { ... }`
+    fn parse_try_catch(&mut self) -> Result<Stmt, TlError> {
+        self.advance(); // consume 'try'
+        self.expect(&Token::LBrace)?;
+        let mut try_body = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            try_body.push(self.parse_statement()?);
+        }
+        self.expect(&Token::RBrace)?;
+        self.expect(&Token::Catch)?;
+        let catch_var = self.expect_ident()?;
+        self.expect(&Token::LBrace)?;
+        let mut catch_body = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            catch_body.push(self.parse_statement()?);
+        }
+        self.expect(&Token::RBrace)?;
+        Ok(Stmt::TryCatch {
+            try_body,
+            catch_var,
+            catch_body,
+        })
+    }
+
+    /// Parse `throw expr`
+    fn parse_throw(&mut self) -> Result<Stmt, TlError> {
+        self.advance(); // consume 'throw'
+        let expr = self.parse_expression()?;
+        Ok(Stmt::Throw(expr))
+    }
+
+    /// Parse `import "path.tl"` or `import "path.tl" as name`
+    fn parse_import(&mut self) -> Result<Stmt, TlError> {
+        self.advance(); // consume 'import'
+        let path = match self.peek().clone() {
+            Token::String(s) => {
+                self.advance();
+                s
+            }
+            _ => {
+                return Err(TlError::Parser(ParserError {
+                    message: "Expected string path after `import`".to_string(),
+                    span: self.peek_span(),
+                    hint: None,
+                }));
+            }
+        };
+        let alias = if self.match_token(&Token::As) {
+            Some(self.expect_ident()?)
+        } else {
+            None
+        };
+        Ok(Stmt::Import { path, alias })
+    }
+
+    /// Parse `test "name" { body }`
+    fn parse_test(&mut self) -> Result<Stmt, TlError> {
+        self.advance(); // consume 'test'
+        let name = match self.peek().clone() {
+            Token::String(s) => {
+                self.advance();
+                s
+            }
+            _ => {
+                return Err(TlError::Parser(ParserError {
+                    message: "Expected string after `test`".to_string(),
+                    span: self.peek_span(),
+                    hint: None,
+                }));
+            }
+        };
+        self.expect(&Token::LBrace)?;
+        let mut body = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            body.push(self.parse_statement()?);
+        }
+        self.expect(&Token::RBrace)?;
+        Ok(Stmt::Test { name, body })
     }
 }
 
@@ -1316,6 +1552,195 @@ mod tests {
             }
         } else {
             panic!("Expected with call expression");
+        }
+    }
+
+    #[test]
+    fn test_parse_struct_decl() {
+        let program = parse("struct Point { x: float64, y: float64 }").unwrap();
+        if let Stmt::StructDecl { name, fields } = &program.statements[0] {
+            assert_eq!(name, "Point");
+            assert_eq!(fields.len(), 2);
+            assert_eq!(fields[0].name, "x");
+            assert!(matches!(&fields[0].type_ann, TypeExpr::Named(t) if t == "float64"));
+            assert_eq!(fields[1].name, "y");
+            assert!(matches!(&fields[1].type_ann, TypeExpr::Named(t) if t == "float64"));
+        } else {
+            panic!("Expected struct declaration");
+        }
+    }
+
+    #[test]
+    fn test_parse_struct_init() {
+        let program = parse("let p = Point { x: 1.0, y: 2.0 }").unwrap();
+        if let Stmt::Let { name, value, .. } = &program.statements[0] {
+            assert_eq!(name, "p");
+            if let Expr::StructInit { name: struct_name, fields } = value {
+                assert_eq!(struct_name, "Point");
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0].0, "x");
+                assert!(matches!(&fields[0].1, Expr::Float(v) if *v == 1.0));
+                assert_eq!(fields[1].0, "y");
+                assert!(matches!(&fields[1].1, Expr::Float(v) if *v == 2.0));
+            } else {
+                panic!("Expected StructInit expression");
+            }
+        } else {
+            panic!("Expected let statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_enum_decl() {
+        let program = parse("enum Color { Red, Green, Blue }").unwrap();
+        if let Stmt::EnumDecl { name, variants } = &program.statements[0] {
+            assert_eq!(name, "Color");
+            assert_eq!(variants.len(), 3);
+            assert_eq!(variants[0].name, "Red");
+            assert!(variants[0].fields.is_empty());
+            assert_eq!(variants[1].name, "Green");
+            assert!(variants[1].fields.is_empty());
+            assert_eq!(variants[2].name, "Blue");
+            assert!(variants[2].fields.is_empty());
+        } else {
+            panic!("Expected enum declaration");
+        }
+    }
+
+    #[test]
+    fn test_parse_enum_variant() {
+        // Simple variant: Color::Red
+        let program = parse("Color::Red").unwrap();
+        if let Stmt::Expr(Expr::EnumVariant { enum_name, variant, args }) = &program.statements[0] {
+            assert_eq!(enum_name, "Color");
+            assert_eq!(variant, "Red");
+            assert!(args.is_empty());
+        } else {
+            panic!("Expected enum variant expression");
+        }
+
+        // Variant with args: Color::Custom(1, 2, 3)
+        let program = parse("Color::Custom(1, 2, 3)").unwrap();
+        if let Stmt::Expr(Expr::EnumVariant { enum_name, variant, args }) = &program.statements[0] {
+            assert_eq!(enum_name, "Color");
+            assert_eq!(variant, "Custom");
+            assert_eq!(args.len(), 3);
+            assert!(matches!(&args[0], Expr::Int(1)));
+            assert!(matches!(&args[1], Expr::Int(2)));
+            assert!(matches!(&args[2], Expr::Int(3)));
+        } else {
+            panic!("Expected enum variant expression with args");
+        }
+    }
+
+    #[test]
+    fn test_parse_impl_block() {
+        let program = parse("impl Point { fn area(self) { self.x * self.y } }").unwrap();
+        if let Stmt::ImplBlock { type_name, methods } = &program.statements[0] {
+            assert_eq!(type_name, "Point");
+            assert_eq!(methods.len(), 1);
+            if let Stmt::FnDecl { name, params, body, .. } = &methods[0] {
+                assert_eq!(name, "area");
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].name, "self");
+                assert_eq!(body.len(), 1);
+            } else {
+                panic!("Expected fn declaration inside impl block");
+            }
+        } else {
+            panic!("Expected impl block");
+        }
+    }
+
+    #[test]
+    fn test_parse_try_catch() {
+        let program = parse("try { 1 + 2 } catch e { println(e) }").unwrap();
+        if let Stmt::TryCatch { try_body, catch_var, catch_body } = &program.statements[0] {
+            assert_eq!(try_body.len(), 1);
+            assert_eq!(catch_var, "e");
+            assert_eq!(catch_body.len(), 1);
+            // Verify try body contains the expression 1 + 2
+            if let Stmt::Expr(Expr::BinOp { op, .. }) = &try_body[0] {
+                assert_eq!(*op, BinOp::Add);
+            } else {
+                panic!("Expected binary op in try body");
+            }
+            // Verify catch body contains println(e)
+            if let Stmt::Expr(Expr::Call { function, args }) = &catch_body[0] {
+                assert!(matches!(function.as_ref(), Expr::Ident(n) if n == "println"));
+                assert_eq!(args.len(), 1);
+            } else {
+                panic!("Expected function call in catch body");
+            }
+        } else {
+            panic!("Expected try/catch statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_throw() {
+        let program = parse(r#"throw "error""#).unwrap();
+        if let Stmt::Throw(expr) = &program.statements[0] {
+            assert!(matches!(expr, Expr::String(s) if s == "error"));
+        } else {
+            panic!("Expected throw statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_import() {
+        // Simple import
+        let program = parse(r#"import "utils.tl""#).unwrap();
+        if let Stmt::Import { path, alias } = &program.statements[0] {
+            assert_eq!(path, "utils.tl");
+            assert!(alias.is_none());
+        } else {
+            panic!("Expected import statement");
+        }
+
+        // Import with alias
+        let program = parse(r#"import "math.tl" as math"#).unwrap();
+        if let Stmt::Import { path, alias } = &program.statements[0] {
+            assert_eq!(path, "math.tl");
+            assert_eq!(alias.as_deref(), Some("math"));
+        } else {
+            panic!("Expected import statement with alias");
+        }
+    }
+
+    #[test]
+    fn test_parse_test() {
+        let program = parse(r#"test "my test" { assert(true) }"#).unwrap();
+        if let Stmt::Test { name, body } = &program.statements[0] {
+            assert_eq!(name, "my test");
+            assert_eq!(body.len(), 1);
+            if let Stmt::Expr(Expr::Call { function, args }) = &body[0] {
+                assert!(matches!(function.as_ref(), Expr::Ident(n) if n == "assert"));
+                assert_eq!(args.len(), 1);
+                assert!(matches!(&args[0], Expr::Bool(true)));
+            } else {
+                panic!("Expected function call in test body");
+            }
+        } else {
+            panic!("Expected test statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_method_call() {
+        let program = parse(r#""hello".split(" ")"#).unwrap();
+        if let Stmt::Expr(Expr::Call { function, args }) = &program.statements[0] {
+            // The function should be a Member access: "hello".split
+            if let Expr::Member { object, field } = function.as_ref() {
+                assert!(matches!(object.as_ref(), Expr::String(s) if s == "hello"));
+                assert_eq!(field, "split");
+            } else {
+                panic!("Expected member access as call function");
+            }
+            assert_eq!(args.len(), 1);
+            assert!(matches!(&args[0], Expr::String(s) if s == " "));
+        } else {
+            panic!("Expected method call expression");
         }
     }
 }

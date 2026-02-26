@@ -230,6 +230,14 @@ struct CallFrame {
     upvalues: Vec<UpvalueRef>,
 }
 
+/// A try-catch handler on the handler stack.
+struct TryHandler {
+    /// Frame index where try was entered
+    frame_idx: usize,
+    /// IP to jump to (catch handler)
+    catch_ip: usize,
+}
+
 /// The bytecode virtual machine.
 pub struct Vm {
     /// Register stack
@@ -242,6 +250,8 @@ pub struct Vm {
     data_engine: Option<DataEngine>,
     /// Captured output (for testing)
     pub output: Vec<String>,
+    /// Try-catch handler stack
+    try_handlers: Vec<TryHandler>,
 }
 
 impl Vm {
@@ -252,6 +262,7 @@ impl Vm {
             globals: HashMap::new(),
             data_engine: None,
             output: Vec::new(),
+            try_handlers: Vec::new(),
         }
     }
 
@@ -289,29 +300,75 @@ impl Vm {
     fn run(&mut self) -> Result<VmValue, TlError> {
         let entry_depth = self.frames.len();
         loop {
-            if self.frames.len() < entry_depth || self.frames.is_empty() {
-                return Ok(VmValue::None);
+            let step_result = self.run_step(entry_depth);
+            match step_result {
+                Ok(Some(val)) => return Ok(val),        // Return instruction
+                Ok(None) => continue,                    // Normal instruction
+                Err(e) => {
+                    // Check for try handler
+                    if let Some(handler) = self.try_handlers.pop() {
+                        // Restore to handler's frame
+                        while self.frames.len() > handler.frame_idx {
+                            self.frames.pop();
+                        }
+                        if self.frames.is_empty() {
+                            return Err(e);
+                        }
+                        let fidx = self.frames.len() - 1;
+                        self.frames[fidx].ip = handler.catch_ip;
+                        let err_msg = match &e {
+                            TlError::Runtime(re) => re.message.clone(),
+                            other => format!("{other}"),
+                        };
+                        // Put error value in catch scope's first local
+                        // The compiler emits LoadNone for the catch var at catch_ip; we need to
+                        // identify the register, set the error value, and skip past the LoadNone
+                        let cbase = self.frames[fidx].base;
+                        let current_ip = self.frames[fidx].ip;
+                        if current_ip < self.frames[fidx].prototype.code.len() {
+                            let catch_inst = self.frames[fidx].prototype.code[current_ip];
+                            let catch_op = decode_op(catch_inst);
+                            let catch_reg = decode_a(catch_inst);
+                            if matches!(catch_op, Op::LoadNone) {
+                                // Skip the LoadNone and write error value directly
+                                self.frames[fidx].ip += 1;
+                                self.ensure_stack(cbase + catch_reg as usize + 1);
+                                self.stack[cbase + catch_reg as usize] = VmValue::String(Arc::from(err_msg.as_str()));
+                            }
+                        }
+                        continue;
+                    }
+                    return Err(e);
+                }
             }
-            let frame_idx = self.frames.len() - 1;
-            let frame = &self.frames[frame_idx];
+        }
+    }
 
-            if frame.ip >= frame.prototype.code.len() {
-                // End of bytecode — return None
-                self.frames.pop();
-                return Ok(VmValue::None);
-            }
+    /// Execute a single instruction. Returns Ok(Some(val)) for Return, Ok(None) for continue, Err for errors.
+    fn run_step(&mut self, entry_depth: usize) -> Result<Option<VmValue>, TlError> {
+        if self.frames.len() < entry_depth || self.frames.is_empty() {
+            return Ok(Some(VmValue::None));
+        }
+        let frame_idx = self.frames.len() - 1;
+        let frame = &self.frames[frame_idx];
 
-            let inst = frame.prototype.code[frame.ip];
-            let op = decode_op(inst);
-            let a = decode_a(inst);
-            let b = decode_b(inst);
-            let c = decode_c(inst);
-            let bx = decode_bx(inst);
-            let sbx = decode_sbx(inst);
-            let base = frame.base;
+        if frame.ip >= frame.prototype.code.len() {
+            // End of bytecode — return None
+            self.frames.pop();
+            return Ok(Some(VmValue::None));
+        }
 
-            // Advance IP before executing (some ops modify it)
-            self.frames[frame_idx].ip += 1;
+        let inst = frame.prototype.code[frame.ip];
+        let op = decode_op(inst);
+        let a = decode_a(inst);
+        let b = decode_b(inst);
+        let c = decode_c(inst);
+        let bx = decode_bx(inst);
+        let sbx = decode_sbx(inst);
+        let base = frame.base;
+
+        // Advance IP before executing (some ops modify it)
+        self.frames[frame_idx].ip += 1;
 
             match op {
                 Op::LoadConst => {
@@ -475,7 +532,7 @@ impl Vm {
                 Op::Return => {
                     let return_val = self.stack[base + a as usize].clone();
                     self.frames.pop();
-                    return Ok(return_val);
+                    return Ok(Some(return_val));
                 }
                 Op::Closure => {
                     let proto = match &self.frames[frame_idx].prototype.constants[bx as usize] {
@@ -620,9 +677,31 @@ impl Vm {
                     }
                 }
                 Op::GetMember => {
-                    // Currently only used for schema access or table member
-                    // a = dest, b = object reg, c = field constant
-                    self.stack[base + a as usize] = VmValue::None;
+                    // a = dest, b = object reg, c = field name constant
+                    let field_name = self.get_string_constant(frame_idx, c as u16)?;
+                    let obj = self.stack[base + b as usize].clone();
+                    let result = match &obj {
+                        VmValue::StructInstance(inst) => {
+                            inst.fields.iter()
+                                .find(|(k, _)| k.as_ref() == field_name.as_ref())
+                                .map(|(_, v)| v.clone())
+                                .unwrap_or(VmValue::None)
+                        }
+                        VmValue::Module(m) => {
+                            m.exports.get(field_name.as_ref())
+                                .cloned()
+                                .unwrap_or(VmValue::None)
+                        }
+                        VmValue::EnumInstance(e) => {
+                            match field_name.as_ref() {
+                                "variant" => VmValue::String(e.variant.clone()),
+                                "type_name" => VmValue::String(e.type_name.clone()),
+                                _ => VmValue::None,
+                            }
+                        }
+                        _ => VmValue::None,
+                    };
+                    self.stack[base + a as usize] = result;
                 }
                 Op::Interpolate => {
                     // a = dest, bx = string template constant
@@ -647,8 +726,202 @@ impl Vm {
                     let result = self.handle_connector_decl(frame_idx, b, c)?;
                     self.stack[base + a as usize] = result;
                 }
+
+                // ── Phase 5: Language completeness opcodes ──
+
+                Op::NewStruct => {
+                    // Two uses:
+                    // 1) Struct declaration: a=dest, b=name_const, c=fields_const (AstExprList)
+                    //    Next instruction is NOT a Move with start reg
+                    // 2) Struct instance: a=dest, b=name_const, c=field_count
+                    //    Next instruction is Move with start reg in A
+
+                    let name = self.get_string_constant(frame_idx, b as u16)?;
+
+                    // High bit of c distinguishes declaration (set) from instance (clear).
+                    // Declarations: c = constant_idx | 0x80
+                    // Instances: c = field_count (no high bit)
+                    let is_decl = (c & 0x80) != 0;
+
+                    if is_decl {
+                        let const_idx = (c & 0x7F) as usize;
+                        // Struct/Enum declaration
+                        let fields_data = match &self.frames[frame_idx].prototype.constants[const_idx] {
+                            Constant::AstExprList(exprs) => exprs.clone(),
+                            _ => Vec::new(),
+                        };
+                        // Check if it looks like an enum (fields have "Name:count" format)
+                        let is_enum = fields_data.first().map(|e| {
+                            if let AstExpr::String(s) = e { s.contains(':') } else { false }
+                        }).unwrap_or(false);
+
+                        if is_enum {
+                            let variants: Vec<(Arc<str>, usize)> = fields_data.iter().filter_map(|e| {
+                                if let AstExpr::String(s) = e {
+                                    let parts: Vec<&str> = s.splitn(2, ':').collect();
+                                    if parts.len() == 2 {
+                                        Some((Arc::from(parts[0]), parts[1].parse::<usize>().unwrap_or(0)))
+                                    } else { None }
+                                } else { None }
+                            }).collect();
+                            self.stack[base + a as usize] = VmValue::EnumDef(Arc::new(VmEnumDef {
+                                name: name.clone(),
+                                variants,
+                            }));
+                        } else {
+                            let field_names: Vec<Arc<str>> = fields_data.iter().filter_map(|e| {
+                                if let AstExpr::String(s) = e { Some(Arc::from(s.as_str())) } else { None }
+                            }).collect();
+                            self.stack[base + a as usize] = VmValue::StructDef(Arc::new(VmStructDef {
+                                name: name.clone(),
+                                fields: field_names,
+                            }));
+                        }
+                    } else {
+                        // Struct instance creation: c = field count
+                        let field_count = c as usize;
+                        // Next instruction holds start register in A field
+                        let next_ip = self.frames[frame_idx].ip;
+                        let next = self.frames[frame_idx].prototype.code.get(next_ip).copied().unwrap_or(0);
+                        let start_reg = decode_a(next) as usize;
+                        self.frames[frame_idx].ip += 1; // skip the extra instruction
+
+                        let mut fields = Vec::new();
+                        for i in 0..field_count {
+                            let fname = self.stack[base + start_reg + i * 2].clone();
+                            let fval = self.stack[base + start_reg + i * 2 + 1].clone();
+                            let fname_str = match fname {
+                                VmValue::String(s) => s,
+                                _ => Arc::from(format!("field_{i}").as_str()),
+                            };
+                            fields.push((fname_str, fval));
+                        }
+                        self.stack[base + a as usize] = VmValue::StructInstance(Arc::new(VmStructInstance {
+                            type_name: name.clone(),
+                            fields,
+                        }));
+                    }
+                }
+
+                Op::SetMember => {
+                    // a = object reg, b = field name constant, c = value reg
+                    let field_name = self.get_string_constant(frame_idx, b as u16)?;
+                    let val = self.stack[base + c as usize].clone();
+                    let obj = self.stack[base + a as usize].clone();
+                    if let VmValue::StructInstance(inst) = obj {
+                        let mut new_fields = inst.fields.clone();
+                        let mut found = false;
+                        for (k, v) in &mut new_fields {
+                            if k.as_ref() == field_name.as_ref() {
+                                *v = val.clone();
+                                found = true;
+                                break;
+                            }
+                        }
+                        if !found {
+                            new_fields.push((field_name, val));
+                        }
+                        self.stack[base + a as usize] = VmValue::StructInstance(Arc::new(VmStructInstance {
+                            type_name: inst.type_name.clone(),
+                            fields: new_fields,
+                        }));
+                    }
+                }
+
+                Op::NewEnum => {
+                    // a = dest, b = name constant ("EnumName::Variant"), c = args start reg
+                    // Next instruction: arg_count in A field
+                    let full_name = self.get_string_constant(frame_idx, b as u16)?;
+                    let next = self.frames[frame_idx].prototype.code[self.frames[frame_idx].ip];
+                    self.frames[frame_idx].ip += 1;
+                    let arg_count = decode_a(next) as usize;
+                    let args_start = c as usize;
+
+                    // Parse "EnumName::Variant"
+                    let parts: Vec<&str> = full_name.splitn(2, "::").collect();
+                    let (type_name, variant) = if parts.len() == 2 {
+                        (Arc::from(parts[0]), Arc::from(parts[1]))
+                    } else {
+                        (Arc::from(""), Arc::from(full_name.as_ref()))
+                    };
+
+                    let mut fields = Vec::new();
+                    for i in 0..arg_count {
+                        fields.push(self.stack[base + args_start + i].clone());
+                    }
+
+                    self.stack[base + a as usize] = VmValue::EnumInstance(Arc::new(VmEnumInstance {
+                        type_name,
+                        variant,
+                        fields,
+                    }));
+                }
+
+                Op::MatchEnum => {
+                    // a = subject reg, b = variant name constant, c = dest bool reg
+                    let variant_name = self.get_string_constant(frame_idx, b as u16)?;
+                    let subject = &self.stack[base + a as usize];
+                    let matched = match subject {
+                        VmValue::EnumInstance(e) => e.variant.as_ref() == variant_name.as_ref(),
+                        _ => false,
+                    };
+                    self.stack[base + c as usize] = VmValue::Bool(matched);
+                }
+
+                Op::MethodCall => {
+                    // a = dest, b = object reg, c = method name constant
+                    // Next instruction: A = args_start, B = arg_count
+                    let method_name = self.get_string_constant(frame_idx, c as u16)?;
+                    let next = self.frames[frame_idx].prototype.code[self.frames[frame_idx].ip];
+                    self.frames[frame_idx].ip += 1;
+                    let args_start = decode_a(next) as usize;
+                    let arg_count = decode_b(next) as usize;
+
+                    let obj = self.stack[base + b as usize].clone();
+                    let mut args = Vec::new();
+                    for i in 0..arg_count {
+                        args.push(self.stack[base + args_start + i].clone());
+                    }
+
+                    let result = self.dispatch_method(obj, &method_name, &args)?;
+                    self.stack[base + a as usize] = result;
+                }
+
+                Op::Throw => {
+                    // a = value register
+                    let val = self.stack[base + a as usize].clone();
+                    let err_msg = format!("{val}");
+                    return Err(runtime_err(err_msg));
+                }
+
+                Op::TryBegin => {
+                    // sbx = offset to catch handler (relative to this instruction)
+                    let catch_ip = (self.frames[frame_idx].ip as i32 + sbx as i32) as usize;
+                    self.try_handlers.push(TryHandler {
+                        frame_idx: self.frames.len(),
+                        catch_ip,
+                    });
+                }
+
+                Op::TryEnd => {
+                    // Pop the try handler (success path)
+                    self.try_handlers.pop();
+                }
+
+                Op::Import => {
+                    // a = dest, bx = path constant
+                    // Next instruction: A = alias constant index
+                    let path = self.get_string_constant(frame_idx, bx)?;
+                    let next = self.frames[frame_idx].prototype.code[self.frames[frame_idx].ip];
+                    self.frames[frame_idx].ip += 1;
+                    let alias_idx = decode_a(next) as u16;
+                    let alias = self.get_string_constant(frame_idx, alias_idx)?;
+
+                    let result = self.handle_import(&path, &alias)?;
+                    self.stack[base + a as usize] = result;
+                }
             }
-        }
+            Ok(None)
     }
 
     /// Perform a function call.
@@ -1534,6 +1807,136 @@ impl Vm {
                     Err(runtime_err("run_pipeline: argument must be a pipeline"))
                 }
             }
+            // Phase 5: Math builtins
+            BuiltinId::Sqrt => match args.first() {
+                Some(VmValue::Float(n)) => Ok(VmValue::Float(n.sqrt())),
+                Some(VmValue::Int(n)) => Ok(VmValue::Float((*n as f64).sqrt())),
+                _ => Err(runtime_err("sqrt() expects a number")),
+            },
+            BuiltinId::Pow => {
+                if args.len() == 2 {
+                    match (&args[0], &args[1]) {
+                        (VmValue::Float(a), VmValue::Float(b)) => Ok(VmValue::Float(a.powf(*b))),
+                        (VmValue::Int(a), VmValue::Int(b)) => Ok(VmValue::Float((*a as f64).powf(*b as f64))),
+                        (VmValue::Float(a), VmValue::Int(b)) => Ok(VmValue::Float(a.powf(*b as f64))),
+                        (VmValue::Int(a), VmValue::Float(b)) => Ok(VmValue::Float((*a as f64).powf(*b))),
+                        _ => Err(runtime_err("pow() expects two numbers")),
+                    }
+                } else {
+                    Err(runtime_err("pow() expects 2 arguments"))
+                }
+            }
+            BuiltinId::Floor => match args.first() {
+                Some(VmValue::Float(n)) => Ok(VmValue::Float(n.floor())),
+                Some(VmValue::Int(n)) => Ok(VmValue::Int(*n)),
+                _ => Err(runtime_err("floor() expects a number")),
+            },
+            BuiltinId::Ceil => match args.first() {
+                Some(VmValue::Float(n)) => Ok(VmValue::Float(n.ceil())),
+                Some(VmValue::Int(n)) => Ok(VmValue::Int(*n)),
+                _ => Err(runtime_err("ceil() expects a number")),
+            },
+            BuiltinId::Round => match args.first() {
+                Some(VmValue::Float(n)) => Ok(VmValue::Float(n.round())),
+                Some(VmValue::Int(n)) => Ok(VmValue::Int(*n)),
+                _ => Err(runtime_err("round() expects a number")),
+            },
+            BuiltinId::Sin => match args.first() {
+                Some(VmValue::Float(n)) => Ok(VmValue::Float(n.sin())),
+                Some(VmValue::Int(n)) => Ok(VmValue::Float((*n as f64).sin())),
+                _ => Err(runtime_err("sin() expects a number")),
+            },
+            BuiltinId::Cos => match args.first() {
+                Some(VmValue::Float(n)) => Ok(VmValue::Float(n.cos())),
+                Some(VmValue::Int(n)) => Ok(VmValue::Float((*n as f64).cos())),
+                _ => Err(runtime_err("cos() expects a number")),
+            },
+            BuiltinId::Tan => match args.first() {
+                Some(VmValue::Float(n)) => Ok(VmValue::Float(n.tan())),
+                Some(VmValue::Int(n)) => Ok(VmValue::Float((*n as f64).tan())),
+                _ => Err(runtime_err("tan() expects a number")),
+            },
+            BuiltinId::Log => match args.first() {
+                Some(VmValue::Float(n)) => Ok(VmValue::Float(n.ln())),
+                Some(VmValue::Int(n)) => Ok(VmValue::Float((*n as f64).ln())),
+                _ => Err(runtime_err("log() expects a number")),
+            },
+            BuiltinId::Log2 => match args.first() {
+                Some(VmValue::Float(n)) => Ok(VmValue::Float(n.log2())),
+                Some(VmValue::Int(n)) => Ok(VmValue::Float((*n as f64).log2())),
+                _ => Err(runtime_err("log2() expects a number")),
+            },
+            BuiltinId::Log10 => match args.first() {
+                Some(VmValue::Float(n)) => Ok(VmValue::Float(n.log10())),
+                Some(VmValue::Int(n)) => Ok(VmValue::Float((*n as f64).log10())),
+                _ => Err(runtime_err("log10() expects a number")),
+            },
+            BuiltinId::Join => {
+                if args.len() == 2 {
+                    if let (VmValue::String(sep), VmValue::List(items)) = (&args[0], &args[1]) {
+                        let parts: Vec<String> = items.iter().map(|v| format!("{v}")).collect();
+                        Ok(VmValue::String(Arc::from(parts.join(sep.as_ref()).as_str())))
+                    } else {
+                        Err(runtime_err("join() expects separator and list"))
+                    }
+                } else {
+                    Err(runtime_err("join() expects 2 arguments"))
+                }
+            }
+            BuiltinId::HttpGet => {
+                if args.is_empty() { return Err(runtime_err("http_get() expects a URL")); }
+                if let VmValue::String(url) = &args[0] {
+                    let body = reqwest::blocking::get(url.as_ref())
+                        .map_err(|e| runtime_err(format!("HTTP GET error: {e}")))?
+                        .text()
+                        .map_err(|e| runtime_err(format!("HTTP response error: {e}")))?;
+                    Ok(VmValue::String(Arc::from(body.as_str())))
+                } else {
+                    Err(runtime_err("http_get() expects a string URL"))
+                }
+            }
+            BuiltinId::HttpPost => {
+                if args.len() < 2 { return Err(runtime_err("http_post() expects URL and body")); }
+                if let (VmValue::String(url), VmValue::String(body)) = (&args[0], &args[1]) {
+                    let client = reqwest::blocking::Client::new();
+                    let resp = client
+                        .post(url.as_ref())
+                        .header("Content-Type", "application/json")
+                        .body(body.to_string())
+                        .send()
+                        .map_err(|e| runtime_err(format!("HTTP POST error: {e}")))?
+                        .text()
+                        .map_err(|e| runtime_err(format!("HTTP response error: {e}")))?;
+                    Ok(VmValue::String(Arc::from(resp.as_str())))
+                } else {
+                    Err(runtime_err("http_post() expects string URL and body"))
+                }
+            }
+            BuiltinId::Assert => {
+                if args.is_empty() { return Err(runtime_err("assert() expects at least 1 argument")); }
+                if !args[0].is_truthy() {
+                    let msg = if args.len() > 1 { format!("{}", args[1]) } else { "Assertion failed".to_string() };
+                    Err(runtime_err(msg))
+                } else {
+                    Ok(VmValue::None)
+                }
+            }
+            BuiltinId::AssertEq => {
+                if args.len() < 2 { return Err(runtime_err("assert_eq() expects 2 arguments")); }
+                let eq = match (&args[0], &args[1]) {
+                    (VmValue::Int(a), VmValue::Int(b)) => a == b,
+                    (VmValue::Float(a), VmValue::Float(b)) => a == b,
+                    (VmValue::String(a), VmValue::String(b)) => a == b,
+                    (VmValue::Bool(a), VmValue::Bool(b)) => a == b,
+                    (VmValue::None, VmValue::None) => true,
+                    _ => false,
+                };
+                if !eq {
+                    Err(runtime_err(format!("Assertion failed: {} != {}", args[0], args[1])))
+                } else {
+                    Ok(VmValue::None)
+                }
+            }
         }
     }
 
@@ -1860,6 +2263,190 @@ impl Vm {
         };
 
         Ok(VmValue::Connector(Arc::new(config)))
+    }
+
+    /// Dispatch a method call on an object.
+    fn dispatch_method(&mut self, obj: VmValue, method: &str, args: &[VmValue]) -> Result<VmValue, TlError> {
+        match &obj {
+            VmValue::String(s) => self.dispatch_string_method(s.clone(), method, args),
+            VmValue::List(items) => self.dispatch_list_method(items.clone(), method, args),
+            VmValue::StructInstance(inst) => {
+                // Look up impl method: Type::method in globals
+                let mangled = format!("{}::{}", inst.type_name, method);
+                if let Some(func) = self.globals.get(&mangled).cloned() {
+                    let mut all_args = vec![obj.clone()];
+                    all_args.extend_from_slice(args);
+                    self.call_vm_function(&func, &all_args)
+                } else {
+                    Err(runtime_err(format!("No method '{}' on struct '{}'", method, inst.type_name)))
+                }
+            }
+            _ => {
+                // Try looking up Type::method from type_name
+                let type_name = obj.type_name();
+                let mangled = format!("{}::{}", type_name, method);
+                if let Some(func) = self.globals.get(&mangled).cloned() {
+                    let mut all_args = vec![obj];
+                    all_args.extend_from_slice(args);
+                    self.call_vm_function(&func, &all_args)
+                } else {
+                    Err(runtime_err(format!("No method '{}' on type '{}'", method, type_name)))
+                }
+            }
+        }
+    }
+
+    /// Dispatch string methods.
+    fn dispatch_string_method(&self, s: Arc<str>, method: &str, args: &[VmValue]) -> Result<VmValue, TlError> {
+        match method {
+            "len" => Ok(VmValue::Int(s.len() as i64)),
+            "split" => {
+                let sep = match args.first() {
+                    Some(VmValue::String(sep)) => sep.to_string(),
+                    _ => return Err(runtime_err("split() expects a string separator")),
+                };
+                let parts: Vec<VmValue> = s.split(&sep)
+                    .map(|p| VmValue::String(Arc::from(p)))
+                    .collect();
+                Ok(VmValue::List(parts))
+            }
+            "trim" => Ok(VmValue::String(Arc::from(s.trim()))),
+            "contains" => {
+                let needle = match args.first() {
+                    Some(VmValue::String(n)) => n.to_string(),
+                    _ => return Err(runtime_err("contains() expects a string")),
+                };
+                Ok(VmValue::Bool(s.contains(&needle)))
+            }
+            "replace" => {
+                if args.len() < 2 {
+                    return Err(runtime_err("replace() expects 2 arguments (old, new)"));
+                }
+                let old = match &args[0] { VmValue::String(s) => s.to_string(), _ => return Err(runtime_err("replace() arg must be string")) };
+                let new = match &args[1] { VmValue::String(s) => s.to_string(), _ => return Err(runtime_err("replace() arg must be string")) };
+                Ok(VmValue::String(Arc::from(s.replace(&old, &new).as_str())))
+            }
+            "starts_with" => {
+                let prefix = match args.first() {
+                    Some(VmValue::String(p)) => p.to_string(),
+                    _ => return Err(runtime_err("starts_with() expects a string")),
+                };
+                Ok(VmValue::Bool(s.starts_with(&prefix)))
+            }
+            "ends_with" => {
+                let suffix = match args.first() {
+                    Some(VmValue::String(p)) => p.to_string(),
+                    _ => return Err(runtime_err("ends_with() expects a string")),
+                };
+                Ok(VmValue::Bool(s.ends_with(&suffix)))
+            }
+            "to_upper" => Ok(VmValue::String(Arc::from(s.to_uppercase().as_str()))),
+            "to_lower" => Ok(VmValue::String(Arc::from(s.to_lowercase().as_str()))),
+            "join" => {
+                // "sep".join(list) -> string
+                let items = match args.first() {
+                    Some(VmValue::List(items)) => items,
+                    _ => return Err(runtime_err("join() expects a list")),
+                };
+                let parts: Vec<String> = items.iter().map(|v| format!("{v}")).collect();
+                Ok(VmValue::String(Arc::from(parts.join(s.as_ref()).as_str())))
+            }
+            _ => Err(runtime_err(format!("No method '{}' on string", method))),
+        }
+    }
+
+    /// Dispatch list methods.
+    fn dispatch_list_method(&mut self, items: Vec<VmValue>, method: &str, args: &[VmValue]) -> Result<VmValue, TlError> {
+        match method {
+            "len" => Ok(VmValue::Int(items.len() as i64)),
+            "push" => {
+                if args.is_empty() {
+                    return Err(runtime_err("push() expects 1 argument"));
+                }
+                let mut new_items = items;
+                new_items.push(args[0].clone());
+                Ok(VmValue::List(new_items))
+            }
+            "map" => {
+                if args.is_empty() {
+                    return Err(runtime_err("map() expects a function"));
+                }
+                let func = &args[0];
+                let mut result = Vec::new();
+                for item in items {
+                    let val = self.call_vm_function(func, &[item])?;
+                    result.push(val);
+                }
+                Ok(VmValue::List(result))
+            }
+            "filter" => {
+                if args.is_empty() {
+                    return Err(runtime_err("filter() expects a function"));
+                }
+                let func = &args[0];
+                let mut result = Vec::new();
+                for item in items {
+                    let val = self.call_vm_function(func, &[item.clone()])?;
+                    if val.is_truthy() {
+                        result.push(item);
+                    }
+                }
+                Ok(VmValue::List(result))
+            }
+            "reduce" => {
+                if args.len() < 2 {
+                    return Err(runtime_err("reduce() expects initial value and function"));
+                }
+                let mut acc = args[0].clone();
+                let func = &args[1];
+                for item in items {
+                    acc = self.call_vm_function(func, &[acc, item])?;
+                }
+                Ok(acc)
+            }
+            _ => Err(runtime_err(format!("No method '{}' on list", method))),
+        }
+    }
+
+    /// Handle import at runtime.
+    fn handle_import(&mut self, path: &str, alias: &str) -> Result<VmValue, TlError> {
+        // Read, parse, compile, execute the file
+        let source = std::fs::read_to_string(path)
+            .map_err(|e| runtime_err(format!("Cannot import '{}': {}", path, e)))?;
+        let program = tl_parser::parse(&source)
+            .map_err(|e| runtime_err(format!("Parse error in '{}': {}", path, e)))?;
+        let proto = crate::compiler::compile(&program)
+            .map_err(|e| runtime_err(format!("Compile error in '{}': {}", path, e)))?;
+
+        // Execute in a fresh VM with shared globals
+        let mut import_vm = Vm::new();
+        import_vm.globals = self.globals.clone();
+        import_vm.execute(&proto)?;
+
+        // Collect new globals that were defined in the import
+        let mut exports = HashMap::new();
+        for (k, v) in &import_vm.globals {
+            if !self.globals.contains_key(k) {
+                exports.insert(k.clone(), v.clone());
+            }
+        }
+
+        if alias.is_empty() {
+            // Wildcard import: merge all exports into current scope
+            for (k, v) in &exports {
+                self.globals.insert(k.clone(), v.clone());
+            }
+            Ok(VmValue::None)
+        } else {
+            // Namespaced import
+            let module = VmModule {
+                name: Arc::from(alias),
+                exports,
+            };
+            let module_val = VmValue::Module(Arc::new(module));
+            self.globals.insert(alias.to_string(), module_val.clone());
+            Ok(module_val)
+        }
     }
 
     /// Call a VmValue function/closure with args.
@@ -2502,5 +3089,236 @@ mod tests {
             "fn abs(n) { if n < 0 { 0 - n } else { n } }\nprint(abs(-5))\nprint(abs(3))",
         );
         assert_eq!(output, vec!["5", "3"]);
+    }
+
+    // ── Phase 5 tests ──
+
+    #[test]
+    fn test_vm_struct_creation() {
+        let output = run_output(
+            "struct Point { x: float64, y: float64 }\nlet p = Point { x: 1.0, y: 2.0 }\nprint(p.x)\nprint(p.y)",
+        );
+        assert_eq!(output, vec!["1.0", "2.0"]);
+    }
+
+    #[test]
+    fn test_vm_struct_nested() {
+        let output = run_output(
+            "struct Point { x: float64, y: float64 }\nstruct Line { start: Point, end_pt: Point }\nlet l = Line { start: Point { x: 0.0, y: 0.0 }, end_pt: Point { x: 1.0, y: 1.0 } }\nprint(l.start.x)",
+        );
+        assert_eq!(output, vec!["0.0"]);
+    }
+
+    #[test]
+    fn test_vm_enum_creation() {
+        let output = run_output(
+            "enum Color { Red, Green, Blue }\nlet c = Color::Red\nprint(c)",
+        );
+        assert_eq!(output, vec!["Color::Red"]);
+    }
+
+    #[test]
+    fn test_vm_enum_with_fields() {
+        let output = run_output(
+            "enum Shape { Circle(float64), Rect(float64, float64) }\nlet s = Shape::Circle(5.0)\nprint(s)",
+        );
+        assert!(output[0].contains("Circle"));
+    }
+
+    #[test]
+    fn test_vm_impl_method() {
+        let output = run_output(
+            "struct Counter { value: int64 }\nimpl Counter {\n    fn get(self) { self.value }\n}\nlet c = Counter { value: 42 }\nprint(c.get())",
+        );
+        assert_eq!(output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_vm_try_catch_throw() {
+        let output = run_output(
+            "try {\n    throw \"oops\"\n} catch e {\n    print(e)\n}",
+        );
+        assert_eq!(output, vec!["oops"]);
+    }
+
+    #[test]
+    fn test_vm_string_split() {
+        let output = run_output(
+            "let parts = \"hello world\".split(\" \")\nprint(parts)",
+        );
+        assert_eq!(output, vec!["[hello, world]"]);
+    }
+
+    #[test]
+    fn test_vm_string_trim() {
+        let output = run_output(
+            "print(\"  hello  \".trim())",
+        );
+        assert_eq!(output, vec!["hello"]);
+    }
+
+    #[test]
+    fn test_vm_string_contains() {
+        let output = run_output(
+            "print(\"hello world\".contains(\"world\"))",
+        );
+        assert_eq!(output, vec!["true"]);
+    }
+
+    #[test]
+    fn test_vm_string_upper_lower() {
+        let output = run_output(
+            "print(\"hello\".to_upper())\nprint(\"HELLO\".to_lower())",
+        );
+        assert_eq!(output, vec!["HELLO", "hello"]);
+    }
+
+    #[test]
+    fn test_vm_math_sqrt() {
+        let output = run_output("print(sqrt(16.0))");
+        assert_eq!(output, vec!["4.0"]);
+    }
+
+    #[test]
+    fn test_vm_math_floor_ceil() {
+        let output = run_output("print(floor(3.7))\nprint(ceil(3.2))");
+        assert_eq!(output, vec!["3.0", "4.0"]);
+    }
+
+    #[test]
+    fn test_vm_math_trig() {
+        let output = run_output("print(sin(0.0))\nprint(cos(0.0))");
+        assert_eq!(output, vec!["0.0", "1.0"]);
+    }
+
+    #[test]
+    fn test_vm_assert_pass() {
+        run("assert(true)").unwrap();
+        run("assert_eq(1 + 1, 2)").unwrap();
+    }
+
+    #[test]
+    fn test_vm_assert_fail() {
+        assert!(run("assert(false)").is_err());
+        assert!(run("assert_eq(1, 2)").is_err());
+    }
+
+    #[test]
+    fn test_vm_join() {
+        let output = run_output("print(join(\", \", [\"a\", \"b\", \"c\"]))");
+        assert_eq!(output, vec!["a, b, c"]);
+    }
+
+    #[test]
+    fn test_vm_list_method_len() {
+        let output = run_output("print([1, 2, 3].len())");
+        assert_eq!(output, vec!["3"]);
+    }
+
+    #[test]
+    fn test_vm_list_method_map() {
+        let output = run_output("print([1, 2, 3].map((x) => x * 2))");
+        assert_eq!(output, vec!["[2, 4, 6]"]);
+    }
+
+    #[test]
+    fn test_vm_list_method_filter() {
+        let output = run_output("print([1, 2, 3, 4, 5].filter((x) => x > 3))");
+        assert_eq!(output, vec!["[4, 5]"]);
+    }
+
+    #[test]
+    fn test_vm_string_replace() {
+        let output = run_output("print(\"hello world\".replace(\"world\", \"rust\"))");
+        assert_eq!(output, vec!["hello rust"]);
+    }
+
+    #[test]
+    fn test_vm_string_starts_ends() {
+        let output = run_output("print(\"hello\".starts_with(\"hel\"))\nprint(\"hello\".ends_with(\"llo\"))");
+        assert_eq!(output, vec!["true", "true"]);
+    }
+
+    #[test]
+    fn test_vm_math_log() {
+        let result = run("log(1.0)").unwrap();
+        if let VmValue::Float(f) = result {
+            assert!((f - 0.0).abs() < 1e-10);
+        } else {
+            panic!("Expected float");
+        }
+    }
+
+    #[test]
+    fn test_vm_pow_builtin() {
+        let output = run_output("print(pow(2.0, 10.0))");
+        assert_eq!(output, vec!["1024.0"]);
+    }
+
+    #[test]
+    fn test_vm_round_builtin() {
+        let output = run_output("print(round(3.5))");
+        assert_eq!(output, vec!["4.0"]);
+    }
+
+    #[test]
+    fn test_vm_try_catch_runtime_error() {
+        let output = run_output(
+            "try {\n    let x = 1 / 0\n} catch e {\n    print(e)\n}",
+        );
+        assert_eq!(output, vec!["Division by zero"]);
+    }
+
+    #[test]
+    fn test_vm_struct_field_access() {
+        let output = run_output(
+            "struct Point { x: float64, y: float64 }\nlet p = Point { x: 1.5, y: 2.5 }\nprint(p.x)",
+        );
+        assert_eq!(output, vec!["1.5"]);
+    }
+
+    #[test]
+    fn test_vm_enum_match() {
+        let output = run_output(
+            "enum Dir { North, South }\nlet d = Dir::North\nmatch d { Dir::North => print(\"north\"), _ => print(\"other\") }",
+        );
+        // match expression compares enum instances
+        assert!(!output.is_empty());
+    }
+
+    #[test]
+    fn test_vm_impl_method_with_args() {
+        let output = run_output(
+            "struct Rect { w: float64, h: float64 }\nimpl Rect {\n    fn area(self) { self.w * self.h }\n}\nlet r = Rect { w: 3.0, h: 4.0 }\nprint(r.area())",
+        );
+        assert_eq!(output, vec!["12.0"]);
+    }
+
+    #[test]
+    fn test_vm_string_len() {
+        let output = run_output("print(\"hello\".len())");
+        assert_eq!(output, vec!["5"]);
+    }
+
+    #[test]
+    fn test_vm_list_reduce() {
+        let output = run_output(
+            "let nums = [1, 2, 3, 4]\nlet s = nums.reduce(0, (acc, x) => acc + x)\nprint(s)",
+        );
+        assert_eq!(output, vec!["10"]);
+    }
+
+    #[test]
+    fn test_vm_nested_try_catch() {
+        let output = run_output(
+            "try {\n    try {\n        throw \"inner\"\n    } catch e {\n        print(e)\n        throw \"outer\"\n    }\n} catch e2 {\n    print(e2)\n}",
+        );
+        assert_eq!(output, vec!["inner", "outer"]);
+    }
+
+    #[test]
+    fn test_vm_math_pow() {
+        let output = run_output("print(pow(2.0, 10.0))");
+        assert_eq!(output, vec!["1024.0"]);
     }
 }

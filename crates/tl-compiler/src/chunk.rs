@@ -120,6 +120,25 @@ pub enum BuiltinId {
     Emit = 47,
     Lineage = 48,
     RunPipeline = 49,
+    // Phase 5: Math builtins
+    Sqrt = 50,
+    Pow = 51,
+    Floor = 52,
+    Ceil = 53,
+    Round = 54,
+    Sin = 55,
+    Cos = 56,
+    Tan = 57,
+    Log = 58,
+    Log2 = 59,
+    Log10 = 60,
+    Join = 61,
+    // Phase 5: HTTP builtins
+    HttpGet = 62,
+    HttpPost = 63,
+    // Phase 5: Assert builtins
+    Assert = 64,
+    AssertEq = 65,
 }
 
 impl BuiltinId {
@@ -175,6 +194,22 @@ impl BuiltinId {
             "emit" => Some(BuiltinId::Emit),
             "lineage" => Some(BuiltinId::Lineage),
             "run_pipeline" => Some(BuiltinId::RunPipeline),
+            "sqrt" => Some(BuiltinId::Sqrt),
+            "pow" => Some(BuiltinId::Pow),
+            "floor" => Some(BuiltinId::Floor),
+            "ceil" => Some(BuiltinId::Ceil),
+            "round" => Some(BuiltinId::Round),
+            "sin" => Some(BuiltinId::Sin),
+            "cos" => Some(BuiltinId::Cos),
+            "tan" => Some(BuiltinId::Tan),
+            "log" => Some(BuiltinId::Log),
+            "log2" => Some(BuiltinId::Log2),
+            "log10" => Some(BuiltinId::Log10),
+            "join" => Some(BuiltinId::Join),
+            "http_get" => Some(BuiltinId::HttpGet),
+            "http_post" => Some(BuiltinId::HttpPost),
+            "assert" => Some(BuiltinId::Assert),
+            "assert_eq" => Some(BuiltinId::AssertEq),
             _ => None,
         }
     }
@@ -231,6 +266,22 @@ impl BuiltinId {
             BuiltinId::Emit => "emit",
             BuiltinId::Lineage => "lineage",
             BuiltinId::RunPipeline => "run_pipeline",
+            BuiltinId::Sqrt => "sqrt",
+            BuiltinId::Pow => "pow",
+            BuiltinId::Floor => "floor",
+            BuiltinId::Ceil => "ceil",
+            BuiltinId::Round => "round",
+            BuiltinId::Sin => "sin",
+            BuiltinId::Cos => "cos",
+            BuiltinId::Tan => "tan",
+            BuiltinId::Log => "log",
+            BuiltinId::Log2 => "log2",
+            BuiltinId::Log10 => "log10",
+            BuiltinId::Join => "join",
+            BuiltinId::HttpGet => "http_get",
+            BuiltinId::HttpPost => "http_post",
+            BuiltinId::Assert => "assert",
+            BuiltinId::AssertEq => "assert_eq",
         }
     }
 }

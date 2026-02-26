@@ -73,6 +73,32 @@ pub enum Value {
     Pipeline(PipelineDef),
     /// A stream definition
     Stream(StreamDef),
+    /// A struct type definition
+    StructDef {
+        name: String,
+        fields: Vec<String>,
+    },
+    /// A struct instance
+    StructInstance {
+        type_name: String,
+        fields: HashMap<String, Value>,
+    },
+    /// An enum type definition
+    EnumDef {
+        name: String,
+        variants: Vec<(String, usize)>, // (variant_name, field_count)
+    },
+    /// An enum instance
+    EnumInstance {
+        type_name: String,
+        variant: String,
+        fields: Vec<Value>,
+    },
+    /// A module (from import)
+    Module {
+        name: String,
+        exports: HashMap<String, Value>,
+    },
 }
 
 impl fmt::Display for Value {
@@ -109,6 +135,33 @@ impl fmt::Display for Value {
             Value::Connector(c) => write!(f, "{c}"),
             Value::Pipeline(p) => write!(f, "{p}"),
             Value::Stream(s) => write!(f, "{s}"),
+            Value::StructDef { name, .. } => write!(f, "<struct {name}>"),
+            Value::StructInstance { type_name, fields } => {
+                write!(f, "{type_name} {{ ")?;
+                for (i, (k, v)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{k}: {v}")?;
+                }
+                write!(f, " }}")
+            }
+            Value::EnumDef { name, .. } => write!(f, "<enum {name}>"),
+            Value::EnumInstance { type_name, variant, fields } => {
+                write!(f, "{type_name}::{variant}")?;
+                if !fields.is_empty() {
+                    write!(f, "(")?;
+                    for (i, v) in fields.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{v}")?;
+                    }
+                    write!(f, ")")?;
+                }
+                Ok(())
+            }
+            Value::Module { name, .. } => write!(f, "<module {name}>"),
         }
     }
 }
@@ -144,6 +197,16 @@ impl Value {
             Value::Connector(_) => "connector",
             Value::Pipeline(_) => "pipeline",
             Value::Stream(_) => "stream",
+            Value::StructDef { .. } => "struct_def",
+            Value::StructInstance { type_name, .. } => {
+                // We can't return a dynamic string from &'static str,
+                // so just return "struct"
+                let _ = type_name;
+                "struct"
+            }
+            Value::EnumDef { .. } => "enum_def",
+            Value::EnumInstance { .. } => "enum",
+            Value::Module { .. } => "module",
         }
     }
 }
@@ -154,6 +217,7 @@ enum Signal {
     Return(Value),
     Break,
     Continue,
+    Throw(Value),
 }
 
 /// Variable environment (scope chain)
@@ -220,6 +284,25 @@ impl Environment {
         global.insert("emit".to_string(), Value::Builtin("emit".to_string()));
         global.insert("lineage".to_string(), Value::Builtin("lineage".to_string()));
         global.insert("run_pipeline".to_string(), Value::Builtin("run_pipeline".to_string()));
+        // Math builtins
+        global.insert("sqrt".to_string(), Value::Builtin("sqrt".to_string()));
+        global.insert("pow".to_string(), Value::Builtin("pow".to_string()));
+        global.insert("floor".to_string(), Value::Builtin("floor".to_string()));
+        global.insert("ceil".to_string(), Value::Builtin("ceil".to_string()));
+        global.insert("round".to_string(), Value::Builtin("round".to_string()));
+        global.insert("sin".to_string(), Value::Builtin("sin".to_string()));
+        global.insert("cos".to_string(), Value::Builtin("cos".to_string()));
+        global.insert("tan".to_string(), Value::Builtin("tan".to_string()));
+        global.insert("log".to_string(), Value::Builtin("log".to_string()));
+        global.insert("log2".to_string(), Value::Builtin("log2".to_string()));
+        global.insert("log10".to_string(), Value::Builtin("log10".to_string()));
+        global.insert("join".to_string(), Value::Builtin("join".to_string()));
+        // Assert builtins
+        global.insert("assert".to_string(), Value::Builtin("assert".to_string()));
+        global.insert("assert_eq".to_string(), Value::Builtin("assert_eq".to_string()));
+        // HTTP builtins
+        global.insert("http_get".to_string(), Value::Builtin("http_get".to_string()));
+        global.insert("http_post".to_string(), Value::Builtin("http_post".to_string()));
 
         Self {
             scopes: vec![global],
@@ -276,6 +359,16 @@ pub struct Interpreter {
     last_expr_value: Option<Value>,
     /// Data engine (lazily initialized)
     data_engine: Option<DataEngine>,
+    /// Method table: type_name -> method_name -> function value
+    method_table: HashMap<String, HashMap<String, Value>>,
+    /// Module cache: file_path -> exported values
+    module_cache: HashMap<String, HashMap<String, Value>>,
+    /// Files currently being imported (for circular dependency detection)
+    importing_files: std::collections::HashSet<String>,
+    /// Current file path (for resolving relative imports)
+    pub file_path: Option<String>,
+    /// Whether we are in test mode (run test blocks)
+    pub test_mode: bool,
 }
 
 impl Interpreter {
@@ -285,6 +378,11 @@ impl Interpreter {
             output: Vec::new(),
             last_expr_value: None,
             data_engine: None,
+            method_table: HashMap::new(),
+            module_cache: HashMap::new(),
+            importing_files: std::collections::HashSet::new(),
+            file_path: None,
+            test_mode: false,
         }
     }
 
@@ -303,6 +401,12 @@ impl Interpreter {
             match self.exec_stmt(stmt)? {
                 Signal::Return(val) => return Ok(val),
                 Signal::None => {}
+                Signal::Throw(val) => {
+                    return Err(TlError::Runtime(RuntimeError {
+                        message: format!("Unhandled throw: {val}"),
+                        span: None,
+                    }))
+                }
                 Signal::Break | Signal::Continue => {
                     return Err(TlError::Runtime(RuntimeError {
                         message: "break/continue outside of loop".to_string(),
@@ -405,6 +509,7 @@ impl Interpreter {
                     match self.exec_block(body)? {
                         Signal::Break => break,
                         Signal::Return(v) => return Ok(Signal::Return(v)),
+                        Signal::Throw(v) => return Ok(Signal::Throw(v)),
                         Signal::Continue | Signal::None => continue,
                     }
                 }
@@ -429,6 +534,7 @@ impl Interpreter {
                     match signal {
                         Signal::Break => break,
                         Signal::Return(v) => return Ok(Signal::Return(v)),
+                        Signal::Throw(v) => return Ok(Signal::Throw(v)),
                         Signal::Continue | Signal::None => continue,
                     }
                 }
@@ -464,6 +570,143 @@ impl Interpreter {
             Stmt::SinkDecl { name, connector_type, config } => {
                 self.exec_sink_decl(name, connector_type, config)
             }
+            Stmt::StructDecl { name, fields } => {
+                let field_names: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
+                self.env.set(
+                    name.clone(),
+                    Value::StructDef {
+                        name: name.clone(),
+                        fields: field_names,
+                    },
+                );
+                Ok(Signal::None)
+            }
+            Stmt::EnumDecl { name, variants } => {
+                let variant_info: Vec<(String, usize)> = variants
+                    .iter()
+                    .map(|v| (v.name.clone(), v.fields.len()))
+                    .collect();
+                self.env.set(
+                    name.clone(),
+                    Value::EnumDef {
+                        name: name.clone(),
+                        variants: variant_info,
+                    },
+                );
+                Ok(Signal::None)
+            }
+            Stmt::ImplBlock { type_name, methods } => {
+                let mut method_map = self
+                    .method_table
+                    .remove(type_name)
+                    .unwrap_or_default();
+                for method in methods {
+                    if let Stmt::FnDecl { name, params, body, .. } = method {
+                        method_map.insert(
+                            name.clone(),
+                            Value::Function {
+                                name: name.clone(),
+                                params: params.clone(),
+                                body: body.clone(),
+                            },
+                        );
+                    }
+                }
+                self.method_table.insert(type_name.clone(), method_map);
+                Ok(Signal::None)
+            }
+            Stmt::TryCatch { try_body, catch_var, catch_body } => {
+                self.env.push_scope();
+                let mut result = Signal::None;
+                let mut caught = None;
+                for stmt in try_body {
+                    match self.exec_stmt(stmt) {
+                        Ok(Signal::Throw(val)) => {
+                            caught = Some(val);
+                            break;
+                        }
+                        Ok(Signal::Return(v)) => {
+                            self.env.pop_scope();
+                            return Ok(Signal::Return(v));
+                        }
+                        Ok(sig) => {
+                            result = sig;
+                            if matches!(result, Signal::Break | Signal::Continue) {
+                                break;
+                            }
+                        }
+                        Err(TlError::Runtime(re)) => {
+                            caught = Some(Value::String(re.message.clone()));
+                            break;
+                        }
+                        Err(e) => {
+                            self.env.pop_scope();
+                            return Err(e);
+                        }
+                    }
+                }
+                self.env.pop_scope();
+                if let Some(err_val) = caught {
+                    self.env.push_scope();
+                    self.env.set(catch_var.clone(), err_val);
+                    for stmt in catch_body {
+                        match self.exec_stmt(stmt)? {
+                            Signal::Return(v) => {
+                                self.env.pop_scope();
+                                return Ok(Signal::Return(v));
+                            }
+                            Signal::Break | Signal::Continue => {
+                                let sig = self.exec_stmt(stmt)?;
+                                self.env.pop_scope();
+                                return Ok(sig);
+                            }
+                            _ => {}
+                        }
+                    }
+                    self.env.pop_scope();
+                }
+                Ok(result)
+            }
+            Stmt::Throw(expr) => {
+                let val = self.eval_expr(expr)?;
+                Ok(Signal::Throw(val))
+            }
+            Stmt::Import { path, alias } => {
+                self.exec_import(path, alias.as_deref())
+            }
+            Stmt::Test { name, body } => {
+                if self.test_mode {
+                    self.env.push_scope();
+                    let mut failed = false;
+                    for stmt in body {
+                        match self.exec_stmt(stmt) {
+                            Ok(Signal::Throw(val)) => {
+                                let msg = format!("Test '{}' failed: throw {}", name, val);
+                                self.output.push(msg.clone());
+                                println!("{msg}");
+                                failed = true;
+                                break;
+                            }
+                            Ok(Signal::Return(_)) => break,
+                            Ok(_) => {}
+                            Err(e) => {
+                                let msg = format!("Test '{}' failed: {}", name, e);
+                                self.output.push(msg.clone());
+                                println!("{msg}");
+                                failed = true;
+                                break;
+                            }
+                        }
+                    }
+                    self.env.pop_scope();
+                    if !failed {
+                        let msg = format!("Test '{}' passed", name);
+                        self.output.push(msg.clone());
+                        println!("{msg}");
+                    }
+                }
+                Ok(Signal::None)
+            }
             Stmt::Break => Ok(Signal::Break),
             Stmt::Continue => Ok(Signal::Continue),
         }
@@ -475,7 +718,7 @@ impl Interpreter {
         for stmt in stmts {
             result = self.exec_stmt(stmt)?;
             match &result {
-                Signal::Return(_) | Signal::Break | Signal::Continue => {
+                Signal::Return(_) | Signal::Break | Signal::Continue | Signal::Throw(_) => {
                     self.env.pop_scope();
                     return Ok(result);
                 }
@@ -525,12 +768,41 @@ impl Interpreter {
             }
 
             Expr::Call { function, args } => {
+                // Method call: obj.method(args) — where function is Member { object, field }
+                if let Expr::Member { object, field } = function.as_ref() {
+                    let obj = self.eval_expr(object)?;
+                    let mut eval_args = Vec::new();
+                    for arg in args {
+                        eval_args.push(self.eval_expr(arg)?);
+                    }
+                    return self.call_method(&obj, field, &eval_args);
+                }
                 let func = self.eval_expr(function)?;
                 let mut eval_args = Vec::new();
                 for arg in args {
                     eval_args.push(self.eval_expr(arg)?);
                 }
                 self.call_function(&func, &eval_args)
+            }
+
+            Expr::Member { object, field } => {
+                let obj = self.eval_expr(object)?;
+                match &obj {
+                    Value::StructInstance { fields, .. } => {
+                        fields.get(field).cloned().ok_or_else(|| {
+                            runtime_err(format!("Struct has no field `{field}`"))
+                        })
+                    }
+                    Value::Module { exports, name } => {
+                        exports.get(field).cloned().ok_or_else(|| {
+                            runtime_err(format!("Module `{name}` has no export `{field}`"))
+                        })
+                    }
+                    _ => Err(runtime_err(format!(
+                        "Cannot access field `{field}` on {}",
+                        obj.type_name()
+                    ))),
+                }
             }
 
             Expr::Pipe { left, right } => {
@@ -614,6 +886,51 @@ impl Interpreter {
                     if matches!(pattern, Expr::Ident(s) if s == "_") {
                         return self.eval_expr(body);
                     }
+                    // Enum variant pattern: Enum::Variant or Enum::Variant(a, b, c)
+                    if let Expr::EnumVariant { enum_name: _, variant, args: pat_args } = pattern {
+                        if let Value::EnumInstance { variant: sv, fields, .. } = &subject_val {
+                            if variant == sv {
+                                // Bind destructured fields
+                                self.env.push_scope();
+                                for (i, pat_arg) in pat_args.iter().enumerate() {
+                                    if let Expr::Ident(binding) = pat_arg {
+                                        if binding != "_" {
+                                            if let Some(val) = fields.get(i) {
+                                                self.env.set(binding.clone(), val.clone());
+                                            }
+                                        }
+                                    }
+                                }
+                                let result = self.eval_expr(body);
+                                self.env.pop_scope();
+                                return result;
+                            }
+                        }
+                        continue;
+                    }
+                    // Call pattern (enum variant with args as call syntax)
+                    if let Expr::Call { function, args: pat_args } = pattern {
+                        if let Expr::EnumVariant { variant, .. } = function.as_ref() {
+                            if let Value::EnumInstance { variant: sv, fields, .. } = &subject_val {
+                                if variant == sv {
+                                    self.env.push_scope();
+                                    for (i, pat_arg) in pat_args.iter().enumerate() {
+                                        if let Expr::Ident(binding) = pat_arg {
+                                            if binding != "_" {
+                                                if let Some(val) = fields.get(i) {
+                                                    self.env.set(binding.clone(), val.clone());
+                                                }
+                                            }
+                                        }
+                                    }
+                                    let result = self.eval_expr(body);
+                                    self.env.pop_scope();
+                                    return result;
+                                }
+                            }
+                            continue;
+                        }
+                    }
                     let pattern_val = self.eval_expr(pattern)?;
                     let matched = match (&subject_val, &pattern_val) {
                         (Value::Int(a), Value::Int(b)) => a == b,
@@ -621,7 +938,12 @@ impl Interpreter {
                         (Value::String(a), Value::String(b)) => a == b,
                         (Value::Bool(a), Value::Bool(b)) => a == b,
                         (Value::None, Value::None) => true,
-                        _ => false, // type mismatch = no match
+                        // Match enum unit variants
+                        (Value::EnumInstance { type_name: at, variant: av, fields: af },
+                         Value::EnumInstance { type_name: bt, variant: bv, fields: bf }) => {
+                            at == bt && av == bv && af.is_empty() && bf.is_empty()
+                        }
+                        _ => false,
                     };
                     if matched {
                         return self.eval_expr(body);
@@ -649,14 +971,84 @@ impl Interpreter {
 
             Expr::Assign { target, value } => {
                 let val = self.eval_expr(value)?;
-                if let Expr::Ident(name) = target.as_ref() {
-                    if self.env.update(name, val.clone()) {
-                        Ok(val)
-                    } else {
-                        Err(runtime_err(format!("Undefined variable: `{name}`")))
+                match target.as_ref() {
+                    Expr::Ident(name) => {
+                        if self.env.update(name, val.clone()) {
+                            Ok(val)
+                        } else {
+                            Err(runtime_err(format!("Undefined variable: `{name}`")))
+                        }
                     }
-                } else {
-                    Err(runtime_err("Invalid assignment target".to_string()))
+                    Expr::Member { object, field } => {
+                        // Struct field assignment: s.x = val
+                        if let Expr::Ident(name) = object.as_ref() {
+                            let obj = self.env.get(name).cloned();
+                            match obj {
+                                Some(Value::StructInstance { type_name, mut fields }) => {
+                                    fields.insert(field.clone(), val.clone());
+                                    self.env.update(name, Value::StructInstance { type_name, fields });
+                                    Ok(val)
+                                }
+                                _ => Err(runtime_err(format!("Cannot set field on {}", name))),
+                            }
+                        } else {
+                            Err(runtime_err("Invalid assignment target".to_string()))
+                        }
+                    }
+                    _ => Err(runtime_err("Invalid assignment target".to_string())),
+                }
+            }
+
+            Expr::StructInit { name, fields } => {
+                let def = self.env.get(name).cloned();
+                match def {
+                    Some(Value::StructDef { name: type_name, fields: def_fields }) => {
+                        let mut field_map = HashMap::new();
+                        for (fname, fexpr) in fields {
+                            let fval = self.eval_expr(fexpr)?;
+                            if !def_fields.contains(fname) {
+                                return Err(runtime_err(format!(
+                                    "Unknown field `{fname}` on struct `{type_name}`"
+                                )));
+                            }
+                            field_map.insert(fname.clone(), fval);
+                        }
+                        Ok(Value::StructInstance {
+                            type_name,
+                            fields: field_map,
+                        })
+                    }
+                    _ => Err(runtime_err(format!("Unknown struct type: `{name}`"))),
+                }
+            }
+
+            Expr::EnumVariant { enum_name, variant, args } => {
+                let def = self.env.get(enum_name).cloned();
+                match def {
+                    Some(Value::EnumDef { name: type_name, variants }) => {
+                        if let Some((_, expected_count)) = variants.iter().find(|(v, _)| v == variant) {
+                            let mut eval_args = Vec::new();
+                            for arg in args {
+                                eval_args.push(self.eval_expr(arg)?);
+                            }
+                            if eval_args.len() != *expected_count {
+                                return Err(runtime_err(format!(
+                                    "Enum variant {}::{} expects {} arguments, got {}",
+                                    type_name, variant, expected_count, eval_args.len()
+                                )));
+                            }
+                            Ok(Value::EnumInstance {
+                                type_name,
+                                variant: variant.clone(),
+                                fields: eval_args,
+                            })
+                        } else {
+                            Err(runtime_err(format!(
+                                "Unknown variant `{variant}` on enum `{type_name}`"
+                            )))
+                        }
+                    }
+                    _ => Err(runtime_err(format!("Unknown enum type: `{enum_name}`"))),
                 }
             }
 
@@ -1277,8 +1669,364 @@ impl Interpreter {
                     Err(runtime_err("run_pipeline: argument must be a pipeline".to_string()))
                 }
             }
+            // Math builtins
+            "sqrt" => match args.first() {
+                Some(Value::Float(n)) => Ok(Value::Float(n.sqrt())),
+                Some(Value::Int(n)) => Ok(Value::Float((*n as f64).sqrt())),
+                _ => Err(runtime_err_s("sqrt() expects a number")),
+            },
+            "pow" => {
+                if args.len() == 2 {
+                    match (&args[0], &args[1]) {
+                        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a.powf(*b))),
+                        (Value::Int(a), Value::Int(b)) => Ok(Value::Float((*a as f64).powf(*b as f64))),
+                        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a.powf(*b as f64))),
+                        (Value::Int(a), Value::Float(b)) => Ok(Value::Float((*a as f64).powf(*b))),
+                        _ => Err(runtime_err_s("pow() expects two numbers")),
+                    }
+                } else {
+                    Err(runtime_err_s("pow() expects 2 arguments"))
+                }
+            }
+            "floor" => match args.first() {
+                Some(Value::Float(n)) => Ok(Value::Float(n.floor())),
+                Some(Value::Int(n)) => Ok(Value::Int(*n)),
+                _ => Err(runtime_err_s("floor() expects a number")),
+            },
+            "ceil" => match args.first() {
+                Some(Value::Float(n)) => Ok(Value::Float(n.ceil())),
+                Some(Value::Int(n)) => Ok(Value::Int(*n)),
+                _ => Err(runtime_err_s("ceil() expects a number")),
+            },
+            "round" => match args.first() {
+                Some(Value::Float(n)) => Ok(Value::Float(n.round())),
+                Some(Value::Int(n)) => Ok(Value::Int(*n)),
+                _ => Err(runtime_err_s("round() expects a number")),
+            },
+            "sin" => match args.first() {
+                Some(Value::Float(n)) => Ok(Value::Float(n.sin())),
+                Some(Value::Int(n)) => Ok(Value::Float((*n as f64).sin())),
+                _ => Err(runtime_err_s("sin() expects a number")),
+            },
+            "cos" => match args.first() {
+                Some(Value::Float(n)) => Ok(Value::Float(n.cos())),
+                Some(Value::Int(n)) => Ok(Value::Float((*n as f64).cos())),
+                _ => Err(runtime_err_s("cos() expects a number")),
+            },
+            "tan" => match args.first() {
+                Some(Value::Float(n)) => Ok(Value::Float(n.tan())),
+                Some(Value::Int(n)) => Ok(Value::Float((*n as f64).tan())),
+                _ => Err(runtime_err_s("tan() expects a number")),
+            },
+            "log" => match args.first() {
+                Some(Value::Float(n)) => Ok(Value::Float(n.ln())),
+                Some(Value::Int(n)) => Ok(Value::Float((*n as f64).ln())),
+                _ => Err(runtime_err_s("log() expects a number")),
+            },
+            "log2" => match args.first() {
+                Some(Value::Float(n)) => Ok(Value::Float(n.log2())),
+                Some(Value::Int(n)) => Ok(Value::Float((*n as f64).log2())),
+                _ => Err(runtime_err_s("log2() expects a number")),
+            },
+            "log10" => match args.first() {
+                Some(Value::Float(n)) => Ok(Value::Float(n.log10())),
+                Some(Value::Int(n)) => Ok(Value::Float((*n as f64).log10())),
+                _ => Err(runtime_err_s("log10() expects a number")),
+            },
+            "join" => {
+                if args.len() == 2 {
+                    if let (Value::String(sep), Value::List(items)) = (&args[0], &args[1]) {
+                        let parts: Vec<String> = items.iter().map(|v| format!("{v}")).collect();
+                        Ok(Value::String(parts.join(sep.as_str())))
+                    } else {
+                        Err(runtime_err_s("join() expects a separator string and a list"))
+                    }
+                } else {
+                    Err(runtime_err_s("join() expects 2 arguments"))
+                }
+            }
+            // Assert builtins
+            "assert" => {
+                if args.is_empty() {
+                    return Err(runtime_err_s("assert() expects at least 1 argument"));
+                }
+                if !args[0].is_truthy() {
+                    let msg = if args.len() > 1 {
+                        format!("{}", args[1])
+                    } else {
+                        "Assertion failed".to_string()
+                    };
+                    Err(runtime_err(msg))
+                } else {
+                    Ok(Value::None)
+                }
+            }
+            "assert_eq" => {
+                if args.len() < 2 {
+                    return Err(runtime_err_s("assert_eq() expects 2 arguments"));
+                }
+                let eq = match (&args[0], &args[1]) {
+                    (Value::Int(a), Value::Int(b)) => a == b,
+                    (Value::Float(a), Value::Float(b)) => a == b,
+                    (Value::String(a), Value::String(b)) => a == b,
+                    (Value::Bool(a), Value::Bool(b)) => a == b,
+                    (Value::None, Value::None) => true,
+                    _ => false,
+                };
+                if !eq {
+                    Err(runtime_err(format!(
+                        "Assertion failed: {} != {}",
+                        args[0], args[1]
+                    )))
+                } else {
+                    Ok(Value::None)
+                }
+            }
+            // HTTP builtins
+            "http_get" => {
+                if args.is_empty() {
+                    return Err(runtime_err_s("http_get() expects a URL string"));
+                }
+                if let Value::String(url) = &args[0] {
+                    let body = reqwest::blocking::get(url.as_str())
+                        .map_err(|e| runtime_err(format!("HTTP GET error: {e}")))?
+                        .text()
+                        .map_err(|e| runtime_err(format!("HTTP response error: {e}")))?;
+                    Ok(Value::String(body))
+                } else {
+                    Err(runtime_err_s("http_get() expects a string URL"))
+                }
+            }
+            "http_post" => {
+                if args.len() < 2 {
+                    return Err(runtime_err_s("http_post() expects a URL and body string"));
+                }
+                if let (Value::String(url), Value::String(body_str)) = (&args[0], &args[1]) {
+                    let client = reqwest::blocking::Client::new();
+                    let resp = client
+                        .post(url.as_str())
+                        .header("Content-Type", "application/json")
+                        .body(body_str.clone())
+                        .send()
+                        .map_err(|e| runtime_err(format!("HTTP POST error: {e}")))?
+                        .text()
+                        .map_err(|e| runtime_err(format!("HTTP response error: {e}")))?;
+                    Ok(Value::String(resp))
+                } else {
+                    Err(runtime_err_s("http_post() expects string URL and body"))
+                }
+            }
             _ => Err(runtime_err(format!("Unknown builtin: {name}"))),
         }
+    }
+
+    /// Call a method on an object via dot notation
+    fn call_method(&mut self, obj: &Value, method: &str, args: &[Value]) -> Result<Value, TlError> {
+        // String methods
+        if let Value::String(s) = obj {
+            return match method {
+                "len" => Ok(Value::Int(s.len() as i64)),
+                "split" => {
+                    let sep = match args.first() {
+                        Some(Value::String(sep)) => sep.as_str().to_string(),
+                        _ => return Err(runtime_err_s("split() expects a string separator")),
+                    };
+                    let parts: Vec<Value> = s.split(&sep).map(|p| Value::String(p.to_string())).collect();
+                    Ok(Value::List(parts))
+                }
+                "trim" => Ok(Value::String(s.trim().to_string())),
+                "contains" => {
+                    let needle = match args.first() {
+                        Some(Value::String(n)) => n.as_str(),
+                        _ => return Err(runtime_err_s("contains() expects a string")),
+                    };
+                    Ok(Value::Bool(s.contains(needle)))
+                }
+                "replace" => {
+                    if args.len() < 2 {
+                        return Err(runtime_err_s("replace() expects 2 arguments"));
+                    }
+                    if let (Value::String(from), Value::String(to)) = (&args[0], &args[1]) {
+                        Ok(Value::String(s.replace(from.as_str(), to.as_str())))
+                    } else {
+                        Err(runtime_err_s("replace() expects string arguments"))
+                    }
+                }
+                "starts_with" => {
+                    let prefix = match args.first() {
+                        Some(Value::String(p)) => p.as_str(),
+                        _ => return Err(runtime_err_s("starts_with() expects a string")),
+                    };
+                    Ok(Value::Bool(s.starts_with(prefix)))
+                }
+                "ends_with" => {
+                    let suffix = match args.first() {
+                        Some(Value::String(su)) => su.as_str(),
+                        _ => return Err(runtime_err_s("ends_with() expects a string")),
+                    };
+                    Ok(Value::Bool(s.ends_with(suffix)))
+                }
+                "to_upper" => Ok(Value::String(s.to_uppercase())),
+                "to_lower" => Ok(Value::String(s.to_lowercase())),
+                "join" => {
+                    if let Some(Value::List(items)) = args.first() {
+                        let parts: Vec<String> = items.iter().map(|v| format!("{v}")).collect();
+                        Ok(Value::String(parts.join(s.as_str())))
+                    } else {
+                        Err(runtime_err_s("join() expects a list argument"))
+                    }
+                }
+                _ => Err(runtime_err(format!("String has no method `{method}`"))),
+            };
+        }
+
+        // List methods
+        if let Value::List(items) = obj {
+            return match method {
+                "len" => Ok(Value::Int(items.len() as i64)),
+                "push" => {
+                    let mut new_items = items.clone();
+                    for arg in args {
+                        new_items.push(arg.clone());
+                    }
+                    Ok(Value::List(new_items))
+                }
+                "map" => {
+                    if let Some(func) = args.first() {
+                        let mut result = Vec::new();
+                        for item in items {
+                            result.push(self.call_function(func, &[item.clone()])?);
+                        }
+                        Ok(Value::List(result))
+                    } else {
+                        Err(runtime_err_s("map() expects a function argument"))
+                    }
+                }
+                "filter" => {
+                    if let Some(func) = args.first() {
+                        let mut result = Vec::new();
+                        for item in items {
+                            let keep = self.call_function(func, &[item.clone()])?;
+                            if keep.is_truthy() {
+                                result.push(item.clone());
+                            }
+                        }
+                        Ok(Value::List(result))
+                    } else {
+                        Err(runtime_err_s("filter() expects a function argument"))
+                    }
+                }
+                "reduce" => {
+                    if args.len() < 2 {
+                        return Err(runtime_err_s("reduce() expects a function and initial value"));
+                    }
+                    let func = &args[0];
+                    let mut acc = args[1].clone();
+                    for item in items {
+                        acc = self.call_function(func, &[acc, item.clone()])?;
+                    }
+                    Ok(acc)
+                }
+                _ => Err(runtime_err(format!("List has no method `{method}`"))),
+            };
+        }
+
+        // Struct/impl method dispatch
+        if let Value::StructInstance { type_name, .. } = obj {
+            if let Some(methods) = self.method_table.get(type_name) {
+                if let Some(func) = methods.get(method) {
+                    let func = func.clone();
+                    // Prepend self to args
+                    let mut all_args = vec![obj.clone()];
+                    all_args.extend_from_slice(args);
+                    return self.call_function(&func, &all_args);
+                }
+            }
+        }
+
+        Err(runtime_err(format!(
+            "No method `{method}` on {}",
+            obj.type_name()
+        )))
+    }
+
+    /// Execute an import statement
+    fn exec_import(&mut self, path: &str, alias: Option<&str>) -> Result<Signal, TlError> {
+        // Resolve path relative to current file
+        let resolved = if let Some(ref base) = self.file_path {
+            let base_dir = std::path::Path::new(base).parent().unwrap_or(std::path::Path::new("."));
+            base_dir.join(path).to_string_lossy().to_string()
+        } else {
+            path.to_string()
+        };
+
+        // Circular dependency detection
+        if self.importing_files.contains(&resolved) {
+            return Err(TlError::Runtime(RuntimeError {
+                message: format!("Circular import detected: {resolved}"),
+                span: None,
+            }));
+        }
+
+        // Check cache
+        if let Some(exports) = self.module_cache.get(&resolved) {
+            if let Some(alias) = alias {
+                self.env.set(alias.to_string(), Value::Module {
+                    name: alias.to_string(),
+                    exports: exports.clone(),
+                });
+            } else {
+                for (k, v) in exports {
+                    self.env.set(k.clone(), v.clone());
+                }
+            }
+            return Ok(Signal::None);
+        }
+
+        // Read and parse file
+        let source = std::fs::read_to_string(&resolved)
+            .map_err(|e| runtime_err(format!("Cannot read '{resolved}': {e}")))?;
+        let program = tl_parser::parse(&source)
+            .map_err(|e| runtime_err(format!("Parse error in '{resolved}': {e}")))?;
+
+        // Execute in a fresh interpreter with shared method table
+        self.importing_files.insert(resolved.clone());
+        let mut sub_interp = Interpreter::new();
+        sub_interp.file_path = Some(resolved.clone());
+        sub_interp.importing_files = self.importing_files.clone();
+        sub_interp.execute(&program)?;
+        self.importing_files.remove(&resolved);
+
+        // Collect exports (all top-level bindings)
+        let exports: HashMap<String, Value> = sub_interp.env.scopes[0].clone();
+
+        // Merge method tables from imported module
+        for (type_name, methods) in &sub_interp.method_table {
+            let entry = self.method_table.entry(type_name.clone()).or_default();
+            for (name, func) in methods {
+                entry.insert(name.clone(), func.clone());
+            }
+        }
+
+        // Cache
+        self.module_cache.insert(resolved, exports.clone());
+
+        // Inject into current scope
+        if let Some(alias) = alias {
+            self.env.set(alias.to_string(), Value::Module {
+                name: alias.to_string(),
+                exports,
+            });
+        } else {
+            for (k, v) in exports {
+                // Don't import builtins
+                if !matches!(v, Value::Builtin(_)) {
+                    self.env.set(k, v);
+                }
+            }
+        }
+
+        Ok(Signal::None)
     }
 
     /// Simple string interpolation: replace {expr} with evaluated value
@@ -1713,6 +2461,13 @@ fn tl_type_to_arrow(ty: &TypeExpr) -> ArrowDataType {
 fn runtime_err(message: String) -> TlError {
     TlError::Runtime(RuntimeError {
         message,
+        span: None,
+    })
+}
+
+fn runtime_err_s(message: &str) -> TlError {
+    TlError::Runtime(RuntimeError {
+        message: message.to_string(),
         span: None,
     })
 }
@@ -2558,5 +3313,115 @@ mod tests {
     fn test_reduce_builtin() {
         let output = run_output("let product = reduce([1, 2, 3, 4], 1, (acc, x) => acc * x)\nprint(product)");
         assert_eq!(output, vec!["24"]);
+    }
+
+    #[test]
+    fn test_struct_creation() {
+        let output = run_output(
+            "struct Point { x: float64, y: float64 }\nlet p = Point { x: 1.0, y: 2.0 }\nprint(p.x)\nprint(p.y)",
+        );
+        assert_eq!(output, vec!["1.0", "2.0"]);
+    }
+
+    #[test]
+    fn test_struct_nested() {
+        let output = run_output(
+            "struct Point { x: float64, y: float64 }\nstruct Line { start: Point, end_pt: Point }\nlet l = Line { start: Point { x: 0.0, y: 0.0 }, end_pt: Point { x: 1.0, y: 1.0 } }\nprint(l.start.x)",
+        );
+        assert_eq!(output, vec!["0.0"]);
+    }
+
+    #[test]
+    fn test_enum_creation() {
+        let output = run_output(
+            "enum Color { Red, Green, Blue }\nlet c = Color::Red\nprint(c)",
+        );
+        assert!(output.len() == 1);
+        assert!(output[0].contains("Color::Red"), "expected output to contain 'Color::Red', got: {}", output[0]);
+    }
+
+    #[test]
+    fn test_enum_with_fields() {
+        let output = run_output(
+            "enum Shape { Circle(float64), Rect(float64, float64) }\nlet s = Shape::Circle(5.0)\nprint(s)",
+        );
+        assert!(output.len() == 1);
+        assert!(output[0].contains("Circle"), "expected output to contain 'Circle', got: {}", output[0]);
+    }
+
+    #[test]
+    fn test_enum_match() {
+        let output = run_output(
+            "enum Shape { Circle(float64), Rect(float64, float64) }\nlet s = Shape::Circle(5.0)\nlet result = match s {\n    Shape::Circle(r) => r * 2.0,\n    Shape::Rect(w, h) => w * h,\n    _ => 0.0\n}\nprint(result)",
+        );
+        assert_eq!(output, vec!["10.0"]);
+    }
+
+    #[test]
+    fn test_impl_method() {
+        let output = run_output(
+            "struct Counter { value: int64 }\nimpl Counter {\n    fn get(self) { self.value }\n}\nlet c = Counter { value: 42 }\nprint(c.get())",
+        );
+        assert_eq!(output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_try_catch() {
+        let output = run_output(
+            "try {\n    throw \"oops\"\n} catch e {\n    print(e)\n}",
+        );
+        assert_eq!(output, vec!["oops"]);
+    }
+
+    #[test]
+    fn test_try_catch_runtime_error() {
+        let output = run_output(
+            "try {\n    let x = 1 / 0\n} catch e {\n    print(\"caught\")\n}",
+        );
+        assert_eq!(output, vec!["caught"]);
+    }
+
+    #[test]
+    fn test_string_methods() {
+        let output = run_output(
+            "print(\"hello world\".split(\" \"))\nprint(\"  hello  \".trim())\nprint(\"hello\".contains(\"ell\"))\nprint(\"hello\".to_upper())",
+        );
+        assert_eq!(output, vec!["[hello, world]", "hello", "true", "HELLO"]);
+    }
+
+    #[test]
+    fn test_math_builtins() {
+        let output = run_output(
+            "print(sqrt(16.0))\nprint(floor(3.7))\nprint(ceil(3.2))\nprint(abs(-5))",
+        );
+        assert_eq!(output, vec!["4.0", "3.0", "4.0", "5"]);
+    }
+
+    #[test]
+    fn test_assert_pass() {
+        let result = run("assert(true)\nassert_eq(1 + 1, 2)");
+        assert!(result.is_ok(), "assert(true) and assert_eq(1+1, 2) should not error");
+    }
+
+    #[test]
+    fn test_assert_fail() {
+        let result = run("assert(false)");
+        assert!(result.is_err(), "assert(false) should return an error");
+    }
+
+    #[test]
+    fn test_join_builtin() {
+        let output = run_output(
+            "print(join(\", \", [\"a\", \"b\", \"c\"]))",
+        );
+        assert_eq!(output, vec!["a, b, c"]);
+    }
+
+    #[test]
+    fn test_list_methods() {
+        let output = run_output(
+            "let nums = [1, 2, 3]\nprint(nums.len())\nlet doubled = nums.map((x) => x * 2)\nprint(doubled)",
+        );
+        assert_eq!(output, vec!["3", "[2, 4, 6]"]);
     }
 }

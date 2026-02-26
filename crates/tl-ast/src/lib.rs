@@ -107,11 +107,58 @@ pub enum Stmt {
         config: Vec<(String, Expr)>,
     },
 
+    /// `struct Name { field: type, ... }`
+    StructDecl {
+        name: String,
+        fields: Vec<SchemaField>,
+    },
+
+    /// `enum Name { Variant, Variant(types), ... }`
+    EnumDecl {
+        name: String,
+        variants: Vec<EnumVariant>,
+    },
+
+    /// `impl Type { fn methods... }`
+    ImplBlock {
+        type_name: String,
+        methods: Vec<Stmt>,
+    },
+
+    /// `try { ... } catch e { ... }`
+    TryCatch {
+        try_body: Vec<Stmt>,
+        catch_var: String,
+        catch_body: Vec<Stmt>,
+    },
+
+    /// `throw expr`
+    Throw(Expr),
+
+    /// `import "path.tl"` or `import "path.tl" as name`
+    Import {
+        path: String,
+        alias: Option<String>,
+    },
+
+    /// `test "name" { ... }`
+    Test {
+        name: String,
+        body: Vec<Stmt>,
+    },
+
     /// `break`
     Break,
 
     /// `continue`
     Continue,
+}
+
+/// Enum variant definition
+#[derive(Debug, Clone)]
+pub struct EnumVariant {
+    pub name: String,
+    pub fields: Vec<TypeExpr>,
 }
 
 /// Window specification for stream processing
@@ -226,6 +273,19 @@ pub enum Expr {
     Assign {
         target: Box<Expr>,
         value: Box<Expr>,
+    },
+
+    /// Struct initialization: Name { field: value, ... }
+    StructInit {
+        name: String,
+        fields: Vec<(String, Expr)>,
+    },
+
+    /// Enum variant: Enum::Variant or Enum::Variant(args)
+    EnumVariant {
+        enum_name: String,
+        variant: String,
+        args: Vec<Expr>,
     },
 }
 

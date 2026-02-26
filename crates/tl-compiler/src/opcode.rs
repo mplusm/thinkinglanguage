@@ -143,6 +143,29 @@ pub enum Op {
     StreamExec = 48,
     /// ConnectorDecl: A = dest, B = connector type constant, C = config constant
     ConnectorDecl = 49,
+
+    // ── Phase 5: Language completeness ──
+    /// NewStruct: A = dest, B = type name constant, C = field count
+    /// Followed by field name/value register pairs
+    NewStruct = 50,
+    /// SetMember: A = object reg, B = field name constant, C = value reg
+    SetMember = 51,
+    /// NewEnum: A = dest, B = type+variant name constant, C = args start reg
+    /// Next instruction: arg count in A field
+    NewEnum = 52,
+    /// MatchEnum: A = subject reg, B = variant name constant, C = dest bool reg
+    MatchEnum = 53,
+    /// MethodCall: A = dest/func reg, B = object reg, C = method name constant
+    /// Next instruction: args_start in A, arg_count in B
+    MethodCall = 54,
+    /// Throw: A = value register to throw
+    Throw = 55,
+    /// TryBegin: A = catch handler offset (as Bx signed)
+    TryBegin = 56,
+    /// TryEnd: pops the try handler
+    TryEnd = 57,
+    /// Import: A = dest, Bx = path constant
+    Import = 58,
 }
 
 /// Encode an ABC-format instruction: [op:8][A:8][B:8][C:8]

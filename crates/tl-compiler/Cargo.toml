@@ -11,13 +11,15 @@ tl-errors = { path = "../tl-errors" }
 tl-data = { path = "../tl-data" }
 tl-ai = { path = "../tl-ai" }
 tl-stream = { path = "../tl-stream" }
+tl-parser = { path = "../tl-parser" }
+tl-lexer = { path = "../tl-lexer" }
 cranelift-codegen = "0.116"
 cranelift-frontend = "0.116"
 cranelift-jit = "0.116"
 cranelift-module = "0.116"
 target-lexicon = "0.13"
 rayon = "1"
+reqwest = { version = "0.12", features = ["blocking", "rustls-tls"] }
 
 [dev-dependencies]
-tl-parser = { path = "../tl-parser" }
 tempfile = "3"

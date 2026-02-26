@@ -39,6 +39,52 @@ pub enum VmValue {
     PipelineDef(Arc<PipelineDef>),
     /// A stream definition
     StreamDef(Arc<StreamDef>),
+    /// A struct type definition
+    StructDef(Arc<VmStructDef>),
+    /// A struct instance
+    StructInstance(Arc<VmStructInstance>),
+    /// An enum type definition
+    EnumDef(Arc<VmEnumDef>),
+    /// An enum instance
+    EnumInstance(Arc<VmEnumInstance>),
+    /// A module (from import)
+    Module(Arc<VmModule>),
+}
+
+/// Struct type definition
+#[derive(Debug, Clone)]
+pub struct VmStructDef {
+    pub name: Arc<str>,
+    pub fields: Vec<Arc<str>>,
+}
+
+/// Struct instance
+#[derive(Debug, Clone)]
+pub struct VmStructInstance {
+    pub type_name: Arc<str>,
+    pub fields: Vec<(Arc<str>, VmValue)>,
+}
+
+/// Enum type definition
+#[derive(Debug, Clone)]
+pub struct VmEnumDef {
+    pub name: Arc<str>,
+    pub variants: Vec<(Arc<str>, usize)>, // (variant_name, field_count)
+}
+
+/// Enum instance
+#[derive(Debug, Clone)]
+pub struct VmEnumInstance {
+    pub type_name: Arc<str>,
+    pub variant: Arc<str>,
+    pub fields: Vec<VmValue>,
+}
+
+/// Module (imported file's exports)
+#[derive(Debug, Clone)]
+pub struct VmModule {
+    pub name: Arc<str>,
+    pub exports: std::collections::HashMap<String, VmValue>,
 }
 
 /// A closure: compiled function prototype + captured upvalues.
@@ -107,6 +153,11 @@ impl VmValue {
             VmValue::PipelineResult(_) => "pipeline_result",
             VmValue::PipelineDef(_) => "pipeline",
             VmValue::StreamDef(_) => "stream",
+            VmValue::StructDef(_) => "struct_def",
+            VmValue::StructInstance(_) => "struct",
+            VmValue::EnumDef(_) => "enum_def",
+            VmValue::EnumInstance(_) => "enum",
+            VmValue::Module(_) => "module",
         }
     }
 }
@@ -130,6 +181,24 @@ impl fmt::Debug for VmValue {
             VmValue::PipelineResult(r) => write!(f, "{r:?}"),
             VmValue::PipelineDef(p) => write!(f, "<pipeline {}>", p.name),
             VmValue::StreamDef(s) => write!(f, "<stream {}>", s.name),
+            VmValue::StructDef(d) => write!(f, "<struct {}>", d.name),
+            VmValue::StructInstance(s) => {
+                write!(f, "{} {{ ", s.type_name)?;
+                for (i, (k, v)) in s.fields.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{k}: {v:?}")?;
+                }
+                write!(f, " }}")
+            }
+            VmValue::EnumDef(d) => write!(f, "<enum {}>", d.name),
+            VmValue::EnumInstance(e) => {
+                write!(f, "{}::{}", e.type_name, e.variant)?;
+                if !e.fields.is_empty() {
+                    write!(f, "({:?})", e.fields)?;
+                }
+                Ok(())
+            }
+            VmValue::Module(m) => write!(f, "<module {}>", m.name),
         }
     }
 }
@@ -168,6 +237,29 @@ impl fmt::Display for VmValue {
             VmValue::PipelineResult(r) => write!(f, "{r}"),
             VmValue::PipelineDef(p) => write!(f, "{p}"),
             VmValue::StreamDef(s) => write!(f, "{s}"),
+            VmValue::StructDef(d) => write!(f, "<struct {}>", d.name),
+            VmValue::StructInstance(s) => {
+                write!(f, "{} {{ ", s.type_name)?;
+                for (i, (k, v)) in s.fields.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{k}: {v}")?;
+                }
+                write!(f, " }}")
+            }
+            VmValue::EnumDef(d) => write!(f, "<enum {}>", d.name),
+            VmValue::EnumInstance(e) => {
+                write!(f, "{}::{}", e.type_name, e.variant)?;
+                if !e.fields.is_empty() {
+                    write!(f, "(")?;
+                    for (i, v) in e.fields.iter().enumerate() {
+                        if i > 0 { write!(f, ", ")?; }
+                        write!(f, "{v}")?;
+                    }
+                    write!(f, ")")?;
+                }
+                Ok(())
+            }
+            VmValue::Module(m) => write!(f, "<module {}>", m.name),
         }
     }
 }

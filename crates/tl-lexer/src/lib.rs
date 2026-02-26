@@ -139,6 +139,22 @@ pub enum Token {
     #[token("enum")]
     Enum,
 
+    // Error handling
+    #[token("try")]
+    Try,
+    #[token("catch")]
+    Catch,
+    #[token("throw")]
+    Throw,
+
+    // Module
+    #[token("import")]
+    Import,
+
+    // Testing
+    #[token("test")]
+    Test,
+
     // Primitives
     #[token("none")]
     None_,
@@ -237,6 +253,8 @@ pub enum Token {
     RBracket,
     #[token(",")]
     Comma,
+    #[token("::", priority = 3)]
+    ColonColon,
     #[token(":")]
     Colon,
     #[token(";")]
@@ -376,5 +394,35 @@ mod tests {
         let tokens = tokenize("let x = 5 // this is a comment").unwrap();
         // Should only have: let, x, =, 5, EOF
         assert_eq!(tokens.len(), 5);
+    }
+
+    #[test]
+    fn test_colon_colon() {
+        let tokens = tokenize("Foo::Bar").unwrap();
+        assert!(matches!(&tokens[0].token, Token::Ident(s) if s == "Foo"));
+        assert!(matches!(&tokens[1].token, Token::ColonColon));
+        assert!(matches!(&tokens[2].token, Token::Ident(s) if s == "Bar"));
+    }
+
+    #[test]
+    fn test_try_catch_throw_tokens() {
+        let tokens = tokenize("try catch throw").unwrap();
+        assert!(matches!(tokens[0].token, Token::Try));
+        assert!(matches!(tokens[1].token, Token::Catch));
+        assert!(matches!(tokens[2].token, Token::Throw));
+    }
+
+    #[test]
+    fn test_import_token() {
+        let tokens = tokenize("import foo").unwrap();
+        assert!(matches!(tokens[0].token, Token::Import));
+        assert!(matches!(&tokens[1].token, Token::Ident(s) if s == "foo"));
+    }
+
+    #[test]
+    fn test_test_token() {
+        let tokens = tokenize("test my_test").unwrap();
+        assert!(matches!(tokens[0].token, Token::Test));
+        assert!(matches!(&tokens[1].token, Token::Ident(s) if s == "my_test"));
     }
 }

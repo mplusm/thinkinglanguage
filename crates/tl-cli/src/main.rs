@@ -64,6 +64,14 @@ enum Commands {
         #[arg(long, default_value = "text")]
         format: String,
     },
+    /// Run tests in a .tl file
+    Test {
+        /// Path to the .tl file (or directory)
+        path: String,
+        /// Backend: "vm" (default) or "interp"
+        #[arg(long, default_value = "vm")]
+        backend: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -91,6 +99,7 @@ fn main() {
         Some(Commands::Models { action }) => run_models(action),
         Some(Commands::Deploy { file, target, output }) => run_deploy(&file, &target, &output),
         Some(Commands::Lineage { file, format }) => run_lineage(&file, &format),
+        Some(Commands::Test { path, backend }) => run_tests(&path, &backend),
         None => run_repl("vm"), // Default to REPL with VM backend
     }
 }
@@ -338,6 +347,101 @@ fn run_lineage(file: &str, format: &str) {
         }
     };
     println!("{output}");
+}
+
+fn run_tests(path: &str, backend: &str) {
+    let mut files = Vec::new();
+    let p = std::path::Path::new(path);
+    if p.is_dir() {
+        // Find all .tl files in directory
+        if let Ok(entries) = std::fs::read_dir(p) {
+            for entry in entries.flatten() {
+                let ep = entry.path();
+                if ep.extension().and_then(|e| e.to_str()) == Some("tl") {
+                    files.push(ep);
+                }
+            }
+        }
+    } else {
+        files.push(p.to_path_buf());
+    }
+
+    if files.is_empty() {
+        eprintln!("No .tl files found at '{path}'");
+        process::exit(1);
+    }
+
+    let mut total = 0;
+    let mut passed = 0;
+    let mut failed = 0;
+    let mut failures: Vec<(String, String)> = Vec::new();
+
+    for file in &files {
+        let source = match fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error reading {}: {e}", file.display());
+                continue;
+            }
+        };
+
+        let program = match parse(&source) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Parse error in {}: {e}", file.display());
+                continue;
+            }
+        };
+
+        // Find test blocks
+        for stmt in &program.statements {
+            if let tl_ast::Stmt::Test { name, body } = stmt {
+                total += 1;
+                let test_program = tl_ast::Program { statements: body.clone() };
+
+                let result = match backend {
+                    "vm" => {
+                        let proto = match tl_compiler::compile(&test_program) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                failed += 1;
+                                failures.push((name.clone(), format!("Compile error: {e}")));
+                                println!("  FAIL  {name}");
+                                continue;
+                            }
+                        };
+                        let mut vm = tl_compiler::Vm::new();
+                        vm.execute(&proto)
+                    }
+                    _ => {
+                        let mut interp = Interpreter::new();
+                        interp.execute(&test_program).map(|_| tl_compiler::VmValue::None)
+                    }
+                };
+
+                match result {
+                    Ok(_) => {
+                        passed += 1;
+                        println!("  PASS  {name}");
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        let msg = match &e {
+                            TlError::Runtime(re) => re.message.clone(),
+                            other => format!("{other}"),
+                        };
+                        failures.push((name.clone(), msg.clone()));
+                        println!("  FAIL  {name}: {msg}");
+                    }
+                }
+            }
+        }
+    }
+
+    println!("\n{total} tests, {passed} passed, {failed} failed");
+    if !failures.is_empty() {
+        process::exit(1);
+    }
 }
 
 fn run_repl_interp(editor: &mut DefaultEditor) {

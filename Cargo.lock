@@ -4233,12 +4233,14 @@ dependencies = [
  "cranelift-jit",
  "cranelift-module",
  "rayon",
+ "reqwest",
  "target-lexicon",
  "tempfile",
  "tl-ai",
  "tl-ast",
  "tl-data",
  "tl-errors",
+ "tl-lexer",
  "tl-parser",
  "tl-stream",
 ]
@@ -4269,6 +4271,7 @@ dependencies = [
 name = "tl-interpreter"
 version = "0.1.0"
 dependencies = [
+ "reqwest",
  "tempfile",
  "tl-ai",
  "tl-ast",
