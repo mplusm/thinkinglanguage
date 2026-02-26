@@ -1,0 +1,23 @@
+[package]
+name = "tl-benchmarks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Benchmarks for ThinkingLanguage (Phase 2)"
+publish = false
+
+[dependencies]
+tl-parser = { path = "../crates/tl-parser" }
+tl-interpreter = { path = "../crates/tl-interpreter" }
+tl-compiler = { path = "../crates/tl-compiler" }
+tl-data = { path = "../crates/tl-data" }
+criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = "3"
+
+[[bench]]
+name = "scalar_bench"
+harness = false
+
+[[bench]]
+name = "data_bench"
+harness = false

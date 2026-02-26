@@ -14,6 +14,7 @@ tl-lexer = { path = "../tl-lexer" }
 tl-parser = { path = "../tl-parser" }
 tl-ast = { path = "../tl-ast" }
 tl-interpreter = { path = "../tl-interpreter" }
+tl-compiler = { path = "../tl-compiler" }
 tl-errors = { path = "../tl-errors" }
 clap.workspace = true
 rustyline.workspace = true

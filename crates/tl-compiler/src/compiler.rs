@@ -1,0 +1,1380 @@
+// ThinkingLanguage — AST-to-bytecode compiler
+// Compiles a TL Program into a Prototype (bytecode chunk).
+
+use std::sync::Arc;
+use tl_ast::*;
+use tl_errors::{TlError, RuntimeError};
+
+use crate::chunk::*;
+use crate::opcode::*;
+
+/// Compile error helper
+fn compile_err(msg: String) -> TlError {
+    TlError::Runtime(RuntimeError {
+        message: msg,
+        span: None,
+    })
+}
+
+/// A local variable in the current scope.
+#[derive(Debug, Clone)]
+struct Local {
+    name: String,
+    depth: u32,
+    register: u8,
+    is_captured: bool,
+}
+
+/// Upvalue tracking during compilation.
+#[derive(Debug, Clone)]
+struct CompilerUpvalue {
+    is_local: bool,
+    index: u8,
+}
+
+/// Loop context for break/continue.
+#[derive(Debug, Clone)]
+struct LoopCtx {
+    /// Instruction indices of break jumps to patch
+    break_jumps: Vec<usize>,
+    /// Instruction index of loop start (for continue)
+    loop_start: usize,
+}
+
+/// Compiler state for one function scope.
+struct CompilerState {
+    proto: Prototype,
+    locals: Vec<Local>,
+    upvalues: Vec<CompilerUpvalue>,
+    scope_depth: u32,
+    next_register: u8,
+    loop_stack: Vec<LoopCtx>,
+}
+
+impl CompilerState {
+    fn new(name: String) -> Self {
+        CompilerState {
+            proto: Prototype::new(name),
+            locals: Vec::new(),
+            upvalues: Vec::new(),
+            scope_depth: 0,
+            next_register: 0,
+            loop_stack: Vec::new(),
+        }
+    }
+
+    fn alloc_register(&mut self) -> u8 {
+        let r = self.next_register;
+        self.next_register += 1;
+        if self.next_register > self.proto.num_registers {
+            self.proto.num_registers = self.next_register;
+        }
+        r
+    }
+
+    fn free_register(&mut self) {
+        if self.next_register > 0 {
+            self.next_register -= 1;
+        }
+    }
+
+    fn emit(&mut self, inst: u32, line: u32) {
+        self.proto.code.push(inst);
+        self.proto.lines.push(line);
+    }
+
+    fn emit_abc(&mut self, op: Op, a: u8, b: u8, c: u8, line: u32) {
+        self.emit(encode_abc(op, a, b, c), line);
+    }
+
+    fn emit_abx(&mut self, op: Op, a: u8, bx: u16, line: u32) {
+        self.emit(encode_abx(op, a, bx), line);
+    }
+
+    fn add_constant(&mut self, c: Constant) -> u16 {
+        let idx = self.proto.constants.len();
+        self.proto.constants.push(c);
+        idx as u16
+    }
+
+    fn current_pos(&self) -> usize {
+        self.proto.code.len()
+    }
+
+    fn patch_jump(&mut self, inst_pos: usize) {
+        let target = self.current_pos();
+        let offset = (target as i32 - inst_pos as i32 - 1) as i16;
+        let old = self.proto.code[inst_pos];
+        let op = (old >> 24) as u8;
+        let a = ((old >> 16) & 0xFF) as u8;
+        self.proto.code[inst_pos] = encode_abx(
+            unsafe { std::mem::transmute(op) },
+            a,
+            offset as u16,
+        );
+    }
+}
+
+/// The compiler: transforms AST into bytecode.
+pub struct Compiler {
+    states: Vec<CompilerState>,
+}
+
+impl Compiler {
+    fn current(&mut self) -> &mut CompilerState {
+        self.states.last_mut().unwrap()
+    }
+
+    fn begin_scope(&mut self) {
+        self.current().scope_depth += 1;
+    }
+
+    fn end_scope(&mut self) {
+        let state = self.current();
+        state.scope_depth -= 1;
+        // Pop locals that are out of scope
+        while let Some(local) = state.locals.last() {
+            if local.depth <= state.scope_depth {
+                break;
+            }
+            let reg = local.register;
+            let captured = local.is_captured;
+            state.locals.pop();
+            if captured {
+                // Close upvalue — the VM will handle this
+                // We just need the register to be freed
+            }
+            // Free the register if it's the top
+            if reg + 1 == state.next_register {
+                state.next_register = reg;
+            }
+        }
+    }
+
+    fn add_local(&mut self, name: String) -> u8 {
+        let state = self.current();
+        let reg = state.alloc_register();
+        let depth = state.scope_depth;
+        state.locals.push(Local {
+            name,
+            depth,
+            register: reg,
+            is_captured: false,
+        });
+        state.proto.num_locals = state.proto.num_locals.max(state.locals.len() as u8);
+        reg
+    }
+
+    fn resolve_local(&self, name: &str) -> Option<u8> {
+        let state = self.states.last().unwrap();
+        for local in state.locals.iter().rev() {
+            if local.name == name {
+                return Some(local.register);
+            }
+        }
+        None
+    }
+
+    fn resolve_upvalue(&mut self, name: &str) -> Option<u8> {
+        let n = self.states.len();
+        if n < 2 {
+            return None;
+        }
+        self.resolve_upvalue_recursive(n - 1, name)
+    }
+
+    fn resolve_upvalue_recursive(&mut self, state_idx: usize, name: &str) -> Option<u8> {
+        if state_idx == 0 {
+            return None;
+        }
+        // Check enclosing function's locals
+        let enclosing = &mut self.states[state_idx - 1];
+        for i in (0..enclosing.locals.len()).rev() {
+            if enclosing.locals[i].name == name {
+                enclosing.locals[i].is_captured = true;
+                let reg = enclosing.locals[i].register;
+                return Some(self.add_upvalue(state_idx, true, reg));
+            }
+        }
+        // Check enclosing function's upvalues
+        if let Some(uv_idx) = self.resolve_upvalue_recursive(state_idx - 1, name) {
+            return Some(self.add_upvalue(state_idx, false, uv_idx));
+        }
+        None
+    }
+
+    fn add_upvalue(&mut self, state_idx: usize, is_local: bool, index: u8) -> u8 {
+        let state = &mut self.states[state_idx];
+        // Check if we already have this upvalue
+        for (i, uv) in state.upvalues.iter().enumerate() {
+            if uv.is_local == is_local && uv.index == index {
+                return i as u8;
+            }
+        }
+        let idx = state.upvalues.len() as u8;
+        state.upvalues.push(CompilerUpvalue { is_local, index });
+        idx
+    }
+
+    fn compile_stmt(&mut self, stmt: &Stmt) -> Result<(), TlError> {
+        match stmt {
+            Stmt::Let { name, value, .. } => {
+                let reg = self.add_local(name.clone());
+                self.compile_expr(value, reg)?;
+                Ok(())
+            }
+            Stmt::FnDecl { name, params, body, .. } => {
+                let reg = self.add_local(name.clone());
+                self.compile_function(name.clone(), params, body, false)?;
+                // The closure instruction already targets `reg`
+                // Actually we need to compile the function into a prototype
+                // and then emit a Closure instruction
+                let _ = reg; // handled inside compile_function
+                Ok(())
+            }
+            Stmt::Expr(expr) => {
+                let reg = self.current().alloc_register();
+                self.compile_expr(expr, reg)?;
+                self.current().free_register();
+                Ok(())
+            }
+            Stmt::Return(expr) => {
+                let reg = self.current().alloc_register();
+                match expr {
+                    Some(e) => self.compile_expr(e, reg)?,
+                    None => self.current().emit_abx(Op::LoadNone, reg, 0, 0),
+                }
+                self.current().emit_abc(Op::Return, reg, 0, 0, 0);
+                self.current().free_register();
+                Ok(())
+            }
+            Stmt::If { condition, then_body, else_ifs, else_body } => {
+                self.compile_if(condition, then_body, else_ifs, else_body)
+            }
+            Stmt::While { condition, body } => {
+                self.compile_while(condition, body)
+            }
+            Stmt::For { name, iter, body } => {
+                self.compile_for(name, iter, body)
+            }
+            Stmt::Schema { name, fields } => {
+                self.compile_schema(name, fields)
+            }
+            Stmt::Break => {
+                let state = self.current();
+                let pos = state.current_pos();
+                state.emit_abx(Op::Jump, 0, 0, 0);
+                if let Some(loop_ctx) = state.loop_stack.last_mut() {
+                    loop_ctx.break_jumps.push(pos);
+                }
+                Ok(())
+            }
+            Stmt::Continue => {
+                let state = self.current();
+                if let Some(loop_ctx) = state.loop_stack.last() {
+                    let loop_start = loop_ctx.loop_start;
+                    let current = state.current_pos();
+                    let offset = (loop_start as i32 - current as i32 - 1) as i16;
+                    state.emit_abx(Op::Jump, 0, offset as u16, 0);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn compile_function(
+        &mut self,
+        name: String,
+        params: &[Param],
+        body: &[Stmt],
+        is_closure_expr: bool,
+    ) -> Result<u8, TlError> {
+        // Determine the destination register for the closure
+        let dest_reg = if is_closure_expr {
+            // For closure expressions, the caller already allocated a dest register
+            // We don't allocate one here
+            0 // placeholder, will be set by caller
+        } else {
+            // For FnDecl, the local was already added
+            let state = self.states.last().unwrap();
+            state.locals.iter().rev()
+                .find(|l| l.name == name)
+                .map(|l| l.register)
+                .unwrap_or(0)
+        };
+
+        // Push new compiler state for the function
+        let mut fn_state = CompilerState::new(name);
+        fn_state.proto.arity = params.len() as u8;
+        fn_state.scope_depth = 1;
+
+        // Allocate registers for parameters
+        for param in params {
+            let reg = fn_state.alloc_register();
+            fn_state.locals.push(Local {
+                name: param.name.clone(),
+                depth: 1,
+                register: reg,
+                is_captured: false,
+            });
+        }
+        fn_state.proto.num_locals = params.len() as u8;
+
+        self.states.push(fn_state);
+
+        // Compile function body
+        // Track the last expression's register for implicit return
+        let mut last_expr_reg: Option<u8> = None;
+        for (i, stmt) in body.iter().enumerate() {
+            let is_last = i == body.len() - 1;
+            match stmt {
+                Stmt::Expr(expr) if is_last => {
+                    // Last statement is an expression — compile and keep register for return
+                    let reg = self.current().alloc_register();
+                    self.compile_expr(expr, reg)?;
+                    last_expr_reg = Some(reg);
+                    // Don't free — we'll return it
+                }
+                Stmt::If { condition, then_body, else_ifs, else_body } if is_last && else_body.is_some() => {
+                    // Last statement is if-else — compile as expression for implicit return
+                    let dest = self.current().alloc_register();
+                    self.compile_if_as_expr(condition, then_body, else_ifs, else_body, dest)?;
+                    last_expr_reg = Some(dest);
+                }
+                _ => {
+                    self.compile_stmt(stmt)?;
+                }
+            }
+        }
+
+        // If the last instruction isn't a Return, emit one
+        let needs_return = {
+            let state = self.states.last().unwrap();
+            if state.proto.code.is_empty() {
+                true
+            } else {
+                let last = *state.proto.code.last().unwrap();
+                decode_op(last) != Op::Return
+            }
+        };
+        if needs_return {
+            if let Some(reg) = last_expr_reg {
+                // Return the last expression value
+                self.current().emit_abc(Op::Return, reg, 0, 0, 0);
+            } else {
+                let state = self.current();
+                let reg = state.alloc_register();
+                state.emit_abx(Op::LoadNone, reg, 0, 0);
+                state.emit_abc(Op::Return, reg, 0, 0, 0);
+                state.free_register();
+            }
+        }
+
+        // Pop the function state
+        let fn_state = self.states.pop().unwrap();
+        let mut proto = fn_state.proto;
+        proto.upvalue_defs = fn_state.upvalues.iter().map(|uv| UpvalueDef {
+            is_local: uv.is_local,
+            index: uv.index,
+        }).collect();
+
+        // Add the prototype as a constant in the enclosing function
+        let proto_arc = Arc::new(proto);
+        let const_idx = self.current().add_constant(Constant::Prototype(proto_arc));
+
+        // Emit Closure instruction in the enclosing function
+        self.current().emit_abx(Op::Closure, dest_reg, const_idx, 0);
+
+        Ok(dest_reg)
+    }
+
+    fn compile_closure_expr(
+        &mut self,
+        params: &[Param],
+        body: &Expr,
+        dest: u8,
+    ) -> Result<(), TlError> {
+        // Create a synthetic function body that returns the expression
+        let body_stmt = vec![Stmt::Return(Some(body.clone()))];
+
+        // Push new compiler state
+        let mut fn_state = CompilerState::new("<closure>".to_string());
+        fn_state.proto.arity = params.len() as u8;
+        fn_state.scope_depth = 1;
+
+        for param in params {
+            let reg = fn_state.alloc_register();
+            fn_state.locals.push(Local {
+                name: param.name.clone(),
+                depth: 1,
+                register: reg,
+                is_captured: false,
+            });
+        }
+        fn_state.proto.num_locals = params.len() as u8;
+
+        self.states.push(fn_state);
+
+        for stmt in &body_stmt {
+            self.compile_stmt(stmt)?;
+        }
+
+        // Ensure return
+        let needs_return = {
+            let state = self.states.last().unwrap();
+            if state.proto.code.is_empty() {
+                true
+            } else {
+                let last = *state.proto.code.last().unwrap();
+                decode_op(last) != Op::Return
+            }
+        };
+        if needs_return {
+            let state = self.current();
+            let reg = state.alloc_register();
+            state.emit_abx(Op::LoadNone, reg, 0, 0);
+            state.emit_abc(Op::Return, reg, 0, 0, 0);
+            state.free_register();
+        }
+
+        let fn_state = self.states.pop().unwrap();
+        let mut proto = fn_state.proto;
+        proto.upvalue_defs = fn_state.upvalues.iter().map(|uv| UpvalueDef {
+            is_local: uv.is_local,
+            index: uv.index,
+        }).collect();
+
+        let proto_arc = Arc::new(proto);
+        let const_idx = self.current().add_constant(Constant::Prototype(proto_arc));
+        self.current().emit_abx(Op::Closure, dest, const_idx, 0);
+
+        Ok(())
+    }
+
+    fn compile_if(
+        &mut self,
+        condition: &Expr,
+        then_body: &[Stmt],
+        else_ifs: &[(Expr, Vec<Stmt>)],
+        else_body: &Option<Vec<Stmt>>,
+    ) -> Result<(), TlError> {
+        let cond_reg = self.current().alloc_register();
+        self.compile_expr(condition, cond_reg)?;
+
+        // Jump if false to else/end
+        let jump_false_pos = self.current().current_pos();
+        self.current().emit_abx(Op::JumpIfFalse, cond_reg, 0, 0);
+        self.current().free_register(); // free cond_reg
+
+        // Then body
+        self.begin_scope();
+        for stmt in then_body {
+            self.compile_stmt(stmt)?;
+        }
+        self.end_scope();
+
+        // Jump over else
+        let mut end_jumps = Vec::new();
+        let jump_end_pos = self.current().current_pos();
+        self.current().emit_abx(Op::Jump, 0, 0, 0);
+        end_jumps.push(jump_end_pos);
+
+        // Patch the false jump to here
+        self.current().patch_jump(jump_false_pos);
+
+        // Else-ifs
+        for (ei_cond, ei_body) in else_ifs {
+            let cond_reg = self.current().alloc_register();
+            self.compile_expr(ei_cond, cond_reg)?;
+            let jf_pos = self.current().current_pos();
+            self.current().emit_abx(Op::JumpIfFalse, cond_reg, 0, 0);
+            self.current().free_register();
+
+            self.begin_scope();
+            for stmt in ei_body {
+                self.compile_stmt(stmt)?;
+            }
+            self.end_scope();
+
+            let je_pos = self.current().current_pos();
+            self.current().emit_abx(Op::Jump, 0, 0, 0);
+            end_jumps.push(je_pos);
+
+            self.current().patch_jump(jf_pos);
+        }
+
+        // Else body
+        if let Some(body) = else_body {
+            self.begin_scope();
+            for stmt in body {
+                self.compile_stmt(stmt)?;
+            }
+            self.end_scope();
+        }
+
+        // Patch all end jumps
+        for pos in end_jumps {
+            self.current().patch_jump(pos);
+        }
+
+        Ok(())
+    }
+
+    /// Compile if-else as an expression — each branch stores its last value into `dest`.
+    fn compile_if_as_expr(
+        &mut self,
+        condition: &Expr,
+        then_body: &[Stmt],
+        else_ifs: &[(Expr, Vec<Stmt>)],
+        else_body: &Option<Vec<Stmt>>,
+        dest: u8,
+    ) -> Result<(), TlError> {
+        let cond_reg = self.current().alloc_register();
+        self.compile_expr(condition, cond_reg)?;
+        let jump_false_pos = self.current().current_pos();
+        self.current().emit_abx(Op::JumpIfFalse, cond_reg, 0, 0);
+        self.current().free_register(); // free cond_reg
+
+        // Then body — compile all but last as statements, last as expression into dest
+        self.begin_scope();
+        self.compile_body_with_result(then_body, dest)?;
+        self.end_scope();
+
+        let mut end_jumps = Vec::new();
+        let jump_end_pos = self.current().current_pos();
+        self.current().emit_abx(Op::Jump, 0, 0, 0);
+        end_jumps.push(jump_end_pos);
+
+        self.current().patch_jump(jump_false_pos);
+
+        // Else-ifs
+        for (ei_cond, ei_body) in else_ifs {
+            let cond_reg = self.current().alloc_register();
+            self.compile_expr(ei_cond, cond_reg)?;
+            let jf_pos = self.current().current_pos();
+            self.current().emit_abx(Op::JumpIfFalse, cond_reg, 0, 0);
+            self.current().free_register();
+
+            self.begin_scope();
+            self.compile_body_with_result(ei_body, dest)?;
+            self.end_scope();
+
+            let je_pos = self.current().current_pos();
+            self.current().emit_abx(Op::Jump, 0, 0, 0);
+            end_jumps.push(je_pos);
+
+            self.current().patch_jump(jf_pos);
+        }
+
+        // Else body
+        if let Some(body) = else_body {
+            self.begin_scope();
+            self.compile_body_with_result(body, dest)?;
+            self.end_scope();
+        }
+
+        for pos in end_jumps {
+            self.current().patch_jump(pos);
+        }
+
+        Ok(())
+    }
+
+    /// Compile a block body, storing the last expression's value into `dest`.
+    fn compile_body_with_result(&mut self, body: &[Stmt], dest: u8) -> Result<(), TlError> {
+        for (i, stmt) in body.iter().enumerate() {
+            let is_last = i == body.len() - 1;
+            match stmt {
+                Stmt::Expr(expr) if is_last => {
+                    self.compile_expr(expr, dest)?;
+                }
+                Stmt::If { condition, then_body, else_ifs, else_body } if is_last && else_body.is_some() => {
+                    self.compile_if_as_expr(condition, then_body, else_ifs, else_body, dest)?;
+                }
+                _ => {
+                    self.compile_stmt(stmt)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn compile_while(&mut self, condition: &Expr, body: &[Stmt]) -> Result<(), TlError> {
+        let loop_start = self.current().current_pos();
+
+        self.current().loop_stack.push(LoopCtx {
+            break_jumps: Vec::new(),
+            loop_start,
+        });
+
+        let cond_reg = self.current().alloc_register();
+        self.compile_expr(condition, cond_reg)?;
+        let exit_jump = self.current().current_pos();
+        self.current().emit_abx(Op::JumpIfFalse, cond_reg, 0, 0);
+        self.current().free_register();
+
+        self.begin_scope();
+        for stmt in body {
+            self.compile_stmt(stmt)?;
+        }
+        self.end_scope();
+
+        // Jump back to start
+        let current = self.current().current_pos();
+        let offset = (loop_start as i32 - current as i32 - 1) as i16;
+        self.current().emit_abx(Op::Jump, 0, offset as u16, 0);
+
+        // Patch exit jump
+        self.current().patch_jump(exit_jump);
+
+        // Patch break jumps
+        let loop_ctx = self.current().loop_stack.pop().unwrap();
+        for pos in loop_ctx.break_jumps {
+            self.current().patch_jump(pos);
+        }
+
+        Ok(())
+    }
+
+    fn compile_for(&mut self, name: &str, iter: &Expr, body: &[Stmt]) -> Result<(), TlError> {
+        // Evaluate iterator expression
+        let list_reg = self.current().alloc_register();
+        self.compile_expr(iter, list_reg)?;
+
+        // Create iterator (index counter)
+        let iter_reg = self.current().alloc_register();
+        let zero_const = self.current().add_constant(Constant::Int(0));
+        self.current().emit_abx(Op::LoadConst, iter_reg, zero_const, 0);
+
+        let loop_start = self.current().current_pos();
+        self.current().loop_stack.push(LoopCtx {
+            break_jumps: Vec::new(),
+            loop_start,
+        });
+
+        // ForIter: check if iterator is done, load value
+        self.begin_scope();
+        let val_reg = self.add_local(name.to_string());
+        self.current().emit_abc(Op::ForIter, iter_reg, list_reg, val_reg, 0);
+        // The next instruction is the jump offset if done
+        let exit_jump = self.current().current_pos();
+        self.current().emit_abx(Op::Jump, 0, 0, 0); // placeholder, patched
+
+        // Body
+        for stmt in body {
+            self.compile_stmt(stmt)?;
+        }
+
+        self.end_scope();
+
+        // Jump back to loop start
+        let current = self.current().current_pos();
+        let offset = (loop_start as i32 - current as i32 - 1) as i16;
+        self.current().emit_abx(Op::Jump, 0, offset as u16, 0);
+
+        // Patch exit jump
+        self.current().patch_jump(exit_jump);
+
+        // Patch break jumps
+        let loop_ctx = self.current().loop_stack.pop().unwrap();
+        for pos in loop_ctx.break_jumps {
+            self.current().patch_jump(pos);
+        }
+
+        // Free iterator and list registers
+        self.current().free_register(); // iter_reg
+        self.current().free_register(); // list_reg
+
+        Ok(())
+    }
+
+    fn compile_schema(&mut self, name: &str, fields: &[SchemaField]) -> Result<(), TlError> {
+        // Schema compilation: store as a global with the schema data
+        // We use a special constant and SetGlobal
+        let reg = self.current().alloc_register();
+
+        // Store schema field info as constants
+        let mut field_names = Vec::new();
+        let mut field_types = Vec::new();
+        for f in fields {
+            field_names.push(f.name.clone());
+            field_types.push(format!("{:?}", f.type_ann));
+        }
+
+        // Encode schema as a constant with name + fields as string
+        let schema_str = format!("__schema__:{}:{}", name,
+            fields.iter().map(|f| format!("{}:{:?}", f.name, f.type_ann)).collect::<Vec<_>>().join(","));
+        let const_idx = self.current().add_constant(Constant::String(Arc::from(schema_str.as_str())));
+        self.current().emit_abx(Op::LoadConst, reg, const_idx, 0);
+
+        let name_idx = self.current().add_constant(Constant::String(Arc::from(name)));
+        self.current().emit_abx(Op::SetGlobal, reg, name_idx, 0);
+        self.current().free_register();
+
+        // Also add as local
+        let local_reg = self.add_local(name.to_string());
+        self.current().emit_abx(Op::LoadConst, local_reg, const_idx, 0);
+
+        Ok(())
+    }
+
+    fn compile_expr(&mut self, expr: &Expr, dest: u8) -> Result<(), TlError> {
+        match expr {
+            Expr::Int(n) => {
+                let idx = self.current().add_constant(Constant::Int(*n));
+                self.current().emit_abx(Op::LoadConst, dest, idx, 0);
+            }
+            Expr::Float(f) => {
+                let idx = self.current().add_constant(Constant::Float(*f));
+                self.current().emit_abx(Op::LoadConst, dest, idx, 0);
+            }
+            Expr::String(s) => {
+                self.compile_string_interpolation(s, dest)?;
+            }
+            Expr::Bool(true) => {
+                self.current().emit_abx(Op::LoadTrue, dest, 0, 0);
+            }
+            Expr::Bool(false) => {
+                self.current().emit_abx(Op::LoadFalse, dest, 0, 0);
+            }
+            Expr::None => {
+                self.current().emit_abx(Op::LoadNone, dest, 0, 0);
+            }
+            Expr::Ident(name) => {
+                // Try local first, then upvalue, then global
+                if let Some(reg) = self.resolve_local(name) {
+                    if reg != dest {
+                        self.current().emit_abc(Op::Move, dest, reg, 0, 0);
+                    }
+                } else if let Some(uv) = self.resolve_upvalue(name) {
+                    self.current().emit_abc(Op::GetUpvalue, dest, uv, 0, 0);
+                } else {
+                    let idx = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
+                    self.current().emit_abx(Op::GetGlobal, dest, idx, 0);
+                }
+            }
+            Expr::BinOp { left, op, right } => {
+                // Short-circuit for And/Or
+                match op {
+                    BinOp::And => {
+                        self.compile_expr(left, dest)?;
+                        let jump_pos = self.current().current_pos();
+                        self.current().emit_abx(Op::JumpIfFalse, dest, 0, 0);
+                        self.compile_expr(right, dest)?;
+                        self.current().patch_jump(jump_pos);
+                        return Ok(());
+                    }
+                    BinOp::Or => {
+                        self.compile_expr(left, dest)?;
+                        let jump_pos = self.current().current_pos();
+                        self.current().emit_abx(Op::JumpIfTrue, dest, 0, 0);
+                        self.compile_expr(right, dest)?;
+                        self.current().patch_jump(jump_pos);
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+
+                let left_reg = self.current().alloc_register();
+                let right_reg = self.current().alloc_register();
+                self.compile_expr(left, left_reg)?;
+                self.compile_expr(right, right_reg)?;
+
+                let vm_op = match op {
+                    BinOp::Add => Op::Add,
+                    BinOp::Sub => Op::Sub,
+                    BinOp::Mul => Op::Mul,
+                    BinOp::Div => Op::Div,
+                    BinOp::Mod => Op::Mod,
+                    BinOp::Pow => Op::Pow,
+                    BinOp::Eq => Op::Eq,
+                    BinOp::Neq => Op::Neq,
+                    BinOp::Lt => Op::Lt,
+                    BinOp::Gt => Op::Gt,
+                    BinOp::Lte => Op::Lte,
+                    BinOp::Gte => Op::Gte,
+                    BinOp::And | BinOp::Or => unreachable!(), // handled above
+                };
+                self.current().emit_abc(vm_op, dest, left_reg, right_reg, 0);
+                self.current().free_register(); // right
+                self.current().free_register(); // left
+            }
+            Expr::UnaryOp { op, expr } => {
+                let src = self.current().alloc_register();
+                self.compile_expr(expr, src)?;
+                match op {
+                    UnaryOp::Neg => self.current().emit_abc(Op::Neg, dest, src, 0, 0),
+                    UnaryOp::Not => self.current().emit_abc(Op::Not, dest, src, 0, 0),
+                }
+                self.current().free_register();
+            }
+            Expr::Call { function, args } => {
+                self.compile_call(function, args, dest)?;
+            }
+            Expr::Pipe { left, right } => {
+                self.compile_pipe(left, right, dest)?;
+            }
+            Expr::List(elements) => {
+                if elements.is_empty() {
+                    let start = self.current().next_register;
+                    self.current().emit_abc(Op::NewList, dest, start, 0, 0);
+                } else {
+                    let start = self.current().next_register;
+                    for el in elements {
+                        let r = self.current().alloc_register();
+                        self.compile_expr(el, r)?;
+                    }
+                    self.current().emit_abc(Op::NewList, dest, start, elements.len() as u8, 0);
+                    for _ in elements {
+                        self.current().free_register();
+                    }
+                }
+            }
+            Expr::Map(pairs) => {
+                if pairs.is_empty() {
+                    let start = self.current().next_register;
+                    self.current().emit_abc(Op::NewMap, dest, start, 0, 0);
+                } else {
+                    let start = self.current().next_register;
+                    for (key, val) in pairs {
+                        let kr = self.current().alloc_register();
+                        self.compile_expr(key, kr)?;
+                        let vr = self.current().alloc_register();
+                        self.compile_expr(val, vr)?;
+                    }
+                    self.current().emit_abc(Op::NewMap, dest, start, pairs.len() as u8, 0);
+                    for _ in 0..pairs.len() * 2 {
+                        self.current().free_register();
+                    }
+                }
+            }
+            Expr::Index { object, index } => {
+                let obj_reg = self.current().alloc_register();
+                let idx_reg = self.current().alloc_register();
+                self.compile_expr(object, obj_reg)?;
+                self.compile_expr(index, idx_reg)?;
+                self.current().emit_abc(Op::GetIndex, dest, obj_reg, idx_reg, 0);
+                self.current().free_register();
+                self.current().free_register();
+            }
+            Expr::Block { stmts, expr } => {
+                self.begin_scope();
+                for stmt in stmts {
+                    self.compile_stmt(stmt)?;
+                }
+                if let Some(e) = expr {
+                    self.compile_expr(e, dest)?;
+                } else {
+                    self.current().emit_abx(Op::LoadNone, dest, 0, 0);
+                }
+                self.end_scope();
+            }
+            Expr::Case { arms } => {
+                self.compile_case(arms, dest)?;
+            }
+            Expr::Match { subject, arms } => {
+                self.compile_match(subject, arms, dest)?;
+            }
+            Expr::Closure { params, body } => {
+                self.compile_closure_expr(params, body, dest)?;
+            }
+            Expr::Range { start, end } => {
+                // Compile to a builtin range() call
+                let start_reg = self.current().alloc_register();
+                let end_reg = self.current().alloc_register();
+                self.compile_expr(start, start_reg)?;
+                self.compile_expr(end, end_reg)?;
+                // CallBuiltin Range with 2 args
+                self.current().emit_abc(Op::CallBuiltin, dest, BuiltinId::Range as u8, start_reg, 0);
+                // Encode arg count in next instruction
+                self.current().emit_abc(Op::Move, 2, 0, 0, 0); // arg count = 2
+                self.current().free_register();
+                self.current().free_register();
+            }
+            Expr::NullCoalesce { expr, default } => {
+                self.compile_expr(expr, dest)?;
+                let skip_jump = self.current().current_pos();
+                // If not None, skip default
+                self.current().emit_abx(Op::JumpIfTrue, dest, 0, 0);
+                self.compile_expr(default, dest)?;
+                self.current().patch_jump(skip_jump);
+            }
+            Expr::Assign { target, value } => {
+                if let Expr::Ident(name) = target.as_ref() {
+                    self.compile_expr(value, dest)?;
+                    if let Some(reg) = self.resolve_local(name) {
+                        if reg != dest {
+                            self.current().emit_abc(Op::Move, reg, dest, 0, 0);
+                        }
+                    } else if let Some(uv) = self.resolve_upvalue(name) {
+                        self.current().emit_abc(Op::SetUpvalue, dest, uv, 0, 0);
+                    } else {
+                        let idx = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
+                        self.current().emit_abx(Op::SetGlobal, dest, idx, 0);
+                    }
+                } else {
+                    return Err(compile_err("Invalid assignment target".to_string()));
+                }
+            }
+            Expr::Member { object, field } => {
+                let obj_reg = self.current().alloc_register();
+                self.compile_expr(object, obj_reg)?;
+                let field_idx = self.current().add_constant(Constant::String(Arc::from(field.as_str())));
+                self.current().emit_abc(Op::GetMember, dest, obj_reg, field_idx as u8, 0);
+                self.current().free_register();
+            }
+            Expr::NamedArg { .. } => {
+                // Named args are handled in call compilation
+                self.current().emit_abx(Op::LoadNone, dest, 0, 0);
+            }
+        }
+        Ok(())
+    }
+
+    fn compile_call(
+        &mut self,
+        function: &Expr,
+        args: &[Expr],
+        dest: u8,
+    ) -> Result<(), TlError> {
+        // Check for builtin calls
+        if let Expr::Ident(name) = function {
+            if let Some(builtin_id) = BuiltinId::from_name(name) {
+                return self.compile_builtin_call(builtin_id, args, dest);
+            }
+        }
+
+        // General function call
+        let func_reg = self.current().alloc_register();
+        self.compile_expr(function, func_reg)?;
+
+        let args_start = self.current().next_register;
+        for arg in args {
+            let r = self.current().alloc_register();
+            self.compile_expr(arg, r)?;
+        }
+
+        self.current().emit_abc(Op::Call, func_reg, args_start, args.len() as u8, 0);
+
+        // Free arg registers
+        for _ in args {
+            self.current().free_register();
+        }
+
+        // Move result from func_reg to dest
+        if func_reg != dest {
+            self.current().emit_abc(Op::Move, dest, func_reg, 0, 0);
+        }
+        self.current().free_register(); // func_reg
+
+        Ok(())
+    }
+
+    fn compile_builtin_call(
+        &mut self,
+        builtin_id: BuiltinId,
+        args: &[Expr],
+        dest: u8,
+    ) -> Result<(), TlError> {
+        let args_start = self.current().next_register;
+        for arg in args {
+            let r = self.current().alloc_register();
+            self.compile_expr(arg, r)?;
+        }
+
+        self.current().emit_abc(Op::CallBuiltin, dest, builtin_id as u8, args_start, 0);
+        // Encode arg count
+        self.current().emit_abc(Op::Move, args.len() as u8, 0, 0, 0); // arg count marker
+
+        for _ in args {
+            self.current().free_register();
+        }
+
+        Ok(())
+    }
+
+    fn compile_pipe(
+        &mut self,
+        left: &Expr,
+        right: &Expr,
+        dest: u8,
+    ) -> Result<(), TlError> {
+        let left_reg = self.current().alloc_register();
+        self.compile_expr(left, left_reg)?;
+
+        match right {
+            Expr::Call { function, args } => {
+                if let Expr::Ident(fname) = function.as_ref() {
+                    // Check if this is a table operation
+                    let table_ops = ["filter", "select", "sort", "with", "aggregate",
+                                    "join", "head", "limit", "collect", "show",
+                                    "describe", "write_csv", "write_parquet"];
+                    if table_ops.contains(&fname.as_str()) {
+                        // Store AST args as constant for table pipe
+                        let args_idx = self.current().add_constant(
+                            Constant::AstExprList(args.clone())
+                        );
+                        let op_idx = self.current().add_constant(
+                            Constant::String(Arc::from(fname.as_str()))
+                        );
+                        self.current().emit_abc(Op::TablePipe, left_reg, op_idx as u8, args_idx as u8, 0);
+                        if left_reg != dest {
+                            self.current().emit_abc(Op::Move, dest, left_reg, 0, 0);
+                        }
+                        self.current().free_register();
+                        return Ok(());
+                    }
+
+                    // Check if it's a builtin
+                    if let Some(builtin_id) = BuiltinId::from_name(fname) {
+                        // Pipe into builtin: left becomes first arg
+                        let args_start = left_reg; // reuse left_reg as first arg
+                        for arg in args {
+                            let r = self.current().alloc_register();
+                            self.compile_expr(arg, r)?;
+                        }
+                        self.current().emit_abc(Op::CallBuiltin, dest, builtin_id as u8, args_start, 0);
+                        self.current().emit_abc(Op::Move, (args.len() + 1) as u8, 0, 0, 0);
+                        for _ in args {
+                            self.current().free_register();
+                        }
+                        self.current().free_register(); // left_reg
+                        return Ok(());
+                    }
+                }
+
+                // General: left_val becomes first arg to call
+                let func_reg = self.current().alloc_register();
+                self.compile_expr(function, func_reg)?;
+
+                // Move left to be the first arg
+                let args_start = self.current().next_register;
+                let first_arg = self.current().alloc_register();
+                self.current().emit_abc(Op::Move, first_arg, left_reg, 0, 0);
+
+                for arg in args {
+                    let r = self.current().alloc_register();
+                    self.compile_expr(arg, r)?;
+                }
+
+                let total_args = args.len() + 1;
+                self.current().emit_abc(Op::Call, func_reg, args_start, total_args as u8, 0);
+
+                for _ in 0..total_args {
+                    self.current().free_register();
+                }
+
+                if func_reg != dest {
+                    self.current().emit_abc(Op::Move, dest, func_reg, 0, 0);
+                }
+                self.current().free_register(); // func_reg
+            }
+            Expr::Ident(name) => {
+                // Pipe into named function with left as only arg
+                if let Some(builtin_id) = BuiltinId::from_name(name) {
+                    self.current().emit_abc(Op::CallBuiltin, dest, builtin_id as u8, left_reg, 0);
+                    self.current().emit_abc(Op::Move, 1, 0, 0, 0);
+                } else {
+                    let func_reg = self.current().alloc_register();
+                    let name_idx = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
+                    self.current().emit_abx(Op::GetGlobal, func_reg, name_idx, 0);
+
+                    let args_start = self.current().next_register;
+                    let first_arg = self.current().alloc_register();
+                    self.current().emit_abc(Op::Move, first_arg, left_reg, 0, 0);
+
+                    self.current().emit_abc(Op::Call, func_reg, args_start, 1, 0);
+                    if func_reg != dest {
+                        self.current().emit_abc(Op::Move, dest, func_reg, 0, 0);
+                    }
+                    self.current().free_register(); // first_arg
+                    self.current().free_register(); // func_reg
+                }
+            }
+            _ => {
+                return Err(compile_err("Right side of |> must be a function call".to_string()));
+            }
+        }
+
+        self.current().free_register(); // left_reg
+        Ok(())
+    }
+
+    fn compile_case(&mut self, arms: &[(Expr, Expr)], dest: u8) -> Result<(), TlError> {
+        let mut end_jumps = Vec::new();
+
+        for (pattern, body) in arms {
+            // Wildcard _ always matches
+            if matches!(pattern, Expr::Ident(s) if s == "_") {
+                self.compile_expr(body, dest)?;
+                break;
+            }
+            let cond_reg = self.current().alloc_register();
+            self.compile_expr(pattern, cond_reg)?;
+            let jump_false = self.current().current_pos();
+            self.current().emit_abx(Op::JumpIfFalse, cond_reg, 0, 0);
+            self.current().free_register();
+
+            self.compile_expr(body, dest)?;
+            let jump_end = self.current().current_pos();
+            self.current().emit_abx(Op::Jump, 0, 0, 0);
+            end_jumps.push(jump_end);
+
+            self.current().patch_jump(jump_false);
+        }
+
+        // Default: load None if no arm matched
+        if !arms.iter().any(|(p, _)| matches!(p, Expr::Ident(s) if s == "_")) {
+            self.current().emit_abx(Op::LoadNone, dest, 0, 0);
+        }
+
+        for pos in end_jumps {
+            self.current().patch_jump(pos);
+        }
+
+        Ok(())
+    }
+
+    fn compile_match(&mut self, subject: &Expr, arms: &[(Expr, Expr)], dest: u8) -> Result<(), TlError> {
+        let subj_reg = self.current().alloc_register();
+        self.compile_expr(subject, subj_reg)?;
+
+        let mut end_jumps = Vec::new();
+
+        for (pattern, body) in arms {
+            if matches!(pattern, Expr::Ident(s) if s == "_") {
+                self.compile_expr(body, dest)?;
+                self.current().free_register(); // subj_reg
+                // Patch remaining
+                for pos in end_jumps {
+                    self.current().patch_jump(pos);
+                }
+                return Ok(());
+            }
+
+            let pat_reg = self.current().alloc_register();
+            self.compile_expr(pattern, pat_reg)?;
+            let result_reg = self.current().alloc_register();
+            self.current().emit_abc(Op::TestMatch, subj_reg, pat_reg, result_reg, 0);
+
+            let jump_false = self.current().current_pos();
+            self.current().emit_abx(Op::JumpIfFalse, result_reg, 0, 0);
+            self.current().free_register(); // result_reg
+            self.current().free_register(); // pat_reg
+
+            self.compile_expr(body, dest)?;
+            let jump_end = self.current().current_pos();
+            self.current().emit_abx(Op::Jump, 0, 0, 0);
+            end_jumps.push(jump_end);
+
+            self.current().patch_jump(jump_false);
+        }
+
+        // No match — load None
+        self.current().emit_abx(Op::LoadNone, dest, 0, 0);
+        self.current().free_register(); // subj_reg
+
+        for pos in end_jumps {
+            self.current().patch_jump(pos);
+        }
+
+        Ok(())
+    }
+
+    /// Compile a string with interpolation. Parses `{var}` segments and emits
+    /// code to load each variable and concatenate with the literal parts.
+    fn compile_string_interpolation(&mut self, s: &str, dest: u8) -> Result<(), TlError> {
+        // Parse the string into segments: literal parts and variable references
+        let mut segments: Vec<StringSegment> = Vec::new();
+        let mut chars = s.chars().peekable();
+        let mut current_literal = String::new();
+
+        while let Some(ch) = chars.next() {
+            if ch == '{' {
+                let mut var_name = String::new();
+                let mut depth = 1;
+                for c in chars.by_ref() {
+                    if c == '{' { depth += 1; }
+                    else if c == '}' {
+                        depth -= 1;
+                        if depth == 0 { break; }
+                    }
+                    var_name.push(c);
+                }
+                if !current_literal.is_empty() {
+                    segments.push(StringSegment::Literal(std::mem::take(&mut current_literal)));
+                }
+                segments.push(StringSegment::Variable(var_name));
+            } else if ch == '\\' {
+                match chars.next() {
+                    Some('n') => current_literal.push('\n'),
+                    Some('t') => current_literal.push('\t'),
+                    Some('\\') => current_literal.push('\\'),
+                    Some('"') => current_literal.push('"'),
+                    Some(c) => { current_literal.push('\\'); current_literal.push(c); }
+                    None => current_literal.push('\\'),
+                }
+            } else {
+                current_literal.push(ch);
+            }
+        }
+        if !current_literal.is_empty() {
+            segments.push(StringSegment::Literal(current_literal));
+        }
+
+        if segments.is_empty() {
+            // Empty string
+            let idx = self.current().add_constant(Constant::String(Arc::from("")));
+            self.current().emit_abx(Op::LoadConst, dest, idx, 0);
+            return Ok(());
+        }
+
+        // If no interpolation, just load the constant
+        if segments.len() == 1 {
+            if let StringSegment::Literal(ref lit) = segments[0] {
+                let idx = self.current().add_constant(Constant::String(Arc::from(lit.as_str())));
+                self.current().emit_abx(Op::LoadConst, dest, idx, 0);
+                return Ok(());
+            }
+        }
+
+        // Compile first segment into dest
+        self.compile_string_segment(&segments[0], dest)?;
+
+        // For each subsequent segment, compile it and concat with dest
+        for segment in &segments[1..] {
+            let tmp = self.current().alloc_register();
+            self.compile_string_segment(segment, tmp)?;
+            self.current().emit_abc(Op::Concat, dest, dest, tmp, 0);
+            self.current().free_register();
+        }
+
+        Ok(())
+    }
+
+    fn compile_string_segment(&mut self, seg: &StringSegment, dest: u8) -> Result<(), TlError> {
+        match seg {
+            StringSegment::Literal(s) => {
+                let idx = self.current().add_constant(Constant::String(Arc::from(s.as_str())));
+                self.current().emit_abx(Op::LoadConst, dest, idx, 0);
+            }
+            StringSegment::Variable(name) => {
+                // Compile as an identifier lookup, then convert to string via builtin Str
+                let var_reg = self.current().alloc_register();
+                if let Some(reg) = self.resolve_local(name) {
+                    if reg != var_reg {
+                        self.current().emit_abc(Op::Move, var_reg, reg, 0, 0);
+                    }
+                } else if let Some(uv) = self.resolve_upvalue(name) {
+                    self.current().emit_abc(Op::GetUpvalue, var_reg, uv, 0, 0);
+                } else {
+                    let idx = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
+                    self.current().emit_abx(Op::GetGlobal, var_reg, idx, 0);
+                }
+                // Convert to string via CallBuiltin Str
+                self.current().emit_abc(Op::CallBuiltin, dest, BuiltinId::Str as u8, var_reg, 0);
+                self.current().emit_abc(Op::Move, 1, 0, 0, 0); // 1 arg
+                self.current().free_register(); // var_reg
+            }
+        }
+        Ok(())
+    }
+}
+
+enum StringSegment {
+    Literal(String),
+    Variable(String),
+}
+
+/// Compile a TL program into a top-level Prototype.
+pub fn compile(program: &Program) -> Result<Prototype, TlError> {
+    let mut compiler = Compiler {
+        states: vec![CompilerState::new("<main>".to_string())],
+    };
+
+    let stmts = &program.statements;
+    let mut last_expr_reg: Option<u8> = None;
+
+    for (i, stmt) in stmts.iter().enumerate() {
+        let is_last = i == stmts.len() - 1;
+        match stmt {
+            Stmt::Expr(expr) if is_last => {
+                // Last statement is an expression — keep register for implicit return
+                let reg = compiler.current().alloc_register();
+                compiler.compile_expr(expr, reg)?;
+                last_expr_reg = Some(reg);
+            }
+            Stmt::If { condition, then_body, else_ifs, else_body } if is_last && else_body.is_some() => {
+                let dest = compiler.current().alloc_register();
+                compiler.compile_if_as_expr(condition, then_body, else_ifs, else_body, dest)?;
+                last_expr_reg = Some(dest);
+            }
+            _ => {
+                compiler.compile_stmt(stmt)?;
+            }
+        }
+    }
+
+    // Add implicit return
+    let state = &mut compiler.states[0];
+    let needs_return = if state.proto.code.is_empty() {
+        true
+    } else {
+        let last = *state.proto.code.last().unwrap();
+        decode_op(last) != Op::Return
+    };
+    if needs_return {
+        if let Some(reg) = last_expr_reg {
+            state.emit_abc(Op::Return, reg, 0, 0, 0);
+        } else {
+            let reg = state.alloc_register();
+            state.emit_abx(Op::LoadNone, reg, 0, 0);
+            state.emit_abc(Op::Return, reg, 0, 0, 0);
+        }
+    }
+
+    let state = compiler.states.pop().unwrap();
+    Ok(state.proto)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tl_parser::parse;
+
+    #[test]
+    fn test_compile_int_literal() {
+        let program = parse("42").unwrap();
+        let proto = compile(&program).unwrap();
+        assert!(!proto.code.is_empty());
+        assert!(proto.constants.iter().any(|c| matches!(c, Constant::Int(42))));
+    }
+
+    #[test]
+    fn test_compile_add() {
+        let program = parse("1 + 2").unwrap();
+        let proto = compile(&program).unwrap();
+        assert!(proto.code.len() >= 3); // LoadConst, LoadConst, Add, ...
+    }
+
+    #[test]
+    fn test_compile_function() {
+        let program = parse("fn add(a, b) { a + b }").unwrap();
+        let proto = compile(&program).unwrap();
+        // Should have a Closure instruction
+        let has_closure = proto.code.iter().any(|&inst| {
+            decode_op(inst) == Op::Closure
+        });
+        assert!(has_closure);
+    }
+
+    #[test]
+    fn test_compile_closure() {
+        let program = parse("let f = (x) => x * 2").unwrap();
+        let proto = compile(&program).unwrap();
+        let has_closure = proto.code.iter().any(|&inst| {
+            decode_op(inst) == Op::Closure
+        });
+        assert!(has_closure);
+    }
+}

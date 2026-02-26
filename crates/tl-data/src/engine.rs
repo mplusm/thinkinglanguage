@@ -1,9 +1,32 @@
 use std::sync::Arc;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::util::pretty::pretty_format_batches;
-use datafusion::prelude::*;
 use datafusion::execution::context::SessionContext;
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+use datafusion::execution::disk_manager::DiskManagerConfig;
+use datafusion::execution::memory_pool::FairSpillPool;
+use datafusion::prelude::*;
 use tokio::runtime::Runtime;
+
+/// Configuration for the DataEngine.
+pub struct DataEngineConfig {
+    /// Maximum memory in bytes for the DataFusion pool (default: 512MB).
+    pub max_memory_bytes: usize,
+    /// Enable spill-to-disk when memory limit is reached.
+    pub spill_to_disk: bool,
+    /// Directory for spill files (default: system temp dir).
+    pub spill_path: Option<String>,
+}
+
+impl Default for DataEngineConfig {
+    fn default() -> Self {
+        DataEngineConfig {
+            max_memory_bytes: 512 * 1024 * 1024, // 512 MB
+            spill_to_disk: true,
+            spill_path: None,
+        }
+    }
+}
 
 /// Synchronous wrapper around DataFusion's async SessionContext.
 pub struct DataEngine {
@@ -12,14 +35,43 @@ pub struct DataEngine {
 }
 
 impl DataEngine {
+    /// Create a new DataEngine with default configuration.
+    /// Backward-compatible with existing code.
     pub fn new() -> Self {
+        Self::with_config(DataEngineConfig::default())
+    }
+
+    /// Create a new DataEngine with custom configuration.
+    pub fn with_config(config: DataEngineConfig) -> Self {
         let rt = Arc::new(
             Runtime::new().expect("Failed to create tokio runtime for DataEngine"),
         );
-        DataEngine {
-            ctx: SessionContext::new(),
-            rt,
+
+        // Build runtime environment with memory pool and disk manager
+        let pool = FairSpillPool::new(config.max_memory_bytes);
+
+        let mut rt_builder = RuntimeEnvBuilder::new()
+            .with_memory_pool(Arc::new(pool));
+
+        if config.spill_to_disk {
+            let disk_config = if let Some(ref path) = config.spill_path {
+                DiskManagerConfig::new_specified(vec![path.clone().into()])
+            } else {
+                DiskManagerConfig::NewOs
+            };
+            rt_builder = rt_builder.with_disk_manager(disk_config);
         }
+
+        let runtime_env = rt_builder.build().expect("Failed to build RuntimeEnv");
+
+        // Configure session with parallelism
+        let target_partitions = num_cpus::get();
+        let session_config = SessionConfig::new()
+            .with_target_partitions(target_partitions);
+
+        let ctx = SessionContext::new_with_config_rt(session_config, Arc::new(runtime_env));
+
+        DataEngine { ctx, rt }
     }
 
     /// Execute a DataFusion DataFrame and collect results synchronously.
@@ -95,5 +147,26 @@ mod tests {
         let df = engine.sql("SELECT * FROM test_table WHERE id > 1").unwrap();
         let results = engine.collect(df).unwrap();
         assert_eq!(results[0].num_rows(), 2);
+    }
+
+    #[test]
+    fn test_engine_with_config() {
+        let config = DataEngineConfig {
+            max_memory_bytes: 256 * 1024 * 1024,
+            spill_to_disk: true,
+            spill_path: None,
+        };
+        let engine = DataEngine::with_config(config);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Int64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int64Array::from(vec![1, 2, 3]))],
+        ).unwrap();
+        engine.register_batch("t", batch).unwrap();
+        let df = engine.sql("SELECT * FROM t").unwrap();
+        let results = engine.collect(df).unwrap();
+        assert_eq!(results[0].num_rows(), 3);
     }
 }
