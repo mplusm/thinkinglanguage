@@ -62,6 +62,10 @@ pub enum Value {
     Table(TlTable),
     /// A schema definition
     Schema(TlSchema),
+    /// A tensor (ndarray)
+    Tensor(tl_ai::TlTensor),
+    /// A trained model
+    Model(tl_ai::TlModel),
 }
 
 impl fmt::Display for Value {
@@ -93,6 +97,8 @@ impl fmt::Display for Value {
             Value::Closure { .. } => write!(f, "<closure>"),
             Value::Table(_) => write!(f, "<table>"),
             Value::Schema(s) => write!(f, "<schema {}>", s.name),
+            Value::Tensor(t) => write!(f, "{t}"),
+            Value::Model(m) => write!(f, "{m}"),
         }
     }
 }
@@ -123,6 +129,8 @@ impl Value {
             Value::Closure { .. } => "closure",
             Value::Table(_) => "table",
             Value::Schema(_) => "schema",
+            Value::Tensor(_) => "tensor",
+            Value::Model(_) => "model",
         }
     }
 }
@@ -173,6 +181,26 @@ impl Environment {
         global.insert("describe".to_string(), Value::Builtin("describe".to_string()));
         global.insert("head".to_string(), Value::Builtin("head".to_string()));
         global.insert("postgres".to_string(), Value::Builtin("postgres".to_string()));
+        // AI builtins
+        global.insert("tensor".to_string(), Value::Builtin("tensor".to_string()));
+        global.insert("tensor_zeros".to_string(), Value::Builtin("tensor_zeros".to_string()));
+        global.insert("tensor_ones".to_string(), Value::Builtin("tensor_ones".to_string()));
+        global.insert("tensor_shape".to_string(), Value::Builtin("tensor_shape".to_string()));
+        global.insert("tensor_reshape".to_string(), Value::Builtin("tensor_reshape".to_string()));
+        global.insert("tensor_transpose".to_string(), Value::Builtin("tensor_transpose".to_string()));
+        global.insert("tensor_sum".to_string(), Value::Builtin("tensor_sum".to_string()));
+        global.insert("tensor_mean".to_string(), Value::Builtin("tensor_mean".to_string()));
+        global.insert("tensor_dot".to_string(), Value::Builtin("tensor_dot".to_string()));
+        global.insert("predict".to_string(), Value::Builtin("predict".to_string()));
+        global.insert("embed".to_string(), Value::Builtin("embed".to_string()));
+        global.insert("similarity".to_string(), Value::Builtin("similarity".to_string()));
+        global.insert("ai_complete".to_string(), Value::Builtin("ai_complete".to_string()));
+        global.insert("ai_chat".to_string(), Value::Builtin("ai_chat".to_string()));
+        global.insert("model_save".to_string(), Value::Builtin("model_save".to_string()));
+        global.insert("model_load".to_string(), Value::Builtin("model_load".to_string()));
+        global.insert("model_register".to_string(), Value::Builtin("model_register".to_string()));
+        global.insert("model_list".to_string(), Value::Builtin("model_list".to_string()));
+        global.insert("model_get".to_string(), Value::Builtin("model_get".to_string()));
 
         Self {
             scopes: vec![global],
@@ -401,6 +429,9 @@ impl Interpreter {
                 };
                 self.env.set(name.clone(), Value::Schema(schema));
                 Ok(Signal::None)
+            }
+            Stmt::Train { name, algorithm, config } => {
+                self.exec_train(name, algorithm, config)
             }
             Stmt::Break => Ok(Signal::Break),
             Stmt::Continue => Ok(Signal::Continue),
@@ -686,6 +717,32 @@ impl Interpreter {
                     "Unsupported op: string {op} string"
                 ))),
             },
+
+            // Tensor arithmetic
+            (Value::Tensor(a), Value::Tensor(b)) => match op {
+                BinOp::Add => {
+                    let result = a.add(b).map_err(|e| runtime_err(e))?;
+                    Ok(Value::Tensor(result))
+                }
+                BinOp::Sub => {
+                    let result = a.sub(b).map_err(|e| runtime_err(e))?;
+                    Ok(Value::Tensor(result))
+                }
+                BinOp::Mul => {
+                    let result = a.mul(b).map_err(|e| runtime_err(e))?;
+                    Ok(Value::Tensor(result))
+                }
+                BinOp::Div => {
+                    let result = a.div(b).map_err(|e| runtime_err(e))?;
+                    Ok(Value::Tensor(result))
+                }
+                _ => Err(runtime_err(format!("Unsupported op: tensor {op} tensor"))),
+            },
+
+            // Tensor * scalar
+            (Value::Tensor(t), Value::Float(s)) | (Value::Float(s), Value::Tensor(t)) if *op == BinOp::Mul => {
+                Ok(Value::Tensor(t.scale(*s)))
+            }
 
             _ => Err(runtime_err(format!(
                 "Cannot apply `{op}` to {} and {}",
@@ -1121,6 +1178,28 @@ impl Interpreter {
                 let df = self.engine().read_postgres(&conn_str, &table_name)
                     .map_err(|e| runtime_err(e))?;
                 Ok(Value::Table(TlTable { df }))
+            }
+            // ── AI builtins ──
+            "tensor" => self.builtin_tensor(args),
+            "tensor_zeros" => self.builtin_tensor_zeros(args),
+            "tensor_ones" => self.builtin_tensor_ones(args),
+            "tensor_shape" => self.builtin_tensor_shape(args),
+            "tensor_reshape" => self.builtin_tensor_reshape(args),
+            "tensor_transpose" => self.builtin_tensor_transpose(args),
+            "tensor_sum" => self.builtin_tensor_sum(args),
+            "tensor_mean" => self.builtin_tensor_mean(args),
+            "tensor_dot" => self.builtin_tensor_dot(args),
+            "predict" => self.builtin_predict(args),
+            "similarity" => self.builtin_similarity(args),
+            "ai_complete" => self.builtin_ai_complete(args),
+            "ai_chat" => self.builtin_ai_chat(args),
+            "model_save" => self.builtin_model_save(args),
+            "model_load" => self.builtin_model_load(args),
+            "model_register" => self.builtin_model_register(args),
+            "model_list" => self.builtin_model_list(args),
+            "model_get" => self.builtin_model_get(args),
+            "embed" | _ if name == "embed" => {
+                Err(runtime_err("embed() requires an API key. Set TL_OPENAI_KEY env var.".to_string()))
             }
             _ => Err(runtime_err(format!("Unknown builtin: {name}"))),
         }
@@ -1560,6 +1639,478 @@ fn runtime_err(message: String) -> TlError {
         message,
         span: None,
     })
+}
+
+// ── AI builtin implementations ──────────────────────────
+
+impl Interpreter {
+    fn value_to_f64_list(&self, v: &Value) -> Result<Vec<f64>, TlError> {
+        match v {
+            Value::List(items) => {
+                let mut result = Vec::with_capacity(items.len());
+                for item in items {
+                    match item {
+                        Value::Int(n) => result.push(*n as f64),
+                        Value::Float(f) => result.push(*f),
+                        _ => return Err(runtime_err(format!("Expected number in list, got {}", item.type_name()))),
+                    }
+                }
+                Ok(result)
+            }
+            _ => Err(runtime_err(format!("Expected list, got {}", v.type_name()))),
+        }
+    }
+
+    fn value_to_usize_list(&self, v: &Value) -> Result<Vec<usize>, TlError> {
+        match v {
+            Value::List(items) => {
+                let mut result = Vec::with_capacity(items.len());
+                for item in items {
+                    match item {
+                        Value::Int(n) => result.push(*n as usize),
+                        _ => return Err(runtime_err(format!("Expected int in shape, got {}", item.type_name()))),
+                    }
+                }
+                Ok(result)
+            }
+            _ => Err(runtime_err(format!("Expected list for shape, got {}", v.type_name()))),
+        }
+    }
+
+    fn builtin_tensor(&mut self, args: &[Value]) -> Result<Value, TlError> {
+        match args.first() {
+            Some(Value::List(_)) => {
+                let data = self.value_to_f64_list(&args[0])?;
+                if args.len() > 1 {
+                    let shape = self.value_to_usize_list(&args[1])?;
+                    let t = tl_ai::TlTensor::from_vec(data, &shape)
+                        .map_err(|e| runtime_err(e))?;
+                    Ok(Value::Tensor(t))
+                } else {
+                    Ok(Value::Tensor(tl_ai::TlTensor::from_list(data)))
+                }
+            }
+            _ => Err(runtime_err("tensor() expects a list of numbers".to_string())),
+        }
+    }
+
+    fn builtin_tensor_zeros(&mut self, args: &[Value]) -> Result<Value, TlError> {
+        let shape = self.value_to_usize_list(args.first().ok_or_else(|| runtime_err("tensor_zeros() expects a shape".to_string()))?)?;
+        Ok(Value::Tensor(tl_ai::TlTensor::zeros(&shape)))
+    }
+
+    fn builtin_tensor_ones(&mut self, args: &[Value]) -> Result<Value, TlError> {
+        let shape = self.value_to_usize_list(args.first().ok_or_else(|| runtime_err("tensor_ones() expects a shape".to_string()))?)?;
+        Ok(Value::Tensor(tl_ai::TlTensor::ones(&shape)))
+    }
+
+    fn builtin_tensor_shape(&mut self, args: &[Value]) -> Result<Value, TlError> {
+        match args.first() {
+            Some(Value::Tensor(t)) => {
+                let shape = t.shape();
+                Ok(Value::List(shape.into_iter().map(|s| Value::Int(s as i64)).collect()))
+            }
+            _ => Err(runtime_err("tensor_shape() expects a tensor".to_string())),
+        }
+    }
+
+    fn builtin_tensor_reshape(&mut self, args: &[Value]) -> Result<Value, TlError> {
+        if args.len() != 2 {
+            return Err(runtime_err("tensor_reshape() expects (tensor, shape)".to_string()));
+        }
+        match &args[0] {
+            Value::Tensor(t) => {
+                let shape = self.value_to_usize_list(&args[1])?;
+                let reshaped = t.reshape(&shape).map_err(|e| runtime_err(e))?;
+                Ok(Value::Tensor(reshaped))
+            }
+            _ => Err(runtime_err("tensor_reshape() expects a tensor as first argument".to_string())),
+        }
+    }
+
+    fn builtin_tensor_transpose(&mut self, args: &[Value]) -> Result<Value, TlError> {
+        match args.first() {
+            Some(Value::Tensor(t)) => {
+                let transposed = t.transpose().map_err(|e| runtime_err(e))?;
+                Ok(Value::Tensor(transposed))
+            }
+            _ => Err(runtime_err("tensor_transpose() expects a tensor".to_string())),
+        }
+    }
+
+    fn builtin_tensor_sum(&mut self, args: &[Value]) -> Result<Value, TlError> {
+        match args.first() {
+            Some(Value::Tensor(t)) => Ok(Value::Float(t.sum())),
+            _ => Err(runtime_err("tensor_sum() expects a tensor".to_string())),
+        }
+    }
+
+    fn builtin_tensor_mean(&mut self, args: &[Value]) -> Result<Value, TlError> {
+        match args.first() {
+            Some(Value::Tensor(t)) => Ok(Value::Float(t.mean())),
+            _ => Err(runtime_err("tensor_mean() expects a tensor".to_string())),
+        }
+    }
+
+    fn builtin_tensor_dot(&mut self, args: &[Value]) -> Result<Value, TlError> {
+        if args.len() != 2 {
+            return Err(runtime_err("tensor_dot() expects 2 tensors".to_string()));
+        }
+        match (&args[0], &args[1]) {
+            (Value::Tensor(a), Value::Tensor(b)) => {
+                let result = a.dot(b).map_err(|e| runtime_err(e))?;
+                Ok(Value::Tensor(result))
+            }
+            _ => Err(runtime_err("tensor_dot() expects two tensors".to_string())),
+        }
+    }
+
+    fn builtin_predict(&mut self, args: &[Value]) -> Result<Value, TlError> {
+        if args.len() != 2 {
+            return Err(runtime_err("predict() expects (model, input)".to_string()));
+        }
+        match (&args[0], &args[1]) {
+            (Value::Model(m), Value::Tensor(t)) => {
+                let result = tl_ai::predict(m, t).map_err(|e| runtime_err(e))?;
+                Ok(Value::Tensor(result))
+            }
+            _ => Err(runtime_err("predict() expects (model, tensor)".to_string())),
+        }
+    }
+
+    fn builtin_similarity(&mut self, args: &[Value]) -> Result<Value, TlError> {
+        if args.len() != 2 {
+            return Err(runtime_err("similarity() expects 2 tensors".to_string()));
+        }
+        match (&args[0], &args[1]) {
+            (Value::Tensor(a), Value::Tensor(b)) => {
+                let sim = tl_ai::similarity(a, b).map_err(|e| runtime_err(e))?;
+                Ok(Value::Float(sim))
+            }
+            _ => Err(runtime_err("similarity() expects two tensors".to_string())),
+        }
+    }
+
+    fn builtin_ai_complete(&mut self, args: &[Value]) -> Result<Value, TlError> {
+        let prompt = match args.first() {
+            Some(Value::String(s)) => s.clone(),
+            _ => return Err(runtime_err("ai_complete() expects a string prompt".to_string())),
+        };
+        let model = args.get(1).and_then(|v| match v {
+            Value::String(s) => Some(s.as_str()),
+            _ => None,
+        });
+        let result = tl_ai::ai_complete(&prompt, model, None, None)
+            .map_err(|e| runtime_err(e))?;
+        Ok(Value::String(result))
+    }
+
+    fn builtin_ai_chat(&mut self, args: &[Value]) -> Result<Value, TlError> {
+        let model = match args.first() {
+            Some(Value::String(s)) => s.clone(),
+            _ => return Err(runtime_err("ai_chat() expects (model, system?, messages)".to_string())),
+        };
+        let system = args.get(1).and_then(|v| match v {
+            Value::String(s) => Some(s.as_str()),
+            _ => None,
+        });
+        // Messages as list of [role, content] pairs
+        let messages = match args.last() {
+            Some(Value::List(msgs)) => {
+                let mut result = Vec::new();
+                for msg in msgs {
+                    if let Value::List(pair) = msg {
+                        if pair.len() == 2 {
+                            if let (Value::String(role), Value::String(content)) = (&pair[0], &pair[1]) {
+                                result.push((role.clone(), content.clone()));
+                            }
+                        }
+                    }
+                }
+                result
+            }
+            _ => Vec::new(),
+        };
+        let result = tl_ai::ai_chat(&model, system, &messages)
+            .map_err(|e| runtime_err(e))?;
+        Ok(Value::String(result))
+    }
+
+    fn builtin_model_save(&mut self, args: &[Value]) -> Result<Value, TlError> {
+        if args.len() != 2 {
+            return Err(runtime_err("model_save() expects (model, path)".to_string()));
+        }
+        match (&args[0], &args[1]) {
+            (Value::Model(m), Value::String(path)) => {
+                m.save(std::path::Path::new(path)).map_err(|e| runtime_err(e))?;
+                Ok(Value::None)
+            }
+            _ => Err(runtime_err("model_save() expects (model, string_path)".to_string())),
+        }
+    }
+
+    fn builtin_model_load(&mut self, args: &[Value]) -> Result<Value, TlError> {
+        match args.first() {
+            Some(Value::String(path)) => {
+                let model = tl_ai::TlModel::load(std::path::Path::new(path))
+                    .map_err(|e| runtime_err(e))?;
+                Ok(Value::Model(model))
+            }
+            _ => Err(runtime_err("model_load() expects a path string".to_string())),
+        }
+    }
+
+    fn builtin_model_register(&mut self, args: &[Value]) -> Result<Value, TlError> {
+        if args.len() != 2 {
+            return Err(runtime_err("model_register() expects (name, model)".to_string()));
+        }
+        match (&args[0], &args[1]) {
+            (Value::String(name), Value::Model(m)) => {
+                let registry = tl_ai::ModelRegistry::default_location();
+                registry.register(name, m).map_err(|e| runtime_err(e))?;
+                Ok(Value::None)
+            }
+            _ => Err(runtime_err("model_register() expects (string, model)".to_string())),
+        }
+    }
+
+    fn builtin_model_list(&mut self, _args: &[Value]) -> Result<Value, TlError> {
+        let registry = tl_ai::ModelRegistry::default_location();
+        let names = registry.list();
+        Ok(Value::List(names.into_iter().map(Value::String).collect()))
+    }
+
+    fn builtin_model_get(&mut self, args: &[Value]) -> Result<Value, TlError> {
+        match args.first() {
+            Some(Value::String(name)) => {
+                let registry = tl_ai::ModelRegistry::default_location();
+                let model = registry.get(name).map_err(|e| runtime_err(e))?;
+                Ok(Value::Model(model))
+            }
+            _ => Err(runtime_err("model_get() expects a model name string".to_string())),
+        }
+    }
+
+    fn exec_train(&mut self, name: &str, algorithm: &str, config: &[(String, Expr)]) -> Result<Signal, TlError> {
+        // Extract config values
+        let mut features_val = None;
+        let mut target_val = None;
+        let mut feature_names = Vec::new();
+        let mut target_name = String::new();
+
+        for (key, expr) in config {
+            let val = self.eval_expr(expr)?;
+            match key.as_str() {
+                "data" => features_val = Some(val),
+                "target" => {
+                    if let Value::String(s) = &val {
+                        target_name = s.clone();
+                    }
+                    target_val = Some(val);
+                }
+                "features" => {
+                    if let Value::List(items) = &val {
+                        for item in items {
+                            if let Value::String(s) = item {
+                                feature_names.push(s.clone());
+                            }
+                        }
+                    }
+                }
+                _ => {} // ignore unknown config keys for now
+            }
+        }
+
+        // When data is a Table, extract features and target from it
+        if let Some(Value::Table(ref tbl)) = features_val {
+            let engine = tl_data::DataEngine::new();
+            let batches = engine.collect(tbl.df.clone())
+                .map_err(|e| runtime_err(e))?;
+            if batches.is_empty() {
+                return Err(runtime_err("train: empty dataset".to_string()));
+            }
+            let batch = &batches[0];
+            let schema = batch.schema();
+
+            // Determine feature columns
+            if feature_names.is_empty() {
+                for field in schema.fields() {
+                    if field.name() != &target_name {
+                        feature_names.push(field.name().clone());
+                    }
+                }
+            }
+
+            let n_rows = batch.num_rows();
+            let n_features = feature_names.len();
+
+            // Extract feature columns
+            let mut col_data: Vec<Vec<f64>> = Vec::new();
+            for col_name in &feature_names {
+                let col_idx = schema.index_of(col_name)
+                    .map_err(|_| runtime_err(format!("Column not found: {col_name}")))?;
+                let arr = batch.column(col_idx);
+                let mut vals = Vec::with_capacity(n_rows);
+                Self::extract_f64_col(arr, &mut vals)?;
+                col_data.push(vals);
+            }
+
+            // Convert to row-major
+            let mut row_major = Vec::with_capacity(n_rows * n_features);
+            for row in 0..n_rows {
+                for col in &col_data {
+                    row_major.push(col[row]);
+                }
+            }
+            let features_tensor = tl_ai::TlTensor::from_vec(row_major, &[n_rows, n_features])
+                .map_err(|e| runtime_err(e))?;
+
+            // Extract target column
+            let target_idx = schema.index_of(&target_name)
+                .map_err(|_| runtime_err(format!("Target column not found: {target_name}")))?;
+            let target_arr = batch.column(target_idx);
+            let mut target_data = Vec::with_capacity(n_rows);
+            Self::extract_f64_col(target_arr, &mut target_data)?;
+            let target_tensor = tl_ai::TlTensor::from_list(target_data);
+
+            let train_config = tl_ai::TrainConfig {
+                features: features_tensor,
+                target: target_tensor,
+                feature_names,
+                target_name,
+                model_name: name.to_string(),
+                split_ratio: 1.0,
+                hyperparams: std::collections::HashMap::new(),
+            };
+
+            let model = tl_ai::train(algorithm, &train_config)
+                .map_err(|e| runtime_err(e))?;
+
+            if let Some(meta) = model.metadata() {
+                let metrics_str: Vec<String> = meta.metrics.iter()
+                    .map(|(k, v)| format!("{k}={v:.4}"))
+                    .collect();
+                if !metrics_str.is_empty() {
+                    let msg = format!("Trained model '{}' ({algorithm}): {}", name, metrics_str.join(", "));
+                    println!("{msg}");
+                    self.output.push(msg);
+                }
+            }
+
+            self.env.set(name.to_string(), Value::Model(model));
+            return Ok(Signal::None);
+        }
+
+        // Convert data to tensors (non-table path)
+        let features_tensor = match features_val {
+            Some(Value::Tensor(t)) => t,
+            Some(Value::List(items)) => {
+                // Treat as 2D list of lists or flat list
+                let mut all_data = Vec::new();
+                let mut n_cols = 0;
+                for item in &items {
+                    match item {
+                        Value::List(row) => {
+                            if n_cols == 0 {
+                                n_cols = row.len();
+                            }
+                            for v in row {
+                                match v {
+                                    Value::Int(n) => all_data.push(*n as f64),
+                                    Value::Float(f) => all_data.push(*f),
+                                    _ => return Err(runtime_err("Training data must be numeric".to_string())),
+                                }
+                            }
+                        }
+                        Value::Int(n) => all_data.push(*n as f64),
+                        Value::Float(f) => all_data.push(*f),
+                        _ => return Err(runtime_err("Training data must be numeric".to_string())),
+                    }
+                }
+                if n_cols == 0 {
+                    n_cols = 1;
+                }
+                let n_rows = all_data.len() / n_cols;
+                tl_ai::TlTensor::from_vec(all_data, &[n_rows, n_cols])
+                    .map_err(|e| runtime_err(e))?
+            }
+            _ => return Err(runtime_err("train requires 'data' config key".to_string())),
+        };
+
+        let target_tensor = match target_val {
+            Some(Value::Tensor(t)) => t,
+            Some(Value::List(items)) => {
+                let data: Result<Vec<f64>, _> = items.iter().map(|v| match v {
+                    Value::Int(n) => Ok(*n as f64),
+                    Value::Float(f) => Ok(*f),
+                    _ => Err(runtime_err("Target values must be numeric".to_string())),
+                }).collect();
+                tl_ai::TlTensor::from_list(data?)
+            }
+            Some(Value::String(_)) => {
+                return Err(runtime_err("String target column requires table data. Pass data as a table.".to_string()));
+            }
+            _ => return Err(runtime_err("train requires 'target' config key with numeric data".to_string())),
+        };
+
+        if feature_names.is_empty() {
+            let n_features = features_tensor.shape().get(1).copied().unwrap_or(1);
+            feature_names = (0..n_features).map(|i| format!("x{i}")).collect();
+        }
+
+        let train_config = tl_ai::TrainConfig {
+            features: features_tensor,
+            target: target_tensor,
+            feature_names,
+            target_name,
+            model_name: name.to_string(),
+            split_ratio: 1.0,
+            hyperparams: std::collections::HashMap::new(),
+        };
+
+        let model = tl_ai::train(algorithm, &train_config)
+            .map_err(|e| runtime_err(e))?;
+
+        // Print training metrics
+        if let Some(meta) = model.metadata() {
+            let metrics_str: Vec<String> = meta.metrics.iter()
+                .map(|(k, v)| format!("{k}={v:.4}"))
+                .collect();
+            if !metrics_str.is_empty() {
+                let msg = format!("Trained model '{}' ({algorithm}): {}", name, metrics_str.join(", "));
+                println!("{msg}");
+                self.output.push(msg);
+            }
+        }
+
+        self.env.set(name.to_string(), Value::Model(model));
+        Ok(Signal::None)
+    }
+
+    fn extract_f64_col(col: &Arc<dyn tl_data::datafusion::arrow::array::Array>, out: &mut Vec<f64>) -> Result<(), TlError> {
+        use tl_data::datafusion::arrow::array::{Float64Array, Int64Array, Float32Array, Int32Array, Array};
+        let len = col.len();
+        if let Some(arr) = col.as_any().downcast_ref::<Float64Array>() {
+            for i in 0..len {
+                out.push(if arr.is_null(i) { 0.0 } else { arr.value(i) });
+            }
+        } else if let Some(arr) = col.as_any().downcast_ref::<Int64Array>() {
+            for i in 0..len {
+                out.push(if arr.is_null(i) { 0.0 } else { arr.value(i) as f64 });
+            }
+        } else if let Some(arr) = col.as_any().downcast_ref::<Float32Array>() {
+            for i in 0..len {
+                out.push(if arr.is_null(i) { 0.0 } else { arr.value(i) as f64 });
+            }
+        } else if let Some(arr) = col.as_any().downcast_ref::<Int32Array>() {
+            for i in 0..len {
+                out.push(if arr.is_null(i) { 0.0 } else { arr.value(i) as f64 });
+            }
+        } else {
+            return Err(runtime_err("Column must be numeric (int32, int64, float32, float64)".to_string()));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

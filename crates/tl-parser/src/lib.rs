@@ -106,6 +106,7 @@ impl Parser {
             Token::For => self.parse_for(),
             Token::Return => self.parse_return(),
             Token::Schema => self.parse_schema(),
+            Token::Model => self.parse_train(),
             Token::Break => {
                 self.advance();
                 Ok(Stmt::Break)
@@ -139,6 +140,30 @@ impl Parser {
         }
         self.expect(&Token::RBrace)?;
         Ok(Stmt::Schema { name, fields })
+    }
+
+    /// Parse `model <name> = train <algorithm> { key: value, ... }`
+    fn parse_train(&mut self) -> Result<Stmt, TlError> {
+        self.advance(); // consume 'model'
+        let name = self.expect_ident()?;
+        self.expect(&Token::Assign)?;
+        self.expect(&Token::Train)?;
+        let algorithm = self.expect_ident()?;
+        self.expect(&Token::LBrace)?;
+        let mut config = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            let key = self.expect_ident()?;
+            self.expect(&Token::Colon)?;
+            let value = self.parse_expression()?;
+            self.match_token(&Token::Comma); // optional trailing comma
+            config.push((key, value));
+        }
+        self.expect(&Token::RBrace)?;
+        Ok(Stmt::Train {
+            name,
+            algorithm,
+            config,
+        })
     }
 
     fn parse_let(&mut self) -> Result<Stmt, TlError> {

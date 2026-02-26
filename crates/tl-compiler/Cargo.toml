@@ -9,6 +9,7 @@ description = "Bytecode compiler and VM for ThinkingLanguage (Phase 2)"
 tl-ast = { path = "../tl-ast" }
 tl-errors = { path = "../tl-errors" }
 tl-data = { path = "../tl-data" }
+tl-ai = { path = "../tl-ai" }
 cranelift-codegen = "0.116"
 cranelift-frontend = "0.116"
 cranelift-jit = "0.116"

@@ -630,6 +630,11 @@ impl Vm {
                     let result = self.interpolate_string(&template, base)?;
                     self.stack[base + a as usize] = VmValue::String(Arc::from(result.as_str()));
                 }
+                Op::Train => {
+                    // a = dest, b = algorithm constant, c = config AstExprList constant
+                    let result = self.handle_train(frame_idx, b, c)?;
+                    self.stack[base + a as usize] = result;
+                }
             }
         }
     }
@@ -733,6 +738,10 @@ impl Vm {
             (VmValue::String(a), VmValue::String(b)) => {
                 Ok(VmValue::String(Arc::from(format!("{a}{b}").as_str())))
             }
+            (VmValue::Tensor(a), VmValue::Tensor(b)) => {
+                let result = a.add(b).map_err(|e| runtime_err(format!("{e}")))?;
+                Ok(VmValue::Tensor(Arc::new(result)))
+            }
             _ => Err(runtime_err(format!(
                 "Cannot apply `+` to {} and {}",
                 left.type_name(), right.type_name()
@@ -748,6 +757,10 @@ impl Vm {
             (VmValue::Float(a), VmValue::Float(b)) => Ok(VmValue::Float(a - b)),
             (VmValue::Int(a), VmValue::Float(b)) => Ok(VmValue::Float(*a as f64 - b)),
             (VmValue::Float(a), VmValue::Int(b)) => Ok(VmValue::Float(a - *b as f64)),
+            (VmValue::Tensor(a), VmValue::Tensor(b)) => {
+                let result = a.sub(b).map_err(|e| runtime_err(format!("{e}")))?;
+                Ok(VmValue::Tensor(Arc::new(result)))
+            }
             _ => Err(runtime_err(format!(
                 "Cannot apply `-` to {} and {}",
                 left.type_name(), right.type_name()
@@ -765,6 +778,14 @@ impl Vm {
             (VmValue::Float(a), VmValue::Int(b)) => Ok(VmValue::Float(a * *b as f64)),
             (VmValue::String(a), VmValue::Int(b)) => {
                 Ok(VmValue::String(Arc::from(a.repeat(*b as usize).as_str())))
+            }
+            (VmValue::Tensor(a), VmValue::Tensor(b)) => {
+                let result = a.mul(b).map_err(|e| runtime_err(format!("{e}")))?;
+                Ok(VmValue::Tensor(Arc::new(result)))
+            }
+            (VmValue::Tensor(t), VmValue::Float(s)) | (VmValue::Float(s), VmValue::Tensor(t)) => {
+                let result = t.scale(*s);
+                Ok(VmValue::Tensor(Arc::new(result)))
             }
             _ => Err(runtime_err(format!(
                 "Cannot apply `*` to {} and {}",
@@ -786,6 +807,10 @@ impl Vm {
             (VmValue::Float(a), VmValue::Int(b)) => {
                 if *b == 0 { return Err(runtime_err("Division by zero")); }
                 Ok(VmValue::Float(a / *b as f64))
+            }
+            (VmValue::Tensor(a), VmValue::Tensor(b)) => {
+                let result = a.div(b).map_err(|e| runtime_err(format!("{e}")))?;
+                Ok(VmValue::Tensor(Arc::new(result)))
             }
             _ => Err(runtime_err(format!(
                 "Cannot apply `/` to {} and {}",
@@ -1256,7 +1281,382 @@ impl Vm {
                     .map_err(|e| runtime_err(e))?;
                 Ok(VmValue::Table(VmTable { df }))
             }
+            // ── AI builtins ──
+            BuiltinId::Tensor => {
+                if args.is_empty() { return Err(runtime_err("tensor() expects at least 1 argument")); }
+                let data = self.vmvalue_to_f64_list(&args[0])?;
+                let shape = if args.len() > 1 {
+                    self.vmvalue_to_usize_list(&args[1])?
+                } else {
+                    vec![data.len()]
+                };
+                let t = tl_ai::TlTensor::from_vec(data, &shape)
+                    .map_err(|e| runtime_err(format!("{e}")))?;
+                Ok(VmValue::Tensor(Arc::new(t)))
+            }
+            BuiltinId::TensorZeros => {
+                if args.is_empty() { return Err(runtime_err("tensor_zeros() expects 1 argument (shape)")); }
+                let shape = self.vmvalue_to_usize_list(&args[0])?;
+                let t = tl_ai::TlTensor::zeros(&shape);
+                Ok(VmValue::Tensor(Arc::new(t)))
+            }
+            BuiltinId::TensorOnes => {
+                if args.is_empty() { return Err(runtime_err("tensor_ones() expects 1 argument (shape)")); }
+                let shape = self.vmvalue_to_usize_list(&args[0])?;
+                let t = tl_ai::TlTensor::ones(&shape);
+                Ok(VmValue::Tensor(Arc::new(t)))
+            }
+            BuiltinId::TensorShape => {
+                match args.first() {
+                    Some(VmValue::Tensor(t)) => {
+                        let shape: Vec<VmValue> = t.shape().iter().map(|&d| VmValue::Int(d as i64)).collect();
+                        Ok(VmValue::List(shape))
+                    }
+                    _ => Err(runtime_err("tensor_shape() expects a tensor")),
+                }
+            }
+            BuiltinId::TensorReshape => {
+                if args.len() != 2 { return Err(runtime_err("tensor_reshape() expects 2 arguments (tensor, shape)")); }
+                let t = match &args[0] {
+                    VmValue::Tensor(t) => (**t).clone(),
+                    _ => return Err(runtime_err("tensor_reshape() first arg must be a tensor")),
+                };
+                let shape = self.vmvalue_to_usize_list(&args[1])?;
+                let reshaped = t.reshape(&shape).map_err(|e| runtime_err(format!("{e}")))?;
+                Ok(VmValue::Tensor(Arc::new(reshaped)))
+            }
+            BuiltinId::TensorTranspose => {
+                match args.first() {
+                    Some(VmValue::Tensor(t)) => {
+                        let transposed = t.transpose().map_err(|e| runtime_err(format!("{e}")))?;
+                        Ok(VmValue::Tensor(Arc::new(transposed)))
+                    }
+                    _ => Err(runtime_err("tensor_transpose() expects a tensor")),
+                }
+            }
+            BuiltinId::TensorSum => {
+                match args.first() {
+                    Some(VmValue::Tensor(t)) => {
+                        Ok(VmValue::Float(t.sum()))
+                    }
+                    _ => Err(runtime_err("tensor_sum() expects a tensor")),
+                }
+            }
+            BuiltinId::TensorMean => {
+                match args.first() {
+                    Some(VmValue::Tensor(t)) => {
+                        Ok(VmValue::Float(t.mean()))
+                    }
+                    _ => Err(runtime_err("tensor_mean() expects a tensor")),
+                }
+            }
+            BuiltinId::TensorDot => {
+                if args.len() != 2 { return Err(runtime_err("tensor_dot() expects 2 arguments")); }
+                let a_t = match &args[0] {
+                    VmValue::Tensor(t) => t,
+                    _ => return Err(runtime_err("tensor_dot() first arg must be a tensor")),
+                };
+                let b_t = match &args[1] {
+                    VmValue::Tensor(t) => t,
+                    _ => return Err(runtime_err("tensor_dot() second arg must be a tensor")),
+                };
+                let result = a_t.dot(b_t).map_err(|e| runtime_err(format!("{e}")))?;
+                Ok(VmValue::Tensor(Arc::new(result)))
+            }
+            BuiltinId::Predict => {
+                if args.len() < 2 { return Err(runtime_err("predict() expects at least 2 arguments (model, input)")); }
+                let model = match &args[0] {
+                    VmValue::Model(m) => (**m).clone(),
+                    _ => return Err(runtime_err("predict() first arg must be a model")),
+                };
+                let input = match &args[1] {
+                    VmValue::Tensor(t) => (**t).clone(),
+                    _ => return Err(runtime_err("predict() second arg must be a tensor")),
+                };
+                let result = tl_ai::predict(&model, &input)
+                    .map_err(|e| runtime_err(format!("{e}")))?;
+                Ok(VmValue::Tensor(Arc::new(result)))
+            }
+            BuiltinId::Similarity => {
+                if args.len() != 2 { return Err(runtime_err("similarity() expects 2 arguments")); }
+                let a_t = match &args[0] {
+                    VmValue::Tensor(t) => t,
+                    _ => return Err(runtime_err("similarity() first arg must be a tensor")),
+                };
+                let b_t = match &args[1] {
+                    VmValue::Tensor(t) => t,
+                    _ => return Err(runtime_err("similarity() second arg must be a tensor")),
+                };
+                let sim = tl_ai::similarity(a_t, b_t).map_err(|e| runtime_err(format!("{e}")))?;
+                Ok(VmValue::Float(sim))
+            }
+            BuiltinId::AiComplete => {
+                if args.is_empty() { return Err(runtime_err("ai_complete() expects at least 1 argument (prompt)")); }
+                let prompt = match &args[0] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("ai_complete() first arg must be a string")),
+                };
+                let model = match args.get(1) {
+                    Some(VmValue::String(s)) => Some(s.to_string()),
+                    _ => None,
+                };
+                let result = tl_ai::ai_complete(&prompt, model.as_deref(), None, None)
+                    .map_err(|e| runtime_err(format!("{e}")))?;
+                Ok(VmValue::String(Arc::from(result.as_str())))
+            }
+            BuiltinId::AiChat => {
+                if args.is_empty() { return Err(runtime_err("ai_chat() expects at least 1 argument (model)")); }
+                let model = match &args[0] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("ai_chat() first arg must be a string (model)")),
+                };
+                let system = match args.get(1) {
+                    Some(VmValue::String(s)) => Some(s.to_string()),
+                    _ => None,
+                };
+                let messages: Vec<(String, String)> = if let Some(VmValue::List(msgs)) = args.get(2) {
+                    msgs.chunks(2).filter_map(|chunk| {
+                        if chunk.len() == 2 {
+                            if let (VmValue::String(role), VmValue::String(content)) = (&chunk[0], &chunk[1]) {
+                                return Some((role.to_string(), content.to_string()));
+                            }
+                        }
+                        None
+                    }).collect()
+                } else {
+                    Vec::new()
+                };
+                let result = tl_ai::ai_chat(&model, system.as_deref(), &messages)
+                    .map_err(|e| runtime_err(format!("{e}")))?;
+                Ok(VmValue::String(Arc::from(result.as_str())))
+            }
+            BuiltinId::ModelSave => {
+                if args.len() != 2 { return Err(runtime_err("model_save() expects 2 arguments (model, path)")); }
+                let model = match &args[0] {
+                    VmValue::Model(m) => m,
+                    _ => return Err(runtime_err("model_save() first arg must be a model")),
+                };
+                let path = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("model_save() second arg must be a string path")),
+                };
+                model.save(std::path::Path::new(&path))
+                    .map_err(|e| runtime_err(format!("{e}")))?;
+                Ok(VmValue::None)
+            }
+            BuiltinId::ModelLoad => {
+                if args.is_empty() { return Err(runtime_err("model_load() expects 1 argument (path)")); }
+                let path = match &args[0] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("model_load() arg must be a string path")),
+                };
+                let model = tl_ai::TlModel::load(std::path::Path::new(&path))
+                    .map_err(|e| runtime_err(format!("{e}")))?;
+                Ok(VmValue::Model(Arc::new(model)))
+            }
+            BuiltinId::ModelRegister => {
+                if args.len() != 2 { return Err(runtime_err("model_register() expects 2 arguments (name, model)")); }
+                let name = match &args[0] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("model_register() first arg must be a string")),
+                };
+                let model = match &args[1] {
+                    VmValue::Model(m) => (**m).clone(),
+                    _ => return Err(runtime_err("model_register() second arg must be a model")),
+                };
+                let registry = tl_ai::ModelRegistry::default_location();
+                registry.register(&name, &model)
+                    .map_err(|e| runtime_err(format!("{e}")))?;
+                Ok(VmValue::None)
+            }
+            BuiltinId::ModelList => {
+                let registry = tl_ai::ModelRegistry::default_location();
+                let names = registry.list();
+                let items: Vec<VmValue> = names.into_iter()
+                    .map(|n: String| VmValue::String(Arc::from(n.as_str())))
+                    .collect();
+                Ok(VmValue::List(items))
+            }
+            BuiltinId::ModelGet => {
+                if args.is_empty() { return Err(runtime_err("model_get() expects 1 argument (name)")); }
+                let name = match &args[0] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("model_get() arg must be a string")),
+                };
+                let registry = tl_ai::ModelRegistry::default_location();
+                match registry.get(&name) {
+                    Ok(m) => Ok(VmValue::Model(Arc::new(m))),
+                    Err(_) => Ok(VmValue::None),
+                }
+            }
         }
+    }
+
+    // ── AI helpers ──
+
+    fn vmvalue_to_f64_list(&self, val: &VmValue) -> Result<Vec<f64>, TlError> {
+        match val {
+            VmValue::List(items) => {
+                items.iter().map(|item| match item {
+                    VmValue::Int(n) => Ok(*n as f64),
+                    VmValue::Float(f) => Ok(*f),
+                    _ => Err(runtime_err("Expected number in list")),
+                }).collect()
+            }
+            VmValue::Int(n) => Ok(vec![*n as f64]),
+            VmValue::Float(f) => Ok(vec![*f]),
+            _ => Err(runtime_err("Expected a list of numbers")),
+        }
+    }
+
+    fn vmvalue_to_usize_list(&self, val: &VmValue) -> Result<Vec<usize>, TlError> {
+        match val {
+            VmValue::List(items) => {
+                items.iter().map(|item| match item {
+                    VmValue::Int(n) => Ok(*n as usize),
+                    _ => Err(runtime_err("Expected integer in shape list")),
+                }).collect()
+            }
+            _ => Err(runtime_err("Expected a list of integers for shape")),
+        }
+    }
+
+    fn handle_train(&mut self, frame_idx: usize, algo_const: u8, config_const: u8) -> Result<VmValue, TlError> {
+        let frame = &self.frames[frame_idx];
+        let algorithm = match &frame.prototype.constants[algo_const as usize] {
+            Constant::String(s) => s.to_string(),
+            _ => return Err(runtime_err("Expected string constant for algorithm")),
+        };
+        let config_args = match &frame.prototype.constants[config_const as usize] {
+            Constant::AstExprList(args) => args.clone(),
+            _ => return Err(runtime_err("Expected AST expr list for train config")),
+        };
+
+        // Extract config values
+        let mut data_val = None;
+        let mut target_name = None;
+        let mut feature_names: Vec<String> = Vec::new();
+
+        for arg in &config_args {
+            if let AstExpr::NamedArg { name, value } = arg {
+                match name.as_str() {
+                    "data" => {
+                        data_val = Some(self.eval_ast_to_vm(value)?);
+                    }
+                    "target" => {
+                        if let AstExpr::String(s) = value.as_ref() {
+                            target_name = Some(s.clone());
+                        }
+                    }
+                    "features" => {
+                        if let AstExpr::List(items) = value.as_ref() {
+                            for item in items {
+                                if let AstExpr::String(s) = item {
+                                    feature_names.push(s.clone());
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Build training config from table data
+        let table = match data_val {
+            Some(VmValue::Table(t)) => t,
+            _ => return Err(runtime_err("train: data must be a table")),
+        };
+        let target = target_name.ok_or_else(|| runtime_err("train: target is required"))?;
+
+        // Collect table to Arrow batches
+        let batches = self.engine().collect(table.df).map_err(|e| runtime_err(e))?;
+        if batches.is_empty() {
+            return Err(runtime_err("train: empty dataset"));
+        }
+
+        // Determine feature columns if not specified
+        let batch = &batches[0];
+        let schema = batch.schema();
+        if feature_names.is_empty() {
+            for field in schema.fields() {
+                if field.name() != &target {
+                    feature_names.push(field.name().clone());
+                }
+            }
+        }
+
+        // Extract feature data and target data as f64 arrays
+        let n_rows = batch.num_rows();
+        let n_features = feature_names.len();
+        let mut features_data = Vec::with_capacity(n_rows * n_features);
+        let mut target_data = Vec::with_capacity(n_rows);
+
+        for col_name in &feature_names {
+            let col_idx = schema.index_of(col_name)
+                .map_err(|_| runtime_err(format!("Column not found: {col_name}")))?;
+            let col_arr = batch.column(col_idx);
+            Self::extract_f64_column(col_arr, &mut features_data)?;
+        }
+
+        // Extract target column
+        let target_idx = schema.index_of(&target)
+            .map_err(|_| runtime_err(format!("Target column not found: {target}")))?;
+        let target_arr = batch.column(target_idx);
+        Self::extract_f64_column(target_arr, &mut target_data)?;
+
+        // Reshape features: [col1_row1, col1_row2, ..., col2_row1, ...] → row-major
+        let mut row_major = Vec::with_capacity(n_rows * n_features);
+        for row in 0..n_rows {
+            for col in 0..n_features {
+                row_major.push(features_data[col * n_rows + row]);
+            }
+        }
+
+        let features_tensor = tl_ai::TlTensor::from_vec(row_major, &[n_rows, n_features])
+            .map_err(|e| runtime_err(format!("Shape error: {e}")))?;
+        let target_tensor = tl_ai::TlTensor::from_vec(target_data, &[n_rows])
+            .map_err(|e| runtime_err(format!("Shape error: {e}")))?;
+
+        let config = tl_ai::TrainConfig {
+            features: features_tensor,
+            target: target_tensor,
+            feature_names: feature_names.clone(),
+            target_name: target.clone(),
+            model_name: algorithm.clone(),
+            split_ratio: 0.8,
+            hyperparams: std::collections::HashMap::new(),
+        };
+
+        let model = tl_ai::train(&algorithm, &config)
+            .map_err(|e| runtime_err(format!("Training failed: {e}")))?;
+
+        Ok(VmValue::Model(Arc::new(model)))
+    }
+
+    fn extract_f64_column(col: &std::sync::Arc<dyn tl_data::datafusion::arrow::array::Array>, out: &mut Vec<f64>) -> Result<(), TlError> {
+        use tl_data::datafusion::arrow::array::{Float64Array, Int64Array, Float32Array, Int32Array, Array};
+        let len = col.len();
+        if let Some(arr) = col.as_any().downcast_ref::<Float64Array>() {
+            for i in 0..len {
+                out.push(if arr.is_null(i) { 0.0 } else { arr.value(i) });
+            }
+        } else if let Some(arr) = col.as_any().downcast_ref::<Int64Array>() {
+            for i in 0..len {
+                out.push(if arr.is_null(i) { 0.0 } else { arr.value(i) as f64 });
+            }
+        } else if let Some(arr) = col.as_any().downcast_ref::<Float32Array>() {
+            for i in 0..len {
+                out.push(if arr.is_null(i) { 0.0 } else { arr.value(i) as f64 });
+            }
+        } else if let Some(arr) = col.as_any().downcast_ref::<Int32Array>() {
+            for i in 0..len {
+                out.push(if arr.is_null(i) { 0.0 } else { arr.value(i) as f64 });
+            }
+        } else {
+            return Err(runtime_err("Column must be numeric (int32, int64, float32, float64)"));
+        }
+        Ok(())
     }
 
     /// Call a VmValue function/closure with args.

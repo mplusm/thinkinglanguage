@@ -63,6 +63,13 @@ pub enum Stmt {
         fields: Vec<SchemaField>,
     },
 
+    /// `model name = train algorithm { key: value, ... }`
+    Train {
+        name: String,
+        algorithm: String,
+        config: Vec<(String, Expr)>,
+    },
+
     /// `break`
     Break,
 

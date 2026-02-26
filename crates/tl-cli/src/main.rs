@@ -38,6 +38,27 @@ enum Commands {
         #[arg(long, default_value = "vm")]
         backend: String,
     },
+    /// Manage the model registry
+    Models {
+        #[command(subcommand)]
+        action: ModelsAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ModelsAction {
+    /// List all registered models
+    List,
+    /// Show model metadata
+    Info {
+        /// Model name
+        name: String,
+    },
+    /// Delete a registered model
+    Delete {
+        /// Model name
+        name: String,
+    },
 }
 
 fn main() {
@@ -46,6 +67,7 @@ fn main() {
     match cli.command {
         Some(Commands::Run { file, backend }) => run_file(&file, &backend),
         Some(Commands::Shell { backend }) => run_repl(&backend),
+        Some(Commands::Models { action }) => run_models(action),
         None => run_repl("vm"), // Default to REPL with VM backend
     }
 }
@@ -178,6 +200,46 @@ fn run_repl_vm(editor: &mut DefaultEditor) {
             Err(e) => {
                 eprintln!("Error: {e}");
                 break;
+            }
+        }
+    }
+}
+
+fn run_models(action: ModelsAction) {
+    let registry = tl_ai::ModelRegistry::default_location();
+    match action {
+        ModelsAction::List => {
+            let names = registry.list();
+            if names.is_empty() {
+                println!("No models registered.");
+                println!("Models are stored in ~/.tl/models/");
+            } else {
+                println!("Registered models:");
+                for name in &names {
+                    println!("  {name}");
+                }
+                println!("\n{} model(s) total", names.len());
+            }
+        }
+        ModelsAction::Info { name } => {
+            match registry.get(&name) {
+                Ok(model) => {
+                    println!("Model: {name}");
+                    println!("{model}");
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    process::exit(1);
+                }
+            }
+        }
+        ModelsAction::Delete { name } => {
+            match registry.delete(&name) {
+                Ok(()) => println!("Deleted model '{name}'"),
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    process::exit(1);
+                }
             }
         }
     }

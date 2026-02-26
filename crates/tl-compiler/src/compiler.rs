@@ -260,6 +260,9 @@ impl Compiler {
             Stmt::Schema { name, fields } => {
                 self.compile_schema(name, fields)
             }
+            Stmt::Train { name, algorithm, config } => {
+                self.compile_train(name, algorithm, config)
+            }
             Stmt::Break => {
                 let state = self.current();
                 let pos = state.current_pos();
@@ -714,6 +717,43 @@ impl Compiler {
         // Also add as local
         let local_reg = self.add_local(name.to_string());
         self.current().emit_abx(Op::LoadConst, local_reg, const_idx, 0);
+
+        Ok(())
+    }
+
+    fn compile_train(&mut self, name: &str, algorithm: &str, config: &[(String, Expr)]) -> Result<(), TlError> {
+        let dest = self.add_local(name.to_string());
+
+        // Store algorithm as constant
+        let algo_idx = self.current().add_constant(Constant::String(Arc::from(algorithm)));
+
+        // For any config value that's an Ident, ensure the local is exported as a global
+        // so the VM's eval_ast_to_vm can resolve it at runtime.
+        for (_key, val) in config {
+            if let Expr::Ident(ident_name) = val {
+                if let Some(reg) = self.resolve_local(ident_name) {
+                    let name_idx = self.current().add_constant(Constant::String(Arc::from(ident_name.as_str())));
+                    self.current().emit_abx(Op::SetGlobal, reg, name_idx, 0);
+                }
+            }
+        }
+
+        // Store config key-value pairs: compile each value expr, then store as AstExprList
+        let config_exprs: Vec<tl_ast::Expr> = config.iter().map(|(k, v)| {
+            // Encode config as a list of NamedArg expressions
+            tl_ast::Expr::NamedArg {
+                name: k.clone(),
+                value: Box::new(v.clone()),
+            }
+        }).collect();
+        let config_idx = self.current().add_constant(Constant::AstExprList(config_exprs));
+
+        // Emit Train instruction
+        self.current().emit_abc(Op::Train, dest, algo_idx as u8, config_idx as u8, 0);
+
+        // Also set as global
+        let name_idx = self.current().add_constant(Constant::String(Arc::from(name)));
+        self.current().emit_abx(Op::SetGlobal, dest, name_idx, 0);
 
         Ok(())
     }

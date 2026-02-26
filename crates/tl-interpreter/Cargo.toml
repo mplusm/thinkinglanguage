@@ -9,6 +9,7 @@ description = "Tree-walking interpreter for ThinkingLanguage (Phase 0)"
 tl-ast = { path = "../tl-ast" }
 tl-errors = { path = "../tl-errors" }
 tl-data = { path = "../tl-data" }
+tl-ai = { path = "../tl-ai" }
 
 [dev-dependencies]
 tl-parser = { path = "../tl-parser" }

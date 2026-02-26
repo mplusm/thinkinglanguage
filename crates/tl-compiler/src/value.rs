@@ -5,6 +5,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use tl_data::{ArrowSchema, DataFrame};
+use tl_ai::{TlTensor, TlModel};
 
 use crate::chunk::{BuiltinId, Prototype};
 
@@ -25,6 +26,10 @@ pub enum VmValue {
     Table(VmTable),
     /// A schema definition
     Schema(VmSchema),
+    /// A tensor (ndarray)
+    Tensor(Arc<TlTensor>),
+    /// A trained model
+    Model(Arc<TlModel>),
 }
 
 /// A closure: compiled function prototype + captured upvalues.
@@ -87,6 +92,8 @@ impl VmValue {
             VmValue::Builtin(_) => "builtin",
             VmValue::Table(_) => "table",
             VmValue::Schema(_) => "schema",
+            VmValue::Tensor(_) => "tensor",
+            VmValue::Model(_) => "model",
         }
     }
 }
@@ -104,6 +111,8 @@ impl fmt::Debug for VmValue {
             VmValue::Builtin(id) => write!(f, "<builtin {}>", id.name()),
             VmValue::Table(_) => write!(f, "<table>"),
             VmValue::Schema(s) => write!(f, "<schema {}>", s.name),
+            VmValue::Tensor(t) => write!(f, "Tensor({t:?})"),
+            VmValue::Model(m) => write!(f, "Model({m:?})"),
         }
     }
 }
@@ -136,6 +145,8 @@ impl fmt::Display for VmValue {
             VmValue::Builtin(id) => write!(f, "<builtin {}>", id.name()),
             VmValue::Table(_) => write!(f, "<table>"),
             VmValue::Schema(s) => write!(f, "<schema {}>", s.name),
+            VmValue::Tensor(t) => write!(f, "{t}"),
+            VmValue::Model(m) => write!(f, "{m}"),
         }
     }
 }

@@ -80,8 +80,6 @@ pub enum Token {
     Model,
     #[token("train")]
     Train,
-    #[token("tensor")]
-    Tensor,
 
     // Control flow
     #[token("if")]

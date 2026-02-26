@@ -133,6 +133,9 @@ pub enum Op {
     /// Interpolate: A = dest, B = template constant, C = values start reg
     /// Next instruction word: value count in A field
     Interpolate = 45,
+
+    /// Train: A = dest for model, B = algorithm constant, C = config constant
+    Train = 46,
 }
 
 /// Encode an ABC-format instruction: [op:8][A:8][B:8][C:8]
