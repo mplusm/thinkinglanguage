@@ -177,6 +177,42 @@ impl Connector for ChannelReceiver {
 #[cfg(feature = "kafka")]
 pub mod kafka;
 
+/// User-defined connector wrapping TL struct methods.
+/// Allows TL code to create custom connectors by implementing send/recv.
+pub struct UserDefinedConnector {
+    name: String,
+    send_fn: Box<dyn Fn(&str) -> Result<(), String> + Send + Sync>,
+    recv_fn: Box<dyn Fn(u64) -> Result<Option<String>, String> + Send + Sync>,
+}
+
+impl UserDefinedConnector {
+    pub fn new(
+        name: String,
+        send_fn: Box<dyn Fn(&str) -> Result<(), String> + Send + Sync>,
+        recv_fn: Box<dyn Fn(u64) -> Result<Option<String>, String> + Send + Sync>,
+    ) -> Self {
+        UserDefinedConnector { name, send_fn, recv_fn }
+    }
+}
+
+impl Connector for UserDefinedConnector {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn connector_type(&self) -> &str {
+        "user_defined"
+    }
+
+    fn send(&self, message: &str) -> Result<(), String> {
+        (self.send_fn)(message)
+    }
+
+    fn recv(&self, timeout_ms: u64) -> Result<Option<String>, String> {
+        (self.recv_fn)(timeout_ms)
+    }
+}
+
 /// Factory function to create a connector from config.
 pub fn create_connector(config: &ConnectorConfig) -> Result<Box<dyn Connector>, String> {
     match config.connector_type.as_str() {
@@ -259,5 +295,41 @@ mod tests {
         };
         let conn = create_connector(&config);
         assert!(conn.is_err());
+    }
+
+    #[test]
+    fn test_user_defined_connector() {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let sent_clone = sent.clone();
+
+        let conn = UserDefinedConnector::new(
+            "my_connector".to_string(),
+            Box::new(move |msg: &str| {
+                sent_clone.lock().unwrap().push(msg.to_string());
+                Ok(())
+            }),
+            Box::new(|_timeout_ms| Ok(Some("received".to_string()))),
+        );
+
+        assert_eq!(conn.name(), "my_connector");
+        assert_eq!(conn.connector_type(), "user_defined");
+        conn.send("hello").unwrap();
+        assert_eq!(sent.lock().unwrap().len(), 1);
+
+        let msg = conn.recv(1000).unwrap();
+        assert_eq!(msg, Some("received".to_string()));
+    }
+
+    #[test]
+    fn test_user_defined_connector_as_trait_object() {
+        let conn: Box<dyn Connector> = Box::new(UserDefinedConnector::new(
+            "test_udc".to_string(),
+            Box::new(|_msg| Ok(())),
+            Box::new(|_timeout| Ok(None)),
+        ));
+        assert_eq!(conn.name(), "test_udc");
+        assert_eq!(conn.connector_type(), "user_defined");
+        let msg = conn.recv(100).unwrap();
+        assert_eq!(msg, None);
     }
 }

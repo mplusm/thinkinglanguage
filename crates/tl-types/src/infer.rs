@@ -94,6 +94,15 @@ pub fn infer_expr(expr: &Expr, env: &TypeEnv) -> Type {
                     "next" => Type::Any,
                     "is_generator" | "file_exists" => Type::Bool,
                     "assert" | "assert_eq" => Type::Unit,
+                    // Phase 15: Data Quality & Connectors
+                    "fill_null" | "drop_null" | "dedup" | "clamp" | "data_profile" | "read_mysql" => Type::Table(None),
+                    "row_count" | "levenshtein" => Type::Int,
+                    "null_rate" => Type::Float,
+                    "is_unique" | "is_email" | "is_url" | "is_phone" | "is_between" => Type::Bool,
+                    "soundex" | "redis_connect" => Type::String,
+                    "graphql_query" => Type::Any,
+                    "redis_get" => Type::Any,
+                    "redis_set" | "redis_del" | "register_s3" => Type::Unit,
                     _ => {
                         if let Some(sig) = env.lookup_fn(name) {
                             sig.ret.clone()

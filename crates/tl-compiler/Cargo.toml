@@ -26,3 +26,9 @@ chrono = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
+
+[features]
+default = []
+mysql = ["tl-data/mysql"]
+s3 = ["tl-data/s3"]
+redis = ["tl-data/redis"]

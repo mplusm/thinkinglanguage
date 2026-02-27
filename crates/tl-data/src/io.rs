@@ -4,26 +4,32 @@ use std::path::Path;
 
 impl DataEngine {
     /// Read a CSV file into a DataFusion DataFrame.
+    /// Supports local paths and s3:// URLs (after register_s3).
     pub fn read_csv(&self, path: &str) -> Result<DataFrame, String> {
-        let path = Path::new(path);
-        if !path.exists() {
-            return Err(format!("CSV file not found: {}", path.display()));
+        if !path.starts_with("s3://") && !path.starts_with("http://") && !path.starts_with("https://") {
+            let p = Path::new(path);
+            if !p.exists() {
+                return Err(format!("CSV file not found: {}", p.display()));
+            }
         }
         self.rt
-            .block_on(self.ctx.read_csv(path.to_str().unwrap(), CsvReadOptions::default()))
+            .block_on(self.ctx.read_csv(path, CsvReadOptions::default()))
             .map_err(|e| format!("CSV read error: {e}"))
     }
 
     /// Read a Parquet file into a DataFusion DataFrame.
+    /// Supports local paths and s3:// URLs (after register_s3).
     pub fn read_parquet(&self, path: &str) -> Result<DataFrame, String> {
-        let path = Path::new(path);
-        if !path.exists() {
-            return Err(format!("Parquet file not found: {}", path.display()));
+        if !path.starts_with("s3://") && !path.starts_with("http://") && !path.starts_with("https://") {
+            let p = Path::new(path);
+            if !p.exists() {
+                return Err(format!("Parquet file not found: {}", p.display()));
+            }
         }
         self.rt
             .block_on(
                 self.ctx
-                    .read_parquet(path.to_str().unwrap(), ParquetReadOptions::default()),
+                    .read_parquet(path, ParquetReadOptions::default()),
             )
             .map_err(|e| format!("Parquet read error: {e}"))
     }

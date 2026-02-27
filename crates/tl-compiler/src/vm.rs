@@ -3022,6 +3022,339 @@ impl Vm {
                     _ => Err(runtime_err("set_difference() expects two sets")),
                 }
             }
+
+            // ── Phase 15: Data Quality & Connectors ──
+            BuiltinId::FillNull => {
+                if args.len() < 2 { return Err(runtime_err("fill_null() expects (table, column, [strategy], [value])")); }
+                let df = match &args[0] {
+                    VmValue::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err("fill_null() first arg must be a table")),
+                };
+                let column = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("fill_null() column must be a string")),
+                };
+                let strategy = if args.len() > 2 {
+                    match &args[2] { VmValue::String(s) => s.to_string(), _ => "value".to_string() }
+                } else { "value".to_string() };
+                let fill_value = if args.len() > 3 {
+                    match &args[3] {
+                        VmValue::Int(n) => Some(*n as f64),
+                        VmValue::Float(f) => Some(*f),
+                        _ => None,
+                    }
+                } else if args.len() > 2 && strategy == "value" {
+                    match &args[2] {
+                        VmValue::Int(n) => { return Ok(VmValue::Table(VmTable { df: self.engine().fill_null(df, &column, "value", Some(*n as f64)).map_err(|e| runtime_err(e))? })); }
+                        VmValue::Float(f) => { return Ok(VmValue::Table(VmTable { df: self.engine().fill_null(df, &column, "value", Some(*f)).map_err(|e| runtime_err(e))? })); }
+                        _ => None,
+                    }
+                } else { None };
+                let result = self.engine().fill_null(df, &column, &strategy, fill_value).map_err(|e| runtime_err(e))?;
+                Ok(VmValue::Table(VmTable { df: result }))
+            }
+            BuiltinId::DropNull => {
+                if args.len() < 2 { return Err(runtime_err("drop_null() expects (table, column)")); }
+                let df = match &args[0] {
+                    VmValue::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err("drop_null() first arg must be a table")),
+                };
+                let column = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("drop_null() column must be a string")),
+                };
+                let result = self.engine().drop_null(df, &column).map_err(|e| runtime_err(e))?;
+                Ok(VmValue::Table(VmTable { df: result }))
+            }
+            BuiltinId::Dedup => {
+                if args.is_empty() { return Err(runtime_err("dedup() expects (table, [columns...])")); }
+                let df = match &args[0] {
+                    VmValue::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err("dedup() first arg must be a table")),
+                };
+                let columns: Vec<String> = args[1..].iter().filter_map(|a| {
+                    if let VmValue::String(s) = a { Some(s.to_string()) } else { None }
+                }).collect();
+                let result = self.engine().dedup(df, &columns).map_err(|e| runtime_err(e))?;
+                Ok(VmValue::Table(VmTable { df: result }))
+            }
+            BuiltinId::Clamp => {
+                if args.len() < 4 { return Err(runtime_err("clamp() expects (table, column, min, max)")); }
+                let df = match &args[0] {
+                    VmValue::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err("clamp() first arg must be a table")),
+                };
+                let column = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("clamp() column must be a string")),
+                };
+                let min_val = match &args[2] {
+                    VmValue::Int(n) => *n as f64,
+                    VmValue::Float(f) => *f,
+                    _ => return Err(runtime_err("clamp() min must be a number")),
+                };
+                let max_val = match &args[3] {
+                    VmValue::Int(n) => *n as f64,
+                    VmValue::Float(f) => *f,
+                    _ => return Err(runtime_err("clamp() max must be a number")),
+                };
+                let result = self.engine().clamp(df, &column, min_val, max_val).map_err(|e| runtime_err(e))?;
+                Ok(VmValue::Table(VmTable { df: result }))
+            }
+            BuiltinId::DataProfile => {
+                if args.is_empty() { return Err(runtime_err("data_profile() expects (table)")); }
+                let df = match &args[0] {
+                    VmValue::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err("data_profile() arg must be a table")),
+                };
+                let result = self.engine().data_profile(df).map_err(|e| runtime_err(e))?;
+                Ok(VmValue::Table(VmTable { df: result }))
+            }
+            BuiltinId::RowCount => {
+                if args.is_empty() { return Err(runtime_err("row_count() expects (table)")); }
+                let df = match &args[0] {
+                    VmValue::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err("row_count() arg must be a table")),
+                };
+                let count = self.engine().row_count(df).map_err(|e| runtime_err(e))?;
+                Ok(VmValue::Int(count))
+            }
+            BuiltinId::NullRate => {
+                if args.len() < 2 { return Err(runtime_err("null_rate() expects (table, column)")); }
+                let df = match &args[0] {
+                    VmValue::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err("null_rate() first arg must be a table")),
+                };
+                let column = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("null_rate() column must be a string")),
+                };
+                let rate = self.engine().null_rate(df, &column).map_err(|e| runtime_err(e))?;
+                Ok(VmValue::Float(rate))
+            }
+            BuiltinId::IsUnique => {
+                if args.len() < 2 { return Err(runtime_err("is_unique() expects (table, column)")); }
+                let df = match &args[0] {
+                    VmValue::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err("is_unique() first arg must be a table")),
+                };
+                let column = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("is_unique() column must be a string")),
+                };
+                let unique = self.engine().is_unique(df, &column).map_err(|e| runtime_err(e))?;
+                Ok(VmValue::Bool(unique))
+            }
+            BuiltinId::IsEmail => {
+                if args.is_empty() { return Err(runtime_err("is_email() expects 1 argument")); }
+                let s = match &args[0] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("is_email() arg must be a string")),
+                };
+                Ok(VmValue::Bool(tl_data::validate::is_email(&s)))
+            }
+            BuiltinId::IsUrl => {
+                if args.is_empty() { return Err(runtime_err("is_url() expects 1 argument")); }
+                let s = match &args[0] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("is_url() arg must be a string")),
+                };
+                Ok(VmValue::Bool(tl_data::validate::is_url(&s)))
+            }
+            BuiltinId::IsPhone => {
+                if args.is_empty() { return Err(runtime_err("is_phone() expects 1 argument")); }
+                let s = match &args[0] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("is_phone() arg must be a string")),
+                };
+                Ok(VmValue::Bool(tl_data::validate::is_phone(&s)))
+            }
+            BuiltinId::IsBetween => {
+                if args.len() < 3 { return Err(runtime_err("is_between() expects (value, low, high)")); }
+                let val = match &args[0] {
+                    VmValue::Int(n) => *n as f64,
+                    VmValue::Float(f) => *f,
+                    _ => return Err(runtime_err("is_between() value must be a number")),
+                };
+                let low = match &args[1] {
+                    VmValue::Int(n) => *n as f64,
+                    VmValue::Float(f) => *f,
+                    _ => return Err(runtime_err("is_between() low must be a number")),
+                };
+                let high = match &args[2] {
+                    VmValue::Int(n) => *n as f64,
+                    VmValue::Float(f) => *f,
+                    _ => return Err(runtime_err("is_between() high must be a number")),
+                };
+                Ok(VmValue::Bool(tl_data::validate::is_between(val, low, high)))
+            }
+            BuiltinId::Levenshtein => {
+                if args.len() < 2 { return Err(runtime_err("levenshtein() expects (str_a, str_b)")); }
+                let a = match &args[0] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("levenshtein() args must be strings")),
+                };
+                let b = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("levenshtein() args must be strings")),
+                };
+                Ok(VmValue::Int(tl_data::validate::levenshtein(&a, &b) as i64))
+            }
+            BuiltinId::Soundex => {
+                if args.is_empty() { return Err(runtime_err("soundex() expects 1 argument")); }
+                let s = match &args[0] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("soundex() arg must be a string")),
+                };
+                Ok(VmValue::String(Arc::from(tl_data::validate::soundex(&s).as_str())))
+            }
+            BuiltinId::ReadMysql => {
+                #[cfg(feature = "mysql")]
+                {
+                    if args.len() < 2 { return Err(runtime_err("read_mysql() expects (conn_str, query)")); }
+                    let conn_str = match &args[0] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("read_mysql() conn_str must be a string")),
+                    };
+                    let query = match &args[1] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("read_mysql() query must be a string")),
+                    };
+                    let df = self.engine().read_mysql(&conn_str, &query).map_err(|e| runtime_err(e))?;
+                    Ok(VmValue::Table(VmTable { df }))
+                }
+                #[cfg(not(feature = "mysql"))]
+                Err(runtime_err("read_mysql() requires the 'mysql' feature"))
+            }
+            BuiltinId::RedisConnect => {
+                #[cfg(feature = "redis")]
+                {
+                    if args.is_empty() { return Err(runtime_err("redis_connect() expects (url)")); }
+                    let url = match &args[0] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("redis_connect() url must be a string")),
+                    };
+                    let result = tl_data::redis_conn::redis_connect(&url).map_err(|e| runtime_err(e))?;
+                    Ok(VmValue::String(Arc::from(result.as_str())))
+                }
+                #[cfg(not(feature = "redis"))]
+                Err(runtime_err("redis_connect() requires the 'redis' feature"))
+            }
+            BuiltinId::RedisGet => {
+                #[cfg(feature = "redis")]
+                {
+                    if args.len() < 2 { return Err(runtime_err("redis_get() expects (url, key)")); }
+                    let url = match &args[0] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("redis_get() url must be a string")),
+                    };
+                    let key = match &args[1] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("redis_get() key must be a string")),
+                    };
+                    match tl_data::redis_conn::redis_get(&url, &key).map_err(|e| runtime_err(e))? {
+                        Some(v) => Ok(VmValue::String(Arc::from(v.as_str()))),
+                        None => Ok(VmValue::None),
+                    }
+                }
+                #[cfg(not(feature = "redis"))]
+                Err(runtime_err("redis_get() requires the 'redis' feature"))
+            }
+            BuiltinId::RedisSet => {
+                #[cfg(feature = "redis")]
+                {
+                    if args.len() < 3 { return Err(runtime_err("redis_set() expects (url, key, value)")); }
+                    let url = match &args[0] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("redis_set() url must be a string")),
+                    };
+                    let key = match &args[1] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("redis_set() key must be a string")),
+                    };
+                    let value = match &args[2] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => format!("{}", &args[2]),
+                    };
+                    tl_data::redis_conn::redis_set(&url, &key, &value).map_err(|e| runtime_err(e))?;
+                    Ok(VmValue::None)
+                }
+                #[cfg(not(feature = "redis"))]
+                Err(runtime_err("redis_set() requires the 'redis' feature"))
+            }
+            BuiltinId::RedisDel => {
+                #[cfg(feature = "redis")]
+                {
+                    if args.len() < 2 { return Err(runtime_err("redis_del() expects (url, key)")); }
+                    let url = match &args[0] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("redis_del() url must be a string")),
+                    };
+                    let key = match &args[1] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("redis_del() key must be a string")),
+                    };
+                    let deleted = tl_data::redis_conn::redis_del(&url, &key).map_err(|e| runtime_err(e))?;
+                    Ok(VmValue::Bool(deleted))
+                }
+                #[cfg(not(feature = "redis"))]
+                Err(runtime_err("redis_del() requires the 'redis' feature"))
+            }
+            BuiltinId::GraphqlQuery => {
+                if args.len() < 2 { return Err(runtime_err("graphql_query() expects (endpoint, query, [variables])")); }
+                let endpoint = match &args[0] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("graphql_query() endpoint must be a string")),
+                };
+                let query = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("graphql_query() query must be a string")),
+                };
+                let variables = if args.len() > 2 {
+                    vm_value_to_json(&args[2])
+                } else {
+                    serde_json::Value::Null
+                };
+                let mut body = serde_json::Map::new();
+                body.insert("query".to_string(), serde_json::Value::String(query));
+                if !variables.is_null() {
+                    body.insert("variables".to_string(), variables);
+                }
+                let client = reqwest::blocking::Client::new();
+                let resp = client.post(&endpoint)
+                    .header("Content-Type", "application/json")
+                    .json(&body)
+                    .send()
+                    .map_err(|e| runtime_err(format!("graphql_query() request error: {e}")))?;
+                let text = resp.text().map_err(|e| runtime_err(format!("graphql_query() response error: {e}")))?;
+                let json: serde_json::Value = serde_json::from_str(&text)
+                    .map_err(|e| runtime_err(format!("graphql_query() JSON parse error: {e}")))?;
+                Ok(vm_json_to_value(&json))
+            }
+            BuiltinId::RegisterS3 => {
+                #[cfg(feature = "s3")]
+                {
+                    if args.len() < 2 { return Err(runtime_err("register_s3() expects (bucket, region, [access_key], [secret_key], [endpoint])")); }
+                    let bucket = match &args[0] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("register_s3() bucket must be a string")),
+                    };
+                    let region = match &args[1] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("register_s3() region must be a string")),
+                    };
+                    let access_key = args.get(2).and_then(|v| if let VmValue::String(s) = v { Some(s.to_string()) } else { None });
+                    let secret_key = args.get(3).and_then(|v| if let VmValue::String(s) = v { Some(s.to_string()) } else { None });
+                    let endpoint = args.get(4).and_then(|v| if let VmValue::String(s) = v { Some(s.to_string()) } else { None });
+                    self.engine().register_s3(
+                        &bucket, &region,
+                        access_key.as_deref(), secret_key.as_deref(), endpoint.as_deref(),
+                    ).map_err(|e| runtime_err(e))?;
+                    Ok(VmValue::None)
+                }
+                #[cfg(not(feature = "s3"))]
+                Err(runtime_err("register_s3() requires the 's3' feature"))
+            }
         }
     }
 
@@ -4415,6 +4748,89 @@ impl Vm {
                 let path = self.eval_ast_to_string(&ast_args[0])?;
                 self.engine().write_parquet(df, &path).map_err(|e| runtime_err(e))?;
                 Ok(VmValue::None)
+            }
+            // Phase 15: Data quality pipe operations
+            "fill_null" => {
+                if ast_args.is_empty() { return Err(runtime_err("fill_null() expects (column, [strategy/value])")); }
+                let column = self.eval_ast_to_string(&ast_args[0])?;
+                if ast_args.len() >= 2 {
+                    let val = self.eval_ast_to_vm(&ast_args[1])?;
+                    match val {
+                        VmValue::String(s) => {
+                            // String means strategy name
+                            let fill_val = if ast_args.len() >= 3 {
+                                match self.eval_ast_to_vm(&ast_args[2])? {
+                                    VmValue::Int(n) => Some(n as f64),
+                                    VmValue::Float(f) => Some(f),
+                                    _ => None,
+                                }
+                            } else { None };
+                            let result = self.engine().fill_null(df, &column, &s, fill_val).map_err(|e| runtime_err(e))?;
+                            Ok(VmValue::Table(VmTable { df: result }))
+                        }
+                        VmValue::Int(n) => {
+                            let result = self.engine().fill_null(df, &column, "value", Some(n as f64)).map_err(|e| runtime_err(e))?;
+                            Ok(VmValue::Table(VmTable { df: result }))
+                        }
+                        VmValue::Float(f) => {
+                            let result = self.engine().fill_null(df, &column, "value", Some(f)).map_err(|e| runtime_err(e))?;
+                            Ok(VmValue::Table(VmTable { df: result }))
+                        }
+                        _ => Err(runtime_err("fill_null() second arg must be a strategy or fill value")),
+                    }
+                } else {
+                    let result = self.engine().fill_null(df, &column, "zero", None).map_err(|e| runtime_err(e))?;
+                    Ok(VmValue::Table(VmTable { df: result }))
+                }
+            }
+            "drop_null" => {
+                if ast_args.is_empty() { return Err(runtime_err("drop_null() expects (column)")); }
+                let column = self.eval_ast_to_string(&ast_args[0])?;
+                let result = self.engine().drop_null(df, &column).map_err(|e| runtime_err(e))?;
+                Ok(VmValue::Table(VmTable { df: result }))
+            }
+            "dedup" => {
+                let columns: Vec<String> = ast_args.iter()
+                    .filter_map(|a| self.eval_ast_to_string(a).ok())
+                    .collect();
+                let result = self.engine().dedup(df, &columns).map_err(|e| runtime_err(e))?;
+                Ok(VmValue::Table(VmTable { df: result }))
+            }
+            "clamp" => {
+                if ast_args.len() < 3 { return Err(runtime_err("clamp() expects (column, min, max)")); }
+                let column = self.eval_ast_to_string(&ast_args[0])?;
+                let min_val = match self.eval_ast_to_vm(&ast_args[1])? {
+                    VmValue::Int(n) => n as f64,
+                    VmValue::Float(f) => f,
+                    _ => return Err(runtime_err("clamp() min must be a number")),
+                };
+                let max_val = match self.eval_ast_to_vm(&ast_args[2])? {
+                    VmValue::Int(n) => n as f64,
+                    VmValue::Float(f) => f,
+                    _ => return Err(runtime_err("clamp() max must be a number")),
+                };
+                let result = self.engine().clamp(df, &column, min_val, max_val).map_err(|e| runtime_err(e))?;
+                Ok(VmValue::Table(VmTable { df: result }))
+            }
+            "data_profile" => {
+                let result = self.engine().data_profile(df).map_err(|e| runtime_err(e))?;
+                Ok(VmValue::Table(VmTable { df: result }))
+            }
+            "row_count" => {
+                let count = self.engine().row_count(df).map_err(|e| runtime_err(e))?;
+                Ok(VmValue::Int(count))
+            }
+            "null_rate" => {
+                if ast_args.is_empty() { return Err(runtime_err("null_rate() expects (column)")); }
+                let column = self.eval_ast_to_string(&ast_args[0])?;
+                let rate = self.engine().null_rate(df, &column).map_err(|e| runtime_err(e))?;
+                Ok(VmValue::Float(rate))
+            }
+            "is_unique" => {
+                if ast_args.is_empty() { return Err(runtime_err("is_unique() expects (column)")); }
+                let column = self.eval_ast_to_string(&ast_args[0])?;
+                let unique = self.engine().is_unique(df, &column).map_err(|e| runtime_err(e))?;
+                Ok(VmValue::Bool(unique))
             }
             _ => Err(runtime_err(format!("Unknown table operation: {op_name}"))),
         }

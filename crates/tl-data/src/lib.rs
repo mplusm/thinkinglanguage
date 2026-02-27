@@ -2,6 +2,15 @@ pub mod engine;
 pub mod io;
 pub mod translate;
 pub mod pg;
+pub mod validate;
+pub mod quality;
+
+#[cfg(feature = "mysql")]
+pub mod mysql_conn;
+#[cfg(feature = "s3")]
+pub mod s3;
+#[cfg(feature = "redis")]
+pub mod redis_conn;
 
 pub use engine::DataEngine;
 

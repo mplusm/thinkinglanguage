@@ -14,6 +14,19 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 parquet = "53"
 postgres = "0.19"
 num_cpus = "1"
+regex = "1"
+
+# Feature-gated connectors
+mysql = { version = "25", optional = true }
+object_store = { version = "0.11", features = ["aws"], optional = true }
+url = { version = "2", optional = true }
+redis = { version = "0.27", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+
+[features]
+default = []
+mysql = ["dep:mysql"]
+s3 = ["dep:object_store", "dep:url"]
+redis = ["dep:redis"]

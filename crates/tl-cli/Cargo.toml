@@ -30,3 +30,6 @@ tempfile = "3"
 
 [features]
 kafka = ["tl-stream/kafka"]
+mysql = ["tl-compiler/mysql", "tl-interpreter/mysql"]
+s3 = ["tl-compiler/s3", "tl-interpreter/s3"]
+redis = ["tl-compiler/redis", "tl-interpreter/redis"]

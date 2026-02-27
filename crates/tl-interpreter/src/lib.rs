@@ -542,6 +542,28 @@ impl Environment {
         global.insert("set_union".to_string(), Value::Builtin("set_union".to_string()));
         global.insert("set_intersection".to_string(), Value::Builtin("set_intersection".to_string()));
         global.insert("set_difference".to_string(), Value::Builtin("set_difference".to_string()));
+        // Phase 15: Data Quality & Connectors
+        global.insert("fill_null".to_string(), Value::Builtin("fill_null".to_string()));
+        global.insert("drop_null".to_string(), Value::Builtin("drop_null".to_string()));
+        global.insert("dedup".to_string(), Value::Builtin("dedup".to_string()));
+        global.insert("clamp".to_string(), Value::Builtin("clamp".to_string()));
+        global.insert("data_profile".to_string(), Value::Builtin("data_profile".to_string()));
+        global.insert("row_count".to_string(), Value::Builtin("row_count".to_string()));
+        global.insert("null_rate".to_string(), Value::Builtin("null_rate".to_string()));
+        global.insert("is_unique".to_string(), Value::Builtin("is_unique".to_string()));
+        global.insert("is_email".to_string(), Value::Builtin("is_email".to_string()));
+        global.insert("is_url".to_string(), Value::Builtin("is_url".to_string()));
+        global.insert("is_phone".to_string(), Value::Builtin("is_phone".to_string()));
+        global.insert("is_between".to_string(), Value::Builtin("is_between".to_string()));
+        global.insert("levenshtein".to_string(), Value::Builtin("levenshtein".to_string()));
+        global.insert("soundex".to_string(), Value::Builtin("soundex".to_string()));
+        global.insert("read_mysql".to_string(), Value::Builtin("read_mysql".to_string()));
+        global.insert("redis_connect".to_string(), Value::Builtin("redis_connect".to_string()));
+        global.insert("redis_get".to_string(), Value::Builtin("redis_get".to_string()));
+        global.insert("redis_set".to_string(), Value::Builtin("redis_set".to_string()));
+        global.insert("redis_del".to_string(), Value::Builtin("redis_del".to_string()));
+        global.insert("graphql_query".to_string(), Value::Builtin("graphql_query".to_string()));
+        global.insert("register_s3".to_string(), Value::Builtin("register_s3".to_string()));
 
         Self {
             scopes: vec![global],
@@ -3305,6 +3327,339 @@ impl Interpreter {
                 }
             }
 
+            // ── Phase 15: Data Quality & Connectors ──
+            "fill_null" => {
+                if args.len() < 2 { return Err(runtime_err_s("fill_null() expects (table, column, [strategy], [value])")); }
+                let df = match &args[0] {
+                    Value::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err_s("fill_null() first arg must be a table")),
+                };
+                let column = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err_s("fill_null() column must be a string")),
+                };
+                let strategy = if args.len() > 2 {
+                    match &args[2] { Value::String(s) => s.clone(), _ => "value".to_string() }
+                } else { "value".to_string() };
+                let fill_value = if args.len() > 3 {
+                    match &args[3] {
+                        Value::Int(n) => Some(*n as f64),
+                        Value::Float(f) => Some(*f),
+                        _ => None,
+                    }
+                } else if args.len() > 2 && strategy == "value" {
+                    match &args[2] {
+                        Value::Int(n) => { let r = self.engine().fill_null(df, &column, "value", Some(*n as f64)).map_err(|e| runtime_err(e))?; return Ok(Value::Table(TlTable { df: r })); }
+                        Value::Float(f) => { let r = self.engine().fill_null(df, &column, "value", Some(*f)).map_err(|e| runtime_err(e))?; return Ok(Value::Table(TlTable { df: r })); }
+                        _ => None,
+                    }
+                } else { None };
+                let result = self.engine().fill_null(df, &column, &strategy, fill_value).map_err(|e| runtime_err(e))?;
+                Ok(Value::Table(TlTable { df: result }))
+            }
+            "drop_null" => {
+                if args.len() < 2 { return Err(runtime_err_s("drop_null() expects (table, column)")); }
+                let df = match &args[0] {
+                    Value::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err_s("drop_null() first arg must be a table")),
+                };
+                let column = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err_s("drop_null() column must be a string")),
+                };
+                let result = self.engine().drop_null(df, &column).map_err(|e| runtime_err(e))?;
+                Ok(Value::Table(TlTable { df: result }))
+            }
+            "dedup" => {
+                if args.is_empty() { return Err(runtime_err_s("dedup() expects (table, [columns...])")); }
+                let df = match &args[0] {
+                    Value::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err_s("dedup() first arg must be a table")),
+                };
+                let columns: Vec<String> = args[1..].iter().filter_map(|a| {
+                    if let Value::String(s) = a { Some(s.clone()) } else { None }
+                }).collect();
+                let result = self.engine().dedup(df, &columns).map_err(|e| runtime_err(e))?;
+                Ok(Value::Table(TlTable { df: result }))
+            }
+            "clamp" => {
+                if args.len() < 4 { return Err(runtime_err_s("clamp() expects (table, column, min, max)")); }
+                let df = match &args[0] {
+                    Value::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err_s("clamp() first arg must be a table")),
+                };
+                let column = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err_s("clamp() column must be a string")),
+                };
+                let min_val = match &args[2] {
+                    Value::Int(n) => *n as f64,
+                    Value::Float(f) => *f,
+                    _ => return Err(runtime_err_s("clamp() min must be a number")),
+                };
+                let max_val = match &args[3] {
+                    Value::Int(n) => *n as f64,
+                    Value::Float(f) => *f,
+                    _ => return Err(runtime_err_s("clamp() max must be a number")),
+                };
+                let result = self.engine().clamp(df, &column, min_val, max_val).map_err(|e| runtime_err(e))?;
+                Ok(Value::Table(TlTable { df: result }))
+            }
+            "data_profile" => {
+                if args.is_empty() { return Err(runtime_err_s("data_profile() expects (table)")); }
+                let df = match &args[0] {
+                    Value::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err_s("data_profile() arg must be a table")),
+                };
+                let result = self.engine().data_profile(df).map_err(|e| runtime_err(e))?;
+                Ok(Value::Table(TlTable { df: result }))
+            }
+            "row_count" => {
+                if args.is_empty() { return Err(runtime_err_s("row_count() expects (table)")); }
+                let df = match &args[0] {
+                    Value::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err_s("row_count() arg must be a table")),
+                };
+                let count = self.engine().row_count(df).map_err(|e| runtime_err(e))?;
+                Ok(Value::Int(count))
+            }
+            "null_rate" => {
+                if args.len() < 2 { return Err(runtime_err_s("null_rate() expects (table, column)")); }
+                let df = match &args[0] {
+                    Value::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err_s("null_rate() first arg must be a table")),
+                };
+                let column = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err_s("null_rate() column must be a string")),
+                };
+                let rate = self.engine().null_rate(df, &column).map_err(|e| runtime_err(e))?;
+                Ok(Value::Float(rate))
+            }
+            "is_unique" => {
+                if args.len() < 2 { return Err(runtime_err_s("is_unique() expects (table, column)")); }
+                let df = match &args[0] {
+                    Value::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err_s("is_unique() first arg must be a table")),
+                };
+                let column = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err_s("is_unique() column must be a string")),
+                };
+                let unique = self.engine().is_unique(df, &column).map_err(|e| runtime_err(e))?;
+                Ok(Value::Bool(unique))
+            }
+            "is_email" => {
+                if args.is_empty() { return Err(runtime_err_s("is_email() expects 1 argument")); }
+                let s = match &args[0] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err_s("is_email() arg must be a string")),
+                };
+                Ok(Value::Bool(tl_data::validate::is_email(&s)))
+            }
+            "is_url" => {
+                if args.is_empty() { return Err(runtime_err_s("is_url() expects 1 argument")); }
+                let s = match &args[0] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err_s("is_url() arg must be a string")),
+                };
+                Ok(Value::Bool(tl_data::validate::is_url(&s)))
+            }
+            "is_phone" => {
+                if args.is_empty() { return Err(runtime_err_s("is_phone() expects 1 argument")); }
+                let s = match &args[0] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err_s("is_phone() arg must be a string")),
+                };
+                Ok(Value::Bool(tl_data::validate::is_phone(&s)))
+            }
+            "is_between" => {
+                if args.len() < 3 { return Err(runtime_err_s("is_between() expects (value, low, high)")); }
+                let val = match &args[0] {
+                    Value::Int(n) => *n as f64,
+                    Value::Float(f) => *f,
+                    _ => return Err(runtime_err_s("is_between() value must be a number")),
+                };
+                let low = match &args[1] {
+                    Value::Int(n) => *n as f64,
+                    Value::Float(f) => *f,
+                    _ => return Err(runtime_err_s("is_between() low must be a number")),
+                };
+                let high = match &args[2] {
+                    Value::Int(n) => *n as f64,
+                    Value::Float(f) => *f,
+                    _ => return Err(runtime_err_s("is_between() high must be a number")),
+                };
+                Ok(Value::Bool(tl_data::validate::is_between(val, low, high)))
+            }
+            "levenshtein" => {
+                if args.len() < 2 { return Err(runtime_err_s("levenshtein() expects (str_a, str_b)")); }
+                let a = match &args[0] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err_s("levenshtein() args must be strings")),
+                };
+                let b = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err_s("levenshtein() args must be strings")),
+                };
+                Ok(Value::Int(tl_data::validate::levenshtein(&a, &b) as i64))
+            }
+            "soundex" => {
+                if args.is_empty() { return Err(runtime_err_s("soundex() expects 1 argument")); }
+                let s = match &args[0] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err_s("soundex() arg must be a string")),
+                };
+                Ok(Value::String(tl_data::validate::soundex(&s)))
+            }
+            "read_mysql" => {
+                #[cfg(feature = "mysql")]
+                {
+                    if args.len() < 2 { return Err(runtime_err_s("read_mysql() expects (conn_str, query)")); }
+                    let conn_str = match &args[0] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("read_mysql() conn_str must be a string")),
+                    };
+                    let query = match &args[1] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("read_mysql() query must be a string")),
+                    };
+                    let df = self.engine().read_mysql(&conn_str, &query).map_err(|e| runtime_err(e))?;
+                    Ok(Value::Table(TlTable { df }))
+                }
+                #[cfg(not(feature = "mysql"))]
+                Err(runtime_err_s("read_mysql() requires the 'mysql' feature"))
+            }
+            "redis_connect" => {
+                #[cfg(feature = "redis")]
+                {
+                    if args.is_empty() { return Err(runtime_err_s("redis_connect() expects (url)")); }
+                    let url = match &args[0] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("redis_connect() url must be a string")),
+                    };
+                    let result = tl_data::redis_conn::redis_connect(&url).map_err(|e| runtime_err(e))?;
+                    Ok(Value::String(result))
+                }
+                #[cfg(not(feature = "redis"))]
+                Err(runtime_err_s("redis_connect() requires the 'redis' feature"))
+            }
+            "redis_get" => {
+                #[cfg(feature = "redis")]
+                {
+                    if args.len() < 2 { return Err(runtime_err_s("redis_get() expects (url, key)")); }
+                    let url = match &args[0] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("redis_get() url must be a string")),
+                    };
+                    let key = match &args[1] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("redis_get() key must be a string")),
+                    };
+                    match tl_data::redis_conn::redis_get(&url, &key).map_err(|e| runtime_err(e))? {
+                        Some(v) => Ok(Value::String(v)),
+                        None => Ok(Value::None),
+                    }
+                }
+                #[cfg(not(feature = "redis"))]
+                Err(runtime_err_s("redis_get() requires the 'redis' feature"))
+            }
+            "redis_set" => {
+                #[cfg(feature = "redis")]
+                {
+                    if args.len() < 3 { return Err(runtime_err_s("redis_set() expects (url, key, value)")); }
+                    let url = match &args[0] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("redis_set() url must be a string")),
+                    };
+                    let key = match &args[1] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("redis_set() key must be a string")),
+                    };
+                    let value = match &args[2] {
+                        Value::String(s) => s.clone(),
+                        _ => format!("{}", &args[2]),
+                    };
+                    tl_data::redis_conn::redis_set(&url, &key, &value).map_err(|e| runtime_err(e))?;
+                    Ok(Value::None)
+                }
+                #[cfg(not(feature = "redis"))]
+                Err(runtime_err_s("redis_set() requires the 'redis' feature"))
+            }
+            "redis_del" => {
+                #[cfg(feature = "redis")]
+                {
+                    if args.len() < 2 { return Err(runtime_err_s("redis_del() expects (url, key)")); }
+                    let url = match &args[0] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("redis_del() url must be a string")),
+                    };
+                    let key = match &args[1] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("redis_del() key must be a string")),
+                    };
+                    let deleted = tl_data::redis_conn::redis_del(&url, &key).map_err(|e| runtime_err(e))?;
+                    Ok(Value::Bool(deleted))
+                }
+                #[cfg(not(feature = "redis"))]
+                Err(runtime_err_s("redis_del() requires the 'redis' feature"))
+            }
+            "graphql_query" => {
+                if args.len() < 2 { return Err(runtime_err_s("graphql_query() expects (endpoint, query, [variables])")); }
+                let endpoint = match &args[0] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err_s("graphql_query() endpoint must be a string")),
+                };
+                let query = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err_s("graphql_query() query must be a string")),
+                };
+                let variables = if args.len() > 2 {
+                    value_to_json(&args[2])
+                } else {
+                    serde_json::Value::Null
+                };
+                let mut body = serde_json::Map::new();
+                body.insert("query".to_string(), serde_json::Value::String(query));
+                if !variables.is_null() {
+                    body.insert("variables".to_string(), variables);
+                }
+                let client = reqwest::blocking::Client::new();
+                let resp = client.post(&endpoint)
+                    .header("Content-Type", "application/json")
+                    .json(&body)
+                    .send()
+                    .map_err(|e| runtime_err(format!("graphql_query() request error: {e}")))?;
+                let text = resp.text().map_err(|e| runtime_err(format!("graphql_query() response error: {e}")))?;
+                let json: serde_json::Value = serde_json::from_str(&text)
+                    .map_err(|e| runtime_err(format!("graphql_query() JSON parse error: {e}")))?;
+                Ok(json_to_value(&json))
+            }
+            "register_s3" => {
+                #[cfg(feature = "s3")]
+                {
+                    if args.len() < 2 { return Err(runtime_err_s("register_s3() expects (bucket, region, [access_key], [secret_key], [endpoint])")); }
+                    let bucket = match &args[0] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("register_s3() bucket must be a string")),
+                    };
+                    let region = match &args[1] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("register_s3() region must be a string")),
+                    };
+                    let access_key = args.get(2).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None });
+                    let secret_key = args.get(3).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None });
+                    let endpoint = args.get(4).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None });
+                    self.engine().register_s3(
+                        &bucket, &region,
+                        access_key.as_deref(), secret_key.as_deref(), endpoint.as_deref(),
+                    ).map_err(|e| runtime_err(e))?;
+                    Ok(Value::None)
+                }
+                #[cfg(not(feature = "s3"))]
+                Err(runtime_err_s("register_s3() requires the 's3' feature"))
+            }
+
             _ => Err(runtime_err(format!("Unknown builtin: {name}"))),
         }
     }
@@ -3953,6 +4308,106 @@ impl Interpreter {
                         };
                         self.engine().write_parquet(df, &path).map_err(|e| runtime_err(e))?;
                         Ok(Value::None)
+                    }
+                    // Phase 15: Data quality pipe operations
+                    "fill_null" => {
+                        if args.is_empty() { return Err(runtime_err("fill_null() expects (column, [strategy/value])".into())); }
+                        let column = match self.eval_expr(&args[0])? {
+                            Value::String(s) => s,
+                            _ => return Err(runtime_err("fill_null() column must be a string".into())),
+                        };
+                        if args.len() >= 2 {
+                            let val = self.eval_expr(&args[1])?;
+                            match val {
+                                Value::String(s) => {
+                                    let fill_val = if args.len() >= 3 {
+                                        match self.eval_expr(&args[2])? {
+                                            Value::Int(n) => Some(n as f64),
+                                            Value::Float(f) => Some(f),
+                                            _ => None,
+                                        }
+                                    } else { None };
+                                    let result = self.engine().fill_null(df, &column, &s, fill_val).map_err(|e| runtime_err(e))?;
+                                    Ok(Value::Table(TlTable { df: result }))
+                                }
+                                Value::Int(n) => {
+                                    let result = self.engine().fill_null(df, &column, "value", Some(n as f64)).map_err(|e| runtime_err(e))?;
+                                    Ok(Value::Table(TlTable { df: result }))
+                                }
+                                Value::Float(f) => {
+                                    let result = self.engine().fill_null(df, &column, "value", Some(f)).map_err(|e| runtime_err(e))?;
+                                    Ok(Value::Table(TlTable { df: result }))
+                                }
+                                _ => Err(runtime_err("fill_null() second arg must be a strategy or value".into())),
+                            }
+                        } else {
+                            let result = self.engine().fill_null(df, &column, "zero", None).map_err(|e| runtime_err(e))?;
+                            Ok(Value::Table(TlTable { df: result }))
+                        }
+                    }
+                    "drop_null" => {
+                        if args.is_empty() { return Err(runtime_err("drop_null() expects (column)".into())); }
+                        let column = match self.eval_expr(&args[0])? {
+                            Value::String(s) => s,
+                            _ => return Err(runtime_err("drop_null() column must be a string".into())),
+                        };
+                        let result = self.engine().drop_null(df, &column).map_err(|e| runtime_err(e))?;
+                        Ok(Value::Table(TlTable { df: result }))
+                    }
+                    "dedup" => {
+                        let columns: Vec<String> = args.iter()
+                            .filter_map(|a| match self.eval_expr(a) {
+                                Ok(Value::String(s)) => Some(s),
+                                _ => None,
+                            })
+                            .collect();
+                        let result = self.engine().dedup(df, &columns).map_err(|e| runtime_err(e))?;
+                        Ok(Value::Table(TlTable { df: result }))
+                    }
+                    "clamp" => {
+                        if args.len() < 3 { return Err(runtime_err("clamp() expects (column, min, max)".into())); }
+                        let column = match self.eval_expr(&args[0])? {
+                            Value::String(s) => s,
+                            _ => return Err(runtime_err("clamp() column must be a string".into())),
+                        };
+                        let min_val = match self.eval_expr(&args[1])? {
+                            Value::Int(n) => n as f64,
+                            Value::Float(f) => f,
+                            _ => return Err(runtime_err("clamp() min must be a number".into())),
+                        };
+                        let max_val = match self.eval_expr(&args[2])? {
+                            Value::Int(n) => n as f64,
+                            Value::Float(f) => f,
+                            _ => return Err(runtime_err("clamp() max must be a number".into())),
+                        };
+                        let result = self.engine().clamp(df, &column, min_val, max_val).map_err(|e| runtime_err(e))?;
+                        Ok(Value::Table(TlTable { df: result }))
+                    }
+                    "data_profile" => {
+                        let result = self.engine().data_profile(df).map_err(|e| runtime_err(e))?;
+                        Ok(Value::Table(TlTable { df: result }))
+                    }
+                    "row_count" => {
+                        let count = self.engine().row_count(df).map_err(|e| runtime_err(e))?;
+                        Ok(Value::Int(count))
+                    }
+                    "null_rate" => {
+                        if args.is_empty() { return Err(runtime_err("null_rate() expects (column)".into())); }
+                        let column = match self.eval_expr(&args[0])? {
+                            Value::String(s) => s,
+                            _ => return Err(runtime_err("null_rate() column must be a string".into())),
+                        };
+                        let rate = self.engine().null_rate(df, &column).map_err(|e| runtime_err(e))?;
+                        Ok(Value::Float(rate))
+                    }
+                    "is_unique" => {
+                        if args.is_empty() { return Err(runtime_err("is_unique() expects (column)".into())); }
+                        let column = match self.eval_expr(&args[0])? {
+                            Value::String(s) => s,
+                            _ => return Err(runtime_err("is_unique() column must be a string".into())),
+                        };
+                        let unique = self.engine().is_unique(df, &column).map_err(|e| runtime_err(e))?;
+                        Ok(Value::Bool(unique))
                     }
                     // Unknown table op: fall through to regular call
                     _ => {

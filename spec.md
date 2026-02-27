@@ -1585,9 +1585,9 @@ Reference: Compare against Polars (DataFrame performance), DuckDB (analytical qu
 | 10 | Generics & Traits | ✅ Complete | 620 |
 | 11 | Semantic Analysis & Optimization | ✅ Complete | 685 |
 | 12 | LSP & Developer Tooling | ✅ Complete | 732 |
-| 13 | Data Quality & Connectors | **Next up** (Phase 15) | — |
+| 13 | Data Quality & Connectors | ✅ Complete | 780 |
 
-**Current test count: 685 passed + 1 ignored**
+**Current test count: 780 passed + 1 ignored**
 
 ### Phase 0: Foundation ✅
 
@@ -1843,22 +1843,22 @@ New files: editors/vscode/ (package.json, extension.ts, tmLanguage.json, etc.)
 Tests: 685 existing + 47 new = 732 passed, 1 ignored
 ```
 
-### Phase 13: Data Quality & Connectors (Upcoming — Phase 15)
+### Phase 13: Data Quality & Connectors ✅ (Phase 15)
 
 **Goal:** Production data engineering with clean/validate and connectors
 
 ```
 Deliverables:
-  ✦ clean block: null handling (fill, drop_row, median), dedup, outlier clamping
-  ✦ validate block: row_count, null_rate, uniqueness assertions
-  ✦ data_profile() — statistical profile of all columns
-  ✦ Validation builtins: is_email(), is_url(), is_phone(), is_between()
-  ✦ Fuzzy matching: levenshtein(), soundex()
-  ✦ MySQL connector
-  ✦ S3 connector (AWS S3 / MinIO)
-  ✦ Redis connector
-  ✦ GraphQL client
-  ✦ Connector trait — user-defined custom connectors
+  ✅ clean as pipe-able functions: fill_null, drop_null, dedup, clamp
+  ✅ validate functions: row_count, null_rate, is_unique
+  ✅ data_profile() — statistical profile of all columns
+  ✅ Validation builtins: is_email(), is_url(), is_phone(), is_between()
+  ✅ Fuzzy matching: levenshtein(), soundex()
+  ✅ MySQL connector (feature-gated)
+  ✅ S3 connector via object_store (feature-gated)
+  ✅ Redis connector (feature-gated)
+  ✅ GraphQL client
+  ✅ UserDefinedConnector — user-defined custom connectors
 ```
 
 ### Future: Advanced Compiler (Deferred)

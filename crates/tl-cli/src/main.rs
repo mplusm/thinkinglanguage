@@ -56,6 +56,10 @@ impl TlHelper {
             "chain", "gen_zip", "gen_enumerate",
             "Ok", "Err", "is_ok", "is_err", "unwrap",
             "set_from", "set_add", "set_remove", "set_contains", "set_union", "set_intersection", "set_difference",
+            // Phase 15: Data Quality & Connectors
+            "fill_null", "drop_null", "dedup", "clamp", "data_profile", "row_count", "null_rate", "is_unique",
+            "is_email", "is_url", "is_phone", "is_between", "levenshtein", "soundex",
+            "read_mysql", "redis_connect", "redis_get", "redis_set", "redis_del", "graphql_query", "register_s3",
         ].iter().map(|s| String::from(*s)).collect();
         completions.sort();
         TlHelper { completions }
