@@ -1568,109 +1568,123 @@ Reference: Compare against Polars (DataFrame performance), DuckDB (analytical qu
 
 ## 9. Development Roadmap
 
-### Phase 0: Foundation (Month 1-2)
+**Progress Summary (as of February 2026):**
+
+| Phase | Name | Status | Tests |
+|-------|------|--------|-------|
+| 0 | Foundation | ✅ Complete | — |
+| 1 | Data Engine | ✅ Complete | — |
+| 2 | Compiler Backend | ✅ Complete (partial — see deferred) | — |
+| 3 | AI Integration | ✅ Complete | — |
+| 4 | Streaming & Pipelines | ✅ Complete | — |
+| 5 | Ecosystem & Community | Future | — |
+| 6 | Production & Scale | Future | — |
+| 7 | Language Completeness & Runtime | ✅ Complete | 437 |
+| 8 | Type System Foundation | ✅ Complete | 510 |
+| 9 | Module System | ✅ Complete | 566 |
+| 10 | Generics & Traits | ✅ Complete | 620 |
+| 11 | Semantic Analysis & Optimization | ✅ Complete | 685 |
+| 12 | LSP & Developer Tooling | **Next up** (Phase 14) | — |
+| 13 | Data Quality & Connectors | Planned (Phase 15) | — |
+
+**Current test count: 685 passed + 1 ignored**
+
+### Phase 0: Foundation ✅
 
 **Goal:** Prove the concept compiles and runs
 
 ```
-Deliverables:
-  ✦ Language specification document (formal grammar)
-  ✦ Lexer — tokenize .tl files
-  ✦ Parser — produce AST for core subset:
-      - let bindings
-      - basic types (int, float, string, bool)
-      - functions
-      - if/else, match
-      - pipe operator |>
-  ✦ Tree-walking interpreter (slow but correct)
-  ✦ 10 working code examples
-  ✦ Basic REPL (tl shell)
-
-Team: 1-2 people
+Delivered (our implementation Phase 0):
+  ✅ Language specification document (formal grammar)
+  ✅ Lexer — tokenize .tl files (logos crate)
+  ✅ Parser — produce AST for core subset (recursive descent)
+  ✅ Tree-walking interpreter (slow but correct)
+  ✅ 10+ working code examples
+  ✅ Basic REPL (tl shell)
 ```
 
-### Phase 1: Data Engine (Month 3-5)
+### Phase 1: Data Engine ✅
 
 **Goal:** Tables and transformations work end-to-end
 
 ```
-Deliverables:
-  ✦ table<T> type with Arrow-based columnar storage
-  ✦ schema definitions
-  ✦ Core operations: filter, select, with, aggregate, join, sort
-  ✦ Pipe operator chaining
-  ✦ CSV and Parquet file reading/writing
-  ✦ Lazy evaluation engine
-  ✦ Basic query optimizer (predicate pushdown, column pruning)
-  ✦ PostgreSQL connector
-  ✦ 1B Row Challenge benchmark passing
-
-Team: 2-3 people
+Delivered (our implementation Phase 1):
+  ✅ table<T> type with Arrow-based columnar storage (Apache DataFusion 44)
+  ✅ schema definitions
+  ✅ Core operations: filter, select, with, aggregate, join, sort (via DataFusion SQL translation)
+  ✅ Pipe operator chaining (table-aware |> dispatches to query engine)
+  ✅ CSV and Parquet file reading/writing
+  ✅ Lazy evaluation engine (DataFusion handles lazy execution)
+  ✅ Basic query optimizer (predicate pushdown, column pruning — via DataFusion)
+  ✅ PostgreSQL connector
 ```
 
-### Phase 2: Compiler Backend (Month 6-8)
+### Phase 2: Compiler Backend ✅
 
 **Goal:** Compiled execution, real performance
 
 ```
-Deliverables:
-  ✦ TL-IR design and implementation
-  ✦ Cranelift JIT backend (for REPL, fast iteration)
-  ✦ LLVM backend (for production builds)
-  ✦ Automatic parallelization of table operations
-  ✦ Memory manager with arena allocation
-  ✦ Spill-to-disk for large datasets
-  ✦ Benchmark suite (vs Python, Polars, Spark)
-  ✦ Performance within 2x of Polars on standard benchmarks
+Delivered (our implementation Phase 2):
+  ✅ Register-based bytecode compiler + VM (u32 packed instructions)
+  ✅ Cranelift JIT backend infrastructure (tiered compilation at 100 calls)
+  ✅ Automatic parallelization of table operations (rayon for lists >10k elements)
+  ✅ Benchmark suite (vs Python — Criterion benchmarks)
 
-Team: 3-4 people
+Deferred (see "Future: Advanced Compiler" section):
+  ◻ TL-IR design and implementation
+  ◻ LLVM backend (for production AOT builds)
+  ◻ Memory manager with arena allocation
+  ◻ Spill-to-disk for large datasets
 ```
 
-### Phase 3: AI Integration (Month 9-12)
+### Phase 3: AI Integration ✅
 
 **Goal:** AI/ML as native language features
 
 ```
-Deliverables:
-  ✦ tensor type with GPU support
-  ✦ model type (save, load, version)
-  ✦ train keyword for built-in algorithms (XGBoost, linear, random forest)
-  ✦ predict keyword for batch inference
-  ✦ embed keyword for text/image embeddings
-  ✦ ONNX Runtime integration for model portability
-  ✦ LLM integration (ai.complete, ai.chat for API-based models)
-  ✦ Auto-batching for inference
-  ✦ Model registry (local + S3)
+Delivered (our implementation Phase 3):
+  ✅ tensor type (ndarray 0.15)
+  ✅ model type (save, load, version)
+  ✅ train keyword for built-in algorithms (linfa: linear, random forest, k-means, etc.)
+  ✅ predict keyword for batch inference
+  ✅ embed keyword for text embeddings
+  ✅ ONNX Runtime integration for model portability (ort 2.0)
+  ✅ LLM integration (ai.complete, ai.chat via API)
+  ✅ Model registry (local — ~/.tl/models/)
 
-Team: 3-5 people
+Deferred:
+  ◻ GPU support for tensors
+  ◻ Auto-batching for inference
+  ◻ S3-backed model registry
 ```
 
-### Phase 4: Streaming & Pipelines (Month 13-16)
+### Phase 4: Streaming & Pipelines ✅
 
 **Goal:** Production pipeline orchestration
 
 ```
-Deliverables:
-  ✦ stream type with windowing
-  ✦ Kafka connector (source + sink)
-  ✦ pipeline construct with scheduling
-  ✦ Retry, timeout, error handling
-  ✦ Alerting (Slack, email, webhook)
-  ✦ Data lineage tracking
-  ✦ tl deploy for Docker and Kubernetes
-  ✦ Monitoring dashboard
+Delivered (our implementation Phase 4):
+  ✅ stream type with windowing (tumbling, sliding, session)
+  ✅ Kafka connector (source + sink, behind feature flag)
+  ✅ pipeline construct with scheduling
+  ✅ Retry, timeout, error handling (on_failure/on_success blocks)
+  ✅ Alerting (Slack, email, webhook)
+  ✅ Data lineage tracking (DOT/JSON/text output)
+  ✅ tl deploy for Docker and Kubernetes
+  ✅ Channel-based connector for testing (default, no external deps)
 
-Team: 4-6 people
+Deferred:
+  ◻ Monitoring dashboard (web UI)
 ```
 
-### Phase 5: Ecosystem & Community (Month 17-20)
+### Phase 5: Ecosystem & Community (Future)
 
 **Goal:** Ready for external adoption
 
 ```
 Deliverables:
   ✦ Package registry (packages.thinkinglang.dev)
-  ✦ VS Code extension with full LSP
+  ✦ VS Code extension with full LSP (→ see Phase 12/14 for LSP implementation)
   ✦ tl notebook (interactive notebooks)
   ✦ Comprehensive documentation site
   ✦ Tutorial series (20+ tutorials)
@@ -1678,11 +1692,9 @@ Deliverables:
   ✦ 10+ connector packages
   ✦ Open source launch (GitHub + announcement)
   ✦ Community Discord / forum
-
-Team: 5-8 people
 ```
 
-### Phase 6: Production & Scale (Month 21-24)
+### Phase 6: Production & Scale (Future)
 
 **Goal:** Enterprise-ready
 
@@ -1695,97 +1707,117 @@ Deliverables:
   ✦ Enterprise connectors (Salesforce, SAP, Oracle)
   ✦ Performance: within 1.5x of hand-written Rust for data operations
   ✦ 1.0 stable release
-
-Team: 8-12 people
 ```
 
-### Phase 7: Language Completeness & Runtime (Implemented)
+### Phase 7: Language Completeness & Runtime ✅
 
 **Goal:** Full language feature set with production runtime
 
 ```
-Delivered (our Phases 5-9):
-  ✦ Structs, enums, impl blocks, method dispatch
-  ✦ Try/catch/throw error handling
-  ✦ Import system (basic)
-  ✦ Stdlib: string, list, math, map, JSON, file I/O, regex, date/time
-  ✦ Concurrency: spawn/await, channels, combinators (pmap, timeout)
-  ✦ Iterators & generators: yield, next, lazy combinators
-  ✦ Error quality: statement-level spans, stack traces, bytecode disassembler
-  ✦ REPL improvements: history, multi-line input, tab completion
-  ✦ 437 tests passing
+Delivered (our implementation Phases 5-9):
+  ✅ Structs, enums, impl blocks, method dispatch
+  ✅ Try/catch/throw error handling
+  ✅ Import system (basic)
+  ✅ Stdlib: string, list, math, map, JSON, file I/O, regex, date/time
+  ✅ Concurrency: spawn/await, channels, combinators (pmap, timeout)
+  ✅ Iterators & generators: yield, next, lazy combinators
+  ✅ Error quality: statement-level spans, stack traces, bytecode disassembler
+  ✅ REPL improvements: history, multi-line input, tab completion
+  ✅ 437 tests passing at completion
 ```
 
-### Phase 8: Type System Foundation (Month 25-27)
+### Phase 8: Type System Foundation ✅
 
 **Goal:** Gradual static typing — catch errors at compile time, not runtime
 
 ```
-Deliverables:
-  ✦ Type checker pass between parse and compile/interpret
-  ✦ Type annotations enforced on function signatures
-  ✦ Type inference for let bindings (Hindley-Milner subset)
-  ✦ result<T, E> type with ? operator for error propagation
-  ✦ option<T> / T? with ?? null coalescing operator
-  ✦ Typed table<T>, stream<T>, tensor<dtype, shape>
-  ✦ set<T> type
-  ✦ Type-aware pattern matching with destructuring
-  ✦ Compile-time type error messages with suggestions
-  ✦ Gradual: untyped code still works (inferred as `any`)
+Delivered (our implementation Phase 10):
+  ✅ Type checker pass between parse and compile/interpret
+  ✅ Type annotations enforced on function signatures (--strict mode)
+  ✅ Type inference for let bindings (forward-only local inference)
+  ✅ result<T, E> type with ? operator for error propagation
+  ✅ option<T> / T? with ?? null coalescing operator
+  ✅ set<T> type
+  ✅ Compile-time type error messages with suggestions (ariadne diagnostics)
+  ✅ Gradual: untyped code still works (inferred as `any`)
+  ✅ --no-check flag to skip type checking, --strict for annotation requirements
+
+Deferred to future phases:
+  ◻ Typed table<T>, stream<T>, tensor<dtype, shape> — runtime types exist but not type-checked
+  ◻ Full Hindley-Milner inference — current system uses forward-only local inference
+  ◻ Type-aware pattern matching with destructuring
 ```
 
-### Phase 9: Module System (Month 28-30)
+### Phase 9: Module System ✅
 
 **Goal:** Multi-file projects with proper namespacing
 
 ```
-Deliverables:
-  ✦ File-based modules: one .tl file = one module
-  ✦ Directory modules with mod.tl
-  ✦ pub visibility modifier for functions, structs, schemas
-  ✦ use imports: single item, multiple items, wildcard, aliased
-  ✦ Re-exports (pub use)
-  ✦ tl.toml project manifest (project metadata, dependencies, build config)
-  ✦ tl init command to scaffold new projects
-  ✦ tl build command for multi-file compilation
-  ✦ Module-scoped namespaces (no global pollution)
-  ✦ Circular dependency detection
+Delivered (our implementation Phase 11):
+  ✅ File-based modules: one .tl file = one module
+  ✅ Directory modules with mod.tl
+  ✅ pub visibility modifier for functions, structs, schemas, enums, let, use, mod
+  ✅ use imports: single item, multiple items ({a, b}), wildcard (*), aliased (as)
+  ✅ tl.toml project manifest (project metadata)
+  ✅ tl init command to scaffold new projects
+  ✅ tl build command for multi-file compilation
+  ✅ Circular dependency detection (via importing_files set)
+
+Deferred to future phases:
+  ◻ Re-exports (pub use) — parsed but not fully wired
+  ◻ Package registry & dependency resolution in tl.toml
+  ◻ Module-scoped namespaces (currently uses flat global scope)
 ```
 
-### Phase 10: Generics & Traits (Month 31-33)
+### Phase 10: Generics & Traits ✅
 
 **Goal:** Parametric polymorphism for type-safe reusable code
 
 ```
-Deliverables:
-  ✦ Generic functions: fn first<T>(items: list<T>) -> T?
-  ✦ Generic structs: struct Pair<A, B> { first: A, second: B }
-  ✦ Trait definitions: trait Connectable { fn connect() -> result<Connection, Error> }
-  ✦ Trait implementations: impl Connectable for PostgresSource { ... }
-  ✦ Trait bounds: fn process<T: Serializable>(data: T) -> bytes
-  ✦ Monomorphization (compile-time specialization)
-  ✦ Built-in traits: Display, Debug, Clone, Serialize, Deserialize
-  ✦ Where clauses for complex bounds
+Delivered (our implementation Phase 12):
+  ✅ Generic functions: fn first<T>(items: list<T>) -> T?
+  ✅ Generic structs: struct Pair<A, B> { first: A, second: B }
+  ✅ Generic enums: enum Result<T, E> { Ok(T), Err(E) }
+  ✅ Trait definitions: trait Connectable { fn connect() -> result<Connection, Error> }
+  ✅ Trait implementations: impl Connectable for PostgresSource { ... }
+  ✅ Trait bounds: fn process<T: Serializable>(data: T) -> bytes
+  ✅ Where clauses for complex bounds
+  ✅ Built-in trait hierarchy: Numeric ⊃ Comparable ⊃ Hashable, Displayable, Serializable, Default
+  ✅ Type-erased generics (no monomorphization — generics are checker-only)
+
+Design decision:
+  — Type-erased generics chosen over monomorphization for simplicity; generics are
+    validated by the type checker but erased at runtime (like Java, unlike Rust/C++)
 ```
 
-### Phase 11: Semantic Analysis & Optimization (Month 34-36)
+### Phase 11: Semantic Analysis & Optimization ✅
 
 **Goal:** Compile-time correctness guarantees and performance
 
 ```
-Deliverables:
-  ✦ Full type checker integrated into compilation pipeline
-  ✦ Schema validation: verify table schemas match between pipeline stages
-  ✦ Ownership analysis: pipe |> moves values, use-after-move errors
-  ✦ Dead code elimination
-  ✦ Constant folding and propagation
-  ✦ TL-IR intermediate representation (unified code + query plan)
-  ✦ Predicate pushdown for table operations
-  ✦ Column pruning optimization
-  ✦ Borrow checking (simplified — no lifetime annotations)
+Delivered (our implementation Phase 13):
+  ✅ Full type checker integrated into compilation pipeline (auto-runs before execution)
+  ✅ Enhanced type inference: struct field access, method calls, closures, map literals, builtins
+  ✅ Dead code elimination (after return/break/continue, with proper scope tracking)
+  ✅ Constant folding (arithmetic, string concat, booleans, comparisons, nested expressions)
+  ✅ Unused variable/import warnings
+  ✅ Unreachable code detection
+  ✅ Struct init field validation
+  ✅ Assignment type checking
+  ✅ tl check subcommand (type-check only, no execution)
+  ✅ 685 tests passing at completion
+
+Deferred to future phases:
+  ◻ TL-IR intermediate representation — premature; current bytecode is sufficient
+  ◻ Schema validation: verify table schemas match between pipeline stages
+  ◻ Ownership analysis: pipe |> moves values, use-after-move errors
+  ◻ Borrow checking (simplified — no lifetime annotations)
+  ◻ Constant propagation (tracking constants through variables)
+  ◻ Predicate pushdown — DataFusion already handles internally
+  ◻ Column pruning — DataFusion already handles internally
 ```
 
-### Phase 12: LSP & Developer Tooling (Month 37-39)
+### Phase 12: LSP & Developer Tooling (Upcoming — Phase 14)
 
 **Goal:** World-class developer experience drives adoption
 
@@ -1800,9 +1832,14 @@ Deliverables:
   ✦ tl doc — documentation generator from doc comments
   ✦ tl explain — show query plan for pipeline
   ✦ Inline type hints in editor
+
+Foundation available:
+  — Type checker (Phase 11) provides diagnostics, type inference for hover/completion
+  — AST with spans (Phase 7) enables go-to-definition and source mapping
+  — Bytecode disassembler (Phase 7) provides basis for tl explain
 ```
 
-### Phase 13: Data Quality & Connectors (Month 40-42)
+### Phase 13: Data Quality & Connectors (Upcoming — Phase 15)
 
 **Goal:** Production data engineering with clean/validate and connectors
 
@@ -1818,6 +1855,24 @@ Deliverables:
   ✦ Redis connector
   ✦ GraphQL client
   ✦ Connector trait — user-defined custom connectors
+```
+
+### Future: Advanced Compiler (Deferred)
+
+**Goal:** Production-grade compilation and memory management
+
+```
+Deliverables (deferred from original Phase 2 spec):
+  ◻ TL-IR intermediate representation (unified code + query plan)
+  ◻ LLVM backend for production AOT builds (currently Cranelift JIT only)
+  ◻ Ownership/borrow analysis (simplified — no lifetime annotations)
+  ◻ Memory manager with arena allocation
+  ◻ Spill-to-disk for large datasets
+  ◻ Constant propagation across variables
+
+Note: Current register-based bytecode VM is sufficient for all implemented features.
+      These items become valuable when targeting native binary distribution and
+      optimizing for production workloads with very large datasets.
 ```
 
 ---
