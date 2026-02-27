@@ -24,6 +24,8 @@ pub struct Prototype {
     pub name: String,
     /// Whether this function contains yield (is a generator)
     pub is_generator: bool,
+    /// Top-level local bindings: (name, register_index) — used for module exports
+    pub top_level_locals: Vec<(String, u8)>,
 }
 
 impl Prototype {
@@ -38,6 +40,7 @@ impl Prototype {
             upvalue_defs: Vec::new(),
             name,
             is_generator: false,
+            top_level_locals: Vec::new(),
         }
     }
 

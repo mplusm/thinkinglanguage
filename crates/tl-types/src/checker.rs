@@ -141,7 +141,7 @@ impl<'a> TypeChecker<'a> {
                 };
                 self.env.define(name.clone(), fn_type);
             }
-            StmtKind::StructDecl { name, fields } => {
+            StmtKind::StructDecl { name, fields, .. } => {
                 let field_types: Vec<(String, Type)> = fields
                     .iter()
                     .map(|f| (f.name.clone(), convert_type_expr(&f.type_ann)))
@@ -149,7 +149,7 @@ impl<'a> TypeChecker<'a> {
                 self.env.define_struct(name.clone(), field_types);
                 self.env.define(name.clone(), Type::Struct(name.clone()));
             }
-            StmtKind::EnumDecl { name, variants } => {
+            StmtKind::EnumDecl { name, variants, .. } => {
                 let variant_types: Vec<(String, Vec<Type>)> = variants
                     .iter()
                     .map(|v| {
@@ -375,7 +375,9 @@ impl<'a> TypeChecker<'a> {
             | StmtKind::Pipeline { .. }
             | StmtKind::StreamDecl { .. }
             | StmtKind::SourceDecl { .. }
-            | StmtKind::SinkDecl { .. } => {}
+            | StmtKind::SinkDecl { .. }
+            | StmtKind::Use { .. }
+            | StmtKind::ModDecl { .. } => {}
         }
     }
 }

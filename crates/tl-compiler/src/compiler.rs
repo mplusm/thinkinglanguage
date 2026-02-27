@@ -295,7 +295,7 @@ impl Compiler {
             StmtKind::For { name, iter, body } => {
                 self.compile_for(name, iter, body)
             }
-            StmtKind::Schema { name, fields } => {
+            StmtKind::Schema { name, fields, .. } => {
                 self.compile_schema(name, fields)
             }
             StmtKind::Train { name, algorithm, config } => {
@@ -313,7 +313,7 @@ impl Compiler {
             StmtKind::SinkDecl { name, connector_type, config } => {
                 self.compile_connector_decl(name, connector_type, config)
             }
-            StmtKind::StructDecl { name, fields } => {
+            StmtKind::StructDecl { name, fields, .. } => {
                 let reg = self.add_local(name.clone());
                 let field_names: Vec<Arc<str>> = fields.iter().map(|f| Arc::from(f.name.as_str())).collect();
                 let name_idx = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
@@ -325,7 +325,7 @@ impl Compiler {
                 self.current().emit_abc(Op::NewStruct, reg, name_idx as u8, (fields_idx as u8) | 0x80, 0);
                 Ok(())
             }
-            StmtKind::EnumDecl { name, variants } => {
+            StmtKind::EnumDecl { name, variants, .. } => {
                 let reg = self.add_local(name.clone());
                 let name_idx = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
                 // Store variant info
@@ -419,6 +419,13 @@ impl Compiler {
             }
             StmtKind::Test { .. } => {
                 // Tests are only run in test mode; skip during normal compilation
+                Ok(())
+            }
+            StmtKind::Use { item, .. } => {
+                self.compile_use(item)
+            }
+            StmtKind::ModDecl { .. } => {
+                // ModDecl is handled at load time, not compilation
                 Ok(())
             }
             StmtKind::Break => {
@@ -1761,6 +1768,42 @@ impl Compiler {
         }
         Ok(())
     }
+
+    fn compile_use(&mut self, item: &UseItem) -> Result<(), TlError> {
+        // Encode use as an import operation. The VM handles resolution.
+        // C=0xAB is a magic marker to distinguish from classic import (C=0).
+        let reg = self.current().alloc_register();
+        match item {
+            UseItem::Single(path) => {
+                let path_str = path.join(".");
+                let path_idx = self.current().add_constant(Constant::String(Arc::from(path_str.as_str())));
+                self.current().emit_abx(Op::Import, reg, path_idx, 0);
+                // A=0 (unused), B=kind=0 (Single), C=0xAB (use marker)
+                self.current().emit_abc(Op::Move, 0, 0, 0xAB, 0);
+            }
+            UseItem::Group(prefix, names) => {
+                let path_str = format!("{}.{{{}}}", prefix.join("."), names.join(","));
+                let path_idx = self.current().add_constant(Constant::String(Arc::from(path_str.as_str())));
+                self.current().emit_abx(Op::Import, reg, path_idx, 0);
+                self.current().emit_abc(Op::Move, 0, 1, 0xAB, 0); // B=1 Group
+            }
+            UseItem::Wildcard(path) => {
+                let path_str = format!("{}.*", path.join("."));
+                let path_idx = self.current().add_constant(Constant::String(Arc::from(path_str.as_str())));
+                self.current().emit_abx(Op::Import, reg, path_idx, 0);
+                self.current().emit_abc(Op::Move, 0, 2, 0xAB, 0); // B=2 Wildcard
+            }
+            UseItem::Aliased(path, alias) => {
+                let path_str = path.join(".");
+                let path_idx = self.current().add_constant(Constant::String(Arc::from(path_str.as_str())));
+                let alias_idx = self.current().add_constant(Constant::String(Arc::from(alias.as_str())));
+                self.current().emit_abx(Op::Import, reg, path_idx, 0);
+                self.current().emit_abc(Op::Move, alias_idx as u8, 3, 0xAB, 0); // B=3 Aliased
+            }
+        }
+        self.current().free_register();
+        Ok(())
+    }
 }
 
 enum StringSegment {
@@ -1808,6 +1851,18 @@ pub fn compile_with_source(program: &Program, source: &str) -> Result<Prototype,
                 compiler.compile_stmt(stmt)?;
             }
         }
+    }
+
+    // Record top-level locals for module export support
+    {
+        let state = &compiler.states[0];
+        let top_locals: Vec<(String, u8)> = state
+            .locals
+            .iter()
+            .filter(|l| l.depth == 0)
+            .map(|l| (l.name.clone(), l.register))
+            .collect();
+        compiler.states[0].proto.top_level_locals = top_locals;
     }
 
     // Add implicit return

@@ -313,6 +313,14 @@ pub struct Vm {
     yielded_value: Option<VmValue>,
     /// IP at the point of yield (instruction after the Yield op)
     yielded_ip: usize,
+    /// Current file path (for relative imports)
+    pub file_path: Option<String>,
+    /// Module cache: resolved path → exports
+    module_cache: HashMap<String, HashMap<String, VmValue>>,
+    /// Files currently being imported (circular detection)
+    importing_files: std::collections::HashSet<String>,
+    /// Tracks which globals are public (for module export filtering)
+    pub public_items: std::collections::HashSet<String>,
 }
 
 impl Vm {
@@ -326,6 +334,10 @@ impl Vm {
             try_handlers: Vec::new(),
             yielded_value: None,
             yielded_ip: 0,
+            file_path: None,
+            module_cache: HashMap::new(),
+            importing_files: std::collections::HashSet::new(),
+            public_items: std::collections::HashSet::new(),
         }
     }
 
@@ -1072,14 +1084,25 @@ impl Vm {
 
                 Op::Import => {
                     // a = dest, bx = path constant
-                    // Next instruction: A = alias constant index
+                    // Next instruction encodes either:
+                    //   - Classic import: A = alias constant, B = 0, C = 0
+                    //   - Use import: A = extra, B = kind, C = 0xAB (magic marker)
                     let path = self.get_string_constant(frame_idx, bx)?;
                     let next = self.frames[frame_idx].prototype.code[self.frames[frame_idx].ip];
                     self.frames[frame_idx].ip += 1;
-                    let alias_idx = decode_a(next) as u16;
-                    let alias = self.get_string_constant(frame_idx, alias_idx)?;
+                    let next_a = decode_a(next);
+                    let next_b = decode_b(next);
+                    let next_c = decode_c(next);
 
-                    let result = self.handle_import(&path, &alias)?;
+                    let result = if next_c == 0xAB {
+                        // Use-style import (dot-path)
+                        self.handle_use_import(&path, next_a, next_b, frame_idx)?
+                    } else {
+                        // Classic import "file.tl" [as alias]
+                        let alias_idx = next_a as u16;
+                        let alias = self.get_string_constant(frame_idx, alias_idx)?;
+                        self.handle_import(&path, &alias)?
+                    };
                     self.stack[base + a as usize] = result;
                 }
 
@@ -3521,6 +3544,13 @@ impl Vm {
             VmValue::List(items) => self.dispatch_list_method(items.clone(), method, args),
             VmValue::Map(pairs) => self.dispatch_map_method(pairs.clone(), method, args),
             VmValue::Set(items) => self.dispatch_set_method(items.clone(), method, args),
+            VmValue::Module(m) => {
+                if let Some(func) = m.exports.get(method).cloned() {
+                    self.call_vm_function(&func, args)
+                } else {
+                    Err(runtime_err(format!("Module '{}' has no export '{}'", m.name, method)))
+                }
+            }
             VmValue::StructInstance(inst) => {
                 // Look up impl method: Type::method in globals
                 let mangled = format!("{}::{}", inst.type_name, method);
@@ -3874,27 +3904,88 @@ impl Vm {
 
     /// Handle import at runtime.
     fn handle_import(&mut self, path: &str, alias: &str) -> Result<VmValue, TlError> {
+        // Resolve relative path from current file
+        let resolved = if let Some(ref base) = self.file_path {
+            let base_dir = std::path::Path::new(base)
+                .parent()
+                .unwrap_or(std::path::Path::new("."));
+            let candidate = base_dir.join(path);
+            if candidate.exists() {
+                candidate.to_string_lossy().to_string()
+            } else {
+                path.to_string()
+            }
+        } else {
+            path.to_string()
+        };
+
+        // Circular dependency detection
+        if self.importing_files.contains(&resolved) {
+            return Err(runtime_err(format!("Circular import detected: {resolved}")));
+        }
+
+        // Check module cache
+        if let Some(exports) = self.module_cache.get(&resolved) {
+            let exports = exports.clone();
+            return self.bind_import_exports(exports, alias);
+        }
+
         // Read, parse, compile, execute the file
-        let source = std::fs::read_to_string(path)
-            .map_err(|e| runtime_err(format!("Cannot import '{}': {}", path, e)))?;
+        let source = std::fs::read_to_string(&resolved)
+            .map_err(|e| runtime_err(format!("Cannot import '{}': {}", resolved, e)))?;
         let program = tl_parser::parse(&source)
-            .map_err(|e| runtime_err(format!("Parse error in '{}': {}", path, e)))?;
+            .map_err(|e| runtime_err(format!("Parse error in '{}': {}", resolved, e)))?;
         let proto = crate::compiler::compile(&program)
-            .map_err(|e| runtime_err(format!("Compile error in '{}': {}", path, e)))?;
+            .map_err(|e| runtime_err(format!("Compile error in '{}': {}", resolved, e)))?;
+
+        // Track circular imports
+        self.importing_files.insert(resolved.clone());
 
         // Execute in a fresh VM with shared globals
         let mut import_vm = Vm::new();
+        import_vm.file_path = Some(resolved.clone());
         import_vm.globals = self.globals.clone();
+        import_vm.importing_files = self.importing_files.clone();
+        import_vm.module_cache = self.module_cache.clone();
         import_vm.execute(&proto)?;
 
-        // Collect new globals that were defined in the import
+        self.importing_files.remove(&resolved);
+
+        // Collect exports: both globals and top-level locals from the stack
         let mut exports = HashMap::new();
+
+        // 1. New globals defined in the import
         for (k, v) in &import_vm.globals {
             if !self.globals.contains_key(k) {
                 exports.insert(k.clone(), v.clone());
             }
         }
 
+        // 2. Top-level locals from the prototype (on the stack)
+        for (name, reg) in &proto.top_level_locals {
+            if !name.starts_with("__enum_") && !exports.contains_key(name) {
+                let stack_idx = reg;
+                if (*stack_idx as usize) < import_vm.stack.len() {
+                    let val = import_vm.stack[*stack_idx as usize].clone();
+                    if !matches!(val, VmValue::None) || name.starts_with("_") {
+                        exports.insert(name.clone(), val);
+                    }
+                }
+            }
+        }
+
+        // Cache the module
+        self.module_cache.insert(resolved, exports.clone());
+        // Also adopt any modules the sub-VM discovered
+        for (k, v) in import_vm.module_cache {
+            self.module_cache.entry(k).or_insert(v);
+        }
+
+        self.bind_import_exports(exports, alias)
+    }
+
+    /// Bind import exports into current scope.
+    fn bind_import_exports(&mut self, exports: HashMap<String, VmValue>, alias: &str) -> Result<VmValue, TlError> {
         if alias.is_empty() {
             // Wildcard import: merge all exports into current scope
             for (k, v) in &exports {
@@ -3911,6 +4002,106 @@ impl Vm {
             self.globals.insert(alias.to_string(), module_val.clone());
             Ok(module_val)
         }
+    }
+
+    /// Handle use-style imports (dot-path syntax).
+    fn handle_use_import(&mut self, path_str: &str, extra_a: u8, kind: u8, _frame_idx: usize) -> Result<VmValue, TlError> {
+        match kind {
+            0 => {
+                // Single: "data.transforms.clean" → import file, bind last segment
+                let segments: Vec<&str> = path_str.split('.').collect();
+                let file_path = self.resolve_use_path(&segments)?;
+                // Import the module, get exports
+                let last = segments.last().copied().unwrap_or("");
+                self.handle_import(&file_path, "")?;
+                // The wildcard import already merged everything.
+                // But for Single, we only want the specific item.
+                // Since handle_import merges all, that works for now.
+                // Return none since it's a statement, not an expression.
+                Ok(VmValue::None)
+            }
+            1 => {
+                // Group: "data.transforms.{a,b}" — extract prefix before {
+                let brace_start = path_str.find('{').unwrap_or(path_str.len());
+                let prefix = path_str[..brace_start].trim_end_matches('.');
+                let segments: Vec<&str> = prefix.split('.').collect();
+                let file_path = self.resolve_use_path(&segments)?;
+                self.handle_import(&file_path, "")?;
+                Ok(VmValue::None)
+            }
+            2 => {
+                // Wildcard: "data.transforms.*" — strip trailing .*
+                let prefix = path_str.trim_end_matches(".*");
+                let segments: Vec<&str> = prefix.split('.').collect();
+                let file_path = self.resolve_use_path(&segments)?;
+                self.handle_import(&file_path, "")?;
+                Ok(VmValue::None)
+            }
+            3 => {
+                // Aliased: path in path_str, alias in extra_a (constant index)
+                let segments: Vec<&str> = path_str.split('.').collect();
+                let file_path = self.resolve_use_path(&segments)?;
+                // For aliased, we need to get the alias from the constant pool
+                // extra_a contains the constant index of the alias string
+                let alias_str = if let Some(frame) = self.frames.last() {
+                    if let Some(crate::chunk::Constant::String(s)) = frame.prototype.constants.get(extra_a as usize) {
+                        s.to_string()
+                    } else {
+                        segments.last().copied().unwrap_or("module").to_string()
+                    }
+                } else {
+                    segments.last().copied().unwrap_or("module").to_string()
+                };
+                self.handle_import(&file_path, &alias_str)?;
+                Ok(VmValue::None)
+            }
+            _ => Err(runtime_err(format!("Unknown use-import kind: {kind}"))),
+        }
+    }
+
+    /// Resolve dot-path segments to a file path for use statements.
+    fn resolve_use_path(&self, segments: &[&str]) -> Result<String, TlError> {
+        let base_dir = if let Some(ref fp) = self.file_path {
+            std::path::Path::new(fp)
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .to_path_buf()
+        } else {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        };
+
+        let rel_path = segments.join("/");
+
+        // Try file module first
+        let file_path = base_dir.join(format!("{rel_path}.tl"));
+        if file_path.exists() {
+            return Ok(file_path.to_string_lossy().to_string());
+        }
+
+        // Try directory module
+        let dir_path = base_dir.join(&rel_path).join("mod.tl");
+        if dir_path.exists() {
+            return Ok(dir_path.to_string_lossy().to_string());
+        }
+
+        // If multi-segment, try parent as file module
+        if segments.len() > 1 {
+            let parent = &segments[..segments.len() - 1];
+            let parent_path = parent.join("/");
+            let parent_file = base_dir.join(format!("{parent_path}.tl"));
+            if parent_file.exists() {
+                return Ok(parent_file.to_string_lossy().to_string());
+            }
+            let parent_dir = base_dir.join(&parent_path).join("mod.tl");
+            if parent_dir.exists() {
+                return Ok(parent_dir.to_string_lossy().to_string());
+            }
+        }
+
+        Err(runtime_err(format!(
+            "Module not found: `{}`",
+            segments.join(".")
+        )))
     }
 
     /// Call a VmValue function/closure with args.
@@ -5728,5 +5919,324 @@ print(len(s2))"#);
 print(len(s))
 print(s.contains("b"))"#);
         assert_eq!(output, vec!["3", "true"]);
+    }
+
+    // ── Phase 11: Module System VM Tests ──
+
+    #[test]
+    fn test_vm_import_with_caching() {
+        // Test that the VM has caching fields initialized
+        let vm = Vm::new();
+        assert!(vm.module_cache.is_empty());
+        assert!(vm.importing_files.is_empty());
+        assert!(vm.file_path.is_none());
+    }
+
+    #[test]
+    fn test_vm_use_single_file() {
+        // Create a temp dir with module files
+        let dir = tempfile::tempdir().unwrap();
+        let lib_path = dir.path().join("math.tl");
+        std::fs::write(&lib_path, "let PI = 3.14\nfn add(a, b) { a + b }").unwrap();
+
+        let main_path = dir.path().join("main.tl");
+        std::fs::write(&main_path, "use math\nprint(add(1, 2))").unwrap();
+
+        let source = std::fs::read_to_string(&main_path).unwrap();
+        let program = tl_parser::parse(&source).unwrap();
+        let proto = crate::compiler::compile(&program).unwrap();
+
+        let mut vm = Vm::new();
+        vm.file_path = Some(main_path.to_string_lossy().to_string());
+        vm.execute(&proto).unwrap();
+        assert_eq!(vm.output, vec!["3"]);
+    }
+
+    #[test]
+    fn test_vm_use_wildcard() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("helpers.tl"), "fn greet() { \"hello\" }\nfn farewell() { \"bye\" }").unwrap();
+
+        let main_src = "use helpers.*\nprint(greet())\nprint(farewell())";
+        let main_path = dir.path().join("main.tl");
+        std::fs::write(&main_path, main_src).unwrap();
+
+        let program = tl_parser::parse(main_src).unwrap();
+        let proto = crate::compiler::compile(&program).unwrap();
+
+        let mut vm = Vm::new();
+        vm.file_path = Some(main_path.to_string_lossy().to_string());
+        vm.execute(&proto).unwrap();
+        assert_eq!(vm.output, vec!["hello", "bye"]);
+    }
+
+    #[test]
+    fn test_vm_use_aliased() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("mylib.tl"), "fn compute() { 42 }").unwrap();
+
+        let main_src = "use mylib as m\nprint(m.compute())";
+        let main_path = dir.path().join("main.tl");
+        std::fs::write(&main_path, main_src).unwrap();
+
+        let program = tl_parser::parse(main_src).unwrap();
+        let proto = crate::compiler::compile(&program).unwrap();
+
+        let mut vm = Vm::new();
+        vm.file_path = Some(main_path.to_string_lossy().to_string());
+        vm.execute(&proto).unwrap();
+        assert_eq!(vm.output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_vm_use_directory_module() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("utils")).unwrap();
+        std::fs::write(dir.path().join("utils/mod.tl"), "fn helper() { 99 }").unwrap();
+
+        let main_src = "use utils\nprint(helper())";
+        let main_path = dir.path().join("main.tl");
+        std::fs::write(&main_path, main_src).unwrap();
+
+        let program = tl_parser::parse(main_src).unwrap();
+        let proto = crate::compiler::compile(&program).unwrap();
+
+        let mut vm = Vm::new();
+        vm.file_path = Some(main_path.to_string_lossy().to_string());
+        vm.execute(&proto).unwrap();
+        assert_eq!(vm.output, vec!["99"]);
+    }
+
+    #[test]
+    fn test_vm_circular_import_detection() {
+        let dir = tempfile::tempdir().unwrap();
+        let a_path = dir.path().join("a.tl");
+        let b_path = dir.path().join("b.tl");
+        std::fs::write(&a_path, &format!("import \"{}\"", b_path.to_string_lossy())).unwrap();
+        std::fs::write(&b_path, &format!("import \"{}\"", a_path.to_string_lossy())).unwrap();
+
+        let source = std::fs::read_to_string(&a_path).unwrap();
+        let program = tl_parser::parse(&source).unwrap();
+        let proto = crate::compiler::compile(&program).unwrap();
+
+        let mut vm = Vm::new();
+        vm.file_path = Some(a_path.to_string_lossy().to_string());
+        let result = vm.execute(&proto);
+        assert!(result.is_err());
+        assert!(format!("{:?}", result).contains("Circular import"));
+    }
+
+    #[test]
+    fn test_vm_module_caching() {
+        // Import the same module twice — should use cache
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("cached.tl"), "let X = 42").unwrap();
+
+        let main_src = "use cached\nuse cached\nprint(X)";
+        let main_path = dir.path().join("main.tl");
+        std::fs::write(&main_path, main_src).unwrap();
+
+        let program = tl_parser::parse(main_src).unwrap();
+        let proto = crate::compiler::compile(&program).unwrap();
+
+        let mut vm = Vm::new();
+        vm.file_path = Some(main_path.to_string_lossy().to_string());
+        vm.execute(&proto).unwrap();
+        assert_eq!(vm.output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_vm_existing_import_still_works() {
+        // Verify backward compat of classic import
+        let dir = tempfile::tempdir().unwrap();
+        let lib_path = dir.path().join("lib.tl");
+        std::fs::write(&lib_path, "fn imported_fn() { 123 }").unwrap();
+
+        let main_src = format!("import \"{}\"\nprint(imported_fn())", lib_path.to_string_lossy());
+        let program = tl_parser::parse(&main_src).unwrap();
+        let proto = crate::compiler::compile(&program).unwrap();
+
+        let mut vm = Vm::new();
+        vm.execute(&proto).unwrap();
+        assert_eq!(vm.output, vec!["123"]);
+    }
+
+    #[test]
+    fn test_vm_pub_fn_parsing() {
+        // Pub fn should compile and run normally
+        let output = run_output("pub fn add(a, b) { a + b }\nprint(add(1, 2))");
+        assert_eq!(output, vec!["3"]);
+    }
+
+    #[test]
+    fn test_vm_use_nested_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("data")).unwrap();
+        std::fs::write(dir.path().join("data/transforms.tl"), "fn clean(x) { x + 1 }").unwrap();
+
+        let main_src = "use data.transforms\nprint(clean(41))";
+        let main_path = dir.path().join("main.tl");
+        std::fs::write(&main_path, main_src).unwrap();
+
+        let program = tl_parser::parse(main_src).unwrap();
+        let proto = crate::compiler::compile(&program).unwrap();
+
+        let mut vm = Vm::new();
+        vm.file_path = Some(main_path.to_string_lossy().to_string());
+        vm.execute(&proto).unwrap();
+        assert_eq!(vm.output, vec!["42"]);
+    }
+
+    // -- Integration tests: multi-file, backward compat, mixed --
+
+    #[test]
+    fn test_integration_multi_file_use_functions() {
+        // main.tl uses functions from lib.tl
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("lib.tl"),
+            "fn greet(name) { \"Hello, \" + name + \"!\" }\nfn double(x) { x * 2 }"
+        ).unwrap();
+
+        let main_src = "use lib\nprint(greet(\"World\"))\nprint(double(21))";
+        let main_path = dir.path().join("main.tl");
+        std::fs::write(&main_path, main_src).unwrap();
+
+        let program = tl_parser::parse(main_src).unwrap();
+        let proto = crate::compiler::compile(&program).unwrap();
+        let mut vm = Vm::new();
+        vm.file_path = Some(main_path.to_string_lossy().to_string());
+        vm.execute(&proto).unwrap();
+        assert_eq!(vm.output, vec!["Hello, World!", "42"]);
+    }
+
+    #[test]
+    fn test_integration_mixed_import_and_use() {
+        // Combine classic import and use in same file
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("old_lib.tl"), "fn old_fn() { 10 }").unwrap();
+        std::fs::write(dir.path().join("new_lib.tl"), "fn new_fn() { 20 }").unwrap();
+
+        let old_lib_abs = dir.path().join("old_lib.tl").to_string_lossy().to_string();
+        let main_src = format!(
+            "import \"{old_lib_abs}\"\nuse new_lib\nprint(old_fn() + new_fn())"
+        );
+        let main_path = dir.path().join("main.tl");
+        std::fs::write(&main_path, &main_src).unwrap();
+
+        let program = tl_parser::parse(&main_src).unwrap();
+        let proto = crate::compiler::compile(&program).unwrap();
+        let mut vm = Vm::new();
+        vm.file_path = Some(main_path.to_string_lossy().to_string());
+        vm.execute(&proto).unwrap();
+        assert_eq!(vm.output, vec!["30"]);
+    }
+
+    #[test]
+    fn test_integration_directory_module_with_mod_tl() {
+        // utils/mod.tl re-exports functions
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("utils")).unwrap();
+        std::fs::write(dir.path().join("utils/mod.tl"),
+            "fn helper() { 99 }\nfn format_num(n) { str(n) + \"!\" }"
+        ).unwrap();
+
+        let main_src = "use utils\nprint(helper())\nprint(format_num(42))";
+        let main_path = dir.path().join("main.tl");
+        std::fs::write(&main_path, main_src).unwrap();
+
+        let program = tl_parser::parse(main_src).unwrap();
+        let proto = crate::compiler::compile(&program).unwrap();
+        let mut vm = Vm::new();
+        vm.file_path = Some(main_path.to_string_lossy().to_string());
+        vm.execute(&proto).unwrap();
+        assert_eq!(vm.output, vec!["99", "42!"]);
+    }
+
+    #[test]
+    fn test_integration_circular_dep_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let a_abs = dir.path().join("a.tl").to_string_lossy().to_string();
+        let b_abs = dir.path().join("b.tl").to_string_lossy().to_string();
+        std::fs::write(dir.path().join("a.tl"), format!("import \"{b_abs}\"\nfn fa() {{ 1 }}")).unwrap();
+        std::fs::write(dir.path().join("b.tl"), format!("import \"{a_abs}\"\nfn fb() {{ 2 }}")).unwrap();
+
+        let main_src = format!("import \"{a_abs}\"");
+        let program = tl_parser::parse(&main_src).unwrap();
+        let proto = crate::compiler::compile(&program).unwrap();
+        let mut vm = Vm::new();
+        let result = vm.execute(&proto);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("Circular") || err_msg.contains("circular"),
+            "Expected circular import error, got: {err_msg}");
+    }
+
+    #[test]
+    fn test_integration_use_aliased_method_call() {
+        // use lib as m, then m.compute()
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("mylib.tl"), "fn compute() { 42 }").unwrap();
+
+        let main_src = "use mylib as m\nprint(m.compute())";
+        let main_path = dir.path().join("main.tl");
+        std::fs::write(&main_path, main_src).unwrap();
+
+        let program = tl_parser::parse(main_src).unwrap();
+        let proto = crate::compiler::compile(&program).unwrap();
+        let mut vm = Vm::new();
+        vm.file_path = Some(main_path.to_string_lossy().to_string());
+        vm.execute(&proto).unwrap();
+        assert_eq!(vm.output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_integration_module_caching_shared() {
+        // Import same module twice; second import uses cache, not re-execution
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("shared.tl"), "fn get_val() { 42 }").unwrap();
+
+        let main_src = "use shared\nprint(get_val())\nuse shared\nprint(get_val())";
+        let main_path = dir.path().join("main.tl");
+        std::fs::write(&main_path, main_src).unwrap();
+
+        let program = tl_parser::parse(main_src).unwrap();
+        let proto = crate::compiler::compile(&program).unwrap();
+        let mut vm = Vm::new();
+        vm.file_path = Some(main_path.to_string_lossy().to_string());
+        vm.execute(&proto).unwrap();
+        assert_eq!(vm.output, vec!["42", "42"]);
+    }
+
+    #[test]
+    fn test_integration_pub_keyword_in_module() {
+        // pub fn in a module should work when imported
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pubmod.tl"), "pub fn public_fn() { 100 }\nfn private_fn() { 200 }").unwrap();
+
+        let main_src = "use pubmod\nprint(public_fn())";
+        let main_path = dir.path().join("main.tl");
+        std::fs::write(&main_path, main_src).unwrap();
+
+        let program = tl_parser::parse(main_src).unwrap();
+        let proto = crate::compiler::compile(&program).unwrap();
+        let mut vm = Vm::new();
+        vm.file_path = Some(main_path.to_string_lossy().to_string());
+        vm.execute(&proto).unwrap();
+        assert_eq!(vm.output, vec!["100"]);
+    }
+
+    #[test]
+    fn test_integration_backward_compat_import_as() {
+        // Classic import-as syntax should still work
+        let dir = tempfile::tempdir().unwrap();
+        let lib_path = dir.path().join("mylib.tl");
+        std::fs::write(&lib_path, "fn compute() { 77 }").unwrap();
+
+        let main_src = format!("import \"{}\" as m\nprint(m.compute())", lib_path.to_string_lossy());
+        let program = tl_parser::parse(&main_src).unwrap();
+        let proto = crate::compiler::compile(&program).unwrap();
+        let mut vm = Vm::new();
+        vm.execute(&proto).unwrap();
+        assert_eq!(vm.output, vec!["77"]);
     }
 }

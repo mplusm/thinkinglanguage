@@ -11,6 +11,7 @@ pub mod compiler;
 pub mod vm;
 pub mod jit;
 pub mod jit_runtime;
+pub mod module;
 
 pub use compiler::{compile, compile_with_source};
 pub use vm::Vm;

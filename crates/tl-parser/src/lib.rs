@@ -136,6 +136,9 @@ impl Parser {
             Token::Try => self.parse_try_catch(),
             Token::Throw => self.parse_throw(),
             Token::Import => self.parse_import(),
+            Token::Use => self.parse_use(false),
+            Token::Pub => self.parse_pub(),
+            Token::Mod => self.parse_mod(false),
             Token::Test => self.parse_test(),
             Token::Break => {
                 let start = self.peek_span().start;
@@ -158,6 +161,173 @@ impl Parser {
         }
     }
 
+    /// Parse `pub` visibility modifier
+    fn parse_pub(&mut self) -> Result<Stmt, TlError> {
+        let start = self.peek_span().start;
+        self.advance(); // consume 'pub'
+        match self.peek() {
+            Token::Fn => {
+                let mut stmt = self.parse_fn_decl()?;
+                if let StmtKind::FnDecl { ref mut is_public, .. } = stmt.kind {
+                    *is_public = true;
+                }
+                stmt.span = Span::new(start, stmt.span.end);
+                Ok(stmt)
+            }
+            Token::Struct => {
+                let mut stmt = self.parse_struct_decl()?;
+                if let StmtKind::StructDecl { ref mut is_public, .. } = stmt.kind {
+                    *is_public = true;
+                }
+                stmt.span = Span::new(start, stmt.span.end);
+                Ok(stmt)
+            }
+            Token::Enum => {
+                let mut stmt = self.parse_enum_decl()?;
+                if let StmtKind::EnumDecl { ref mut is_public, .. } = stmt.kind {
+                    *is_public = true;
+                }
+                stmt.span = Span::new(start, stmt.span.end);
+                Ok(stmt)
+            }
+            Token::Schema => {
+                let mut stmt = self.parse_schema()?;
+                if let StmtKind::Schema { ref mut is_public, .. } = stmt.kind {
+                    *is_public = true;
+                }
+                stmt.span = Span::new(start, stmt.span.end);
+                Ok(stmt)
+            }
+            Token::Let => {
+                let mut stmt = self.parse_let()?;
+                if let StmtKind::Let { ref mut is_public, .. } = stmt.kind {
+                    *is_public = true;
+                }
+                stmt.span = Span::new(start, stmt.span.end);
+                Ok(stmt)
+            }
+            Token::Use => {
+                let mut stmt = self.parse_use(true)?;
+                stmt.span = Span::new(start, stmt.span.end);
+                Ok(stmt)
+            }
+            Token::Mod => {
+                let mut stmt = self.parse_mod(true)?;
+                stmt.span = Span::new(start, stmt.span.end);
+                Ok(stmt)
+            }
+            _ => Err(TlError::Parser(ParserError {
+                message: format!(
+                    "`pub` can only be applied to fn, struct, enum, schema, let, use, or mod, found `{}`",
+                    self.peek()
+                ),
+                span: self.peek_span(),
+                hint: None,
+            })),
+        }
+    }
+
+    /// Parse `use` import statement with dot-path syntax
+    fn parse_use(&mut self, is_public: bool) -> Result<Stmt, TlError> {
+        let start = self.peek_span().start;
+        self.advance(); // consume 'use'
+
+        // Parse dot-separated path segments
+        let mut segments = Vec::new();
+        segments.push(self.expect_ident()?);
+
+        while self.match_token(&Token::Dot) {
+            match self.peek() {
+                Token::LBrace => {
+                    // Group import: use data.transforms.{a, b}
+                    self.advance(); // consume '{'
+                    let mut names = Vec::new();
+                    names.push(self.expect_ident()?);
+                    while self.match_token(&Token::Comma) {
+                        if self.check(&Token::RBrace) {
+                            break; // trailing comma
+                        }
+                        names.push(self.expect_ident()?);
+                    }
+                    self.expect(&Token::RBrace)?;
+                    let end = self.previous_span().end;
+                    return Ok(make_stmt(
+                        StmtKind::Use {
+                            item: UseItem::Group(segments, names),
+                            is_public,
+                        },
+                        start,
+                        end,
+                    ));
+                }
+                Token::Star => {
+                    // Wildcard import: use data.transforms.*
+                    self.advance(); // consume '*'
+                    let end = self.previous_span().end;
+                    return Ok(make_stmt(
+                        StmtKind::Use {
+                            item: UseItem::Wildcard(segments),
+                            is_public,
+                        },
+                        start,
+                        end,
+                    ));
+                }
+                Token::Ident(_) => {
+                    segments.push(self.expect_ident()?);
+                }
+                _ => {
+                    return Err(TlError::Parser(ParserError {
+                        message: format!(
+                            "Expected identifier, `{{`, or `*` after `.` in use path, found `{}`",
+                            self.peek()
+                        ),
+                        span: self.peek_span(),
+                        hint: None,
+                    }));
+                }
+            }
+        }
+
+        // Check for alias: use data.postgres as pg
+        if self.match_token(&Token::As) {
+            let alias = self.expect_ident()?;
+            let end = self.previous_span().end;
+            return Ok(make_stmt(
+                StmtKind::Use {
+                    item: UseItem::Aliased(segments, alias),
+                    is_public,
+                },
+                start,
+                end,
+            ));
+        }
+
+        // Single import
+        let end = self.previous_span().end;
+        Ok(make_stmt(
+            StmtKind::Use {
+                item: UseItem::Single(segments),
+                is_public,
+            },
+            start,
+            end,
+        ))
+    }
+
+    /// Parse `mod name` declaration
+    fn parse_mod(&mut self, is_public: bool) -> Result<Stmt, TlError> {
+        let start = self.peek_span().start;
+        self.advance(); // consume 'mod'
+        let name = self.expect_ident()?;
+        let end = self.previous_span().end;
+        Ok(make_stmt(
+            StmtKind::ModDecl { name, is_public },
+            start,
+            end,
+        ))
+    }
+
     /// Parse `schema Name { field: type, ... }`
     fn parse_schema(&mut self) -> Result<Stmt, TlError> {
         let start = self.peek_span().start;
@@ -177,7 +347,7 @@ impl Parser {
         }
         self.expect(&Token::RBrace)?;
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::Schema { name, fields }, start, end))
+        Ok(make_stmt(StmtKind::Schema { name, fields, is_public: false }, start, end))
     }
 
     /// Parse `model <name> = train <algorithm> { key: value, ... }`
@@ -521,7 +691,7 @@ impl Parser {
         self.expect(&Token::Assign)?;
         let value = self.parse_expression()?;
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::Let { name, mutable, type_ann, value }, start, end))
+        Ok(make_stmt(StmtKind::Let { name, mutable, type_ann, value, is_public: false }, start, end))
     }
 
     fn parse_fn_decl(&mut self) -> Result<Stmt, TlError> {
@@ -541,7 +711,7 @@ impl Parser {
         self.expect(&Token::RBrace)?;
         let is_generator = body_contains_yield(&body);
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::FnDecl { name, params, return_type, body, is_generator }, start, end))
+        Ok(make_stmt(StmtKind::FnDecl { name, params, return_type, body, is_generator, is_public: false }, start, end))
     }
 
     fn parse_if(&mut self) -> Result<Stmt, TlError> {
@@ -1202,7 +1372,7 @@ impl Parser {
         }
         self.expect(&Token::RBrace)?;
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::StructDecl { name, fields }, start, end))
+        Ok(make_stmt(StmtKind::StructDecl { name, fields, is_public: false }, start, end))
     }
 
     /// Parse `enum Name { Variant, Variant(Type, Type), ... }`
@@ -1235,7 +1405,7 @@ impl Parser {
         }
         self.expect(&Token::RBrace)?;
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::EnumDecl { name, variants }, start, end))
+        Ok(make_stmt(StmtKind::EnumDecl { name, variants, is_public: false }, start, end))
     }
 
     /// Parse `impl Type { fn methods... }`
@@ -1517,7 +1687,7 @@ mod tests {
     #[test]
     fn test_parse_schema() {
         let program = parse("schema User { id: int64, name: string, age: float64 }").unwrap();
-        if let StmtKind::Schema { name, fields } = &program.statements[0].kind {
+        if let StmtKind::Schema { name, fields, .. } = &program.statements[0].kind {
             assert_eq!(name, "User");
             assert_eq!(fields.len(), 3);
             assert_eq!(fields[0].name, "id");
@@ -1695,7 +1865,7 @@ mod tests {
     #[test]
     fn test_parse_struct_decl() {
         let program = parse("struct Point { x: float64, y: float64 }").unwrap();
-        if let StmtKind::StructDecl { name, fields } = &program.statements[0].kind {
+        if let StmtKind::StructDecl { name, fields, .. } = &program.statements[0].kind {
             assert_eq!(name, "Point");
             assert_eq!(fields.len(), 2);
             assert_eq!(fields[0].name, "x");
@@ -1730,7 +1900,7 @@ mod tests {
     #[test]
     fn test_parse_enum_decl() {
         let program = parse("enum Color { Red, Green, Blue }").unwrap();
-        if let StmtKind::EnumDecl { name, variants } = &program.statements[0].kind {
+        if let StmtKind::EnumDecl { name, variants, .. } = &program.statements[0].kind {
             assert_eq!(name, "Color");
             assert_eq!(variants.len(), 3);
             assert_eq!(variants[0].name, "Red");
@@ -1945,6 +2115,132 @@ mod tests {
         let program = parse("fn add(a, b) { return a }").unwrap();
         if let StmtKind::FnDecl { is_generator, .. } = &program.statements[0].kind {
             assert!(!*is_generator);
+        } else {
+            panic!("Expected FnDecl");
+        }
+    }
+
+    // ── Phase 11: Module System Parser Tests ──
+
+    #[test]
+    fn test_parse_pub_fn() {
+        let program = parse("pub fn foo() { 1 }").unwrap();
+        if let StmtKind::FnDecl { name, is_public, .. } = &program.statements[0].kind {
+            assert_eq!(name, "foo");
+            assert!(*is_public);
+        } else {
+            panic!("Expected pub FnDecl");
+        }
+    }
+
+    #[test]
+    fn test_parse_pub_struct() {
+        let program = parse("pub struct Foo { x: int }").unwrap();
+        if let StmtKind::StructDecl { name, is_public, .. } = &program.statements[0].kind {
+            assert_eq!(name, "Foo");
+            assert!(*is_public);
+        } else {
+            panic!("Expected pub StructDecl");
+        }
+    }
+
+    #[test]
+    fn test_parse_use_single() {
+        let program = parse("use data.transforms.clean").unwrap();
+        if let StmtKind::Use { item, is_public } = &program.statements[0].kind {
+            assert!(!*is_public);
+            if let UseItem::Single(path) = item {
+                assert_eq!(path, &["data", "transforms", "clean"]);
+            } else {
+                panic!("Expected UseItem::Single");
+            }
+        } else {
+            panic!("Expected Use statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_use_group() {
+        let program = parse("use data.transforms.{a, b}").unwrap();
+        if let StmtKind::Use { item, .. } = &program.statements[0].kind {
+            if let UseItem::Group(prefix, names) = item {
+                assert_eq!(prefix, &["data", "transforms"]);
+                assert_eq!(names, &["a", "b"]);
+            } else {
+                panic!("Expected UseItem::Group");
+            }
+        } else {
+            panic!("Expected Use statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_use_wildcard() {
+        let program = parse("use data.transforms.*").unwrap();
+        if let StmtKind::Use { item, .. } = &program.statements[0].kind {
+            if let UseItem::Wildcard(path) = item {
+                assert_eq!(path, &["data", "transforms"]);
+            } else {
+                panic!("Expected UseItem::Wildcard");
+            }
+        } else {
+            panic!("Expected Use statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_use_aliased() {
+        let program = parse("use data.postgres as pg").unwrap();
+        if let StmtKind::Use { item, .. } = &program.statements[0].kind {
+            if let UseItem::Aliased(path, alias) = item {
+                assert_eq!(path, &["data", "postgres"]);
+                assert_eq!(alias, "pg");
+            } else {
+                panic!("Expected UseItem::Aliased");
+            }
+        } else {
+            panic!("Expected Use statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_pub_use() {
+        let program = parse("pub use data.clean").unwrap();
+        if let StmtKind::Use { item, is_public } = &program.statements[0].kind {
+            assert!(*is_public);
+            assert!(matches!(item, UseItem::Single(p) if p == &["data", "clean"]));
+        } else {
+            panic!("Expected pub Use statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_pub_mod() {
+        let program = parse("pub mod transforms").unwrap();
+        if let StmtKind::ModDecl { name, is_public } = &program.statements[0].kind {
+            assert_eq!(name, "transforms");
+            assert!(*is_public);
+        } else {
+            panic!("Expected pub ModDecl");
+        }
+    }
+
+    #[test]
+    fn test_parse_mod() {
+        let program = parse("mod quality").unwrap();
+        if let StmtKind::ModDecl { name, is_public } = &program.statements[0].kind {
+            assert_eq!(name, "quality");
+            assert!(!*is_public);
+        } else {
+            panic!("Expected ModDecl");
+        }
+    }
+
+    #[test]
+    fn test_fn_default_not_public() {
+        let program = parse("fn foo() { 1 }").unwrap();
+        if let StmtKind::FnDecl { is_public, .. } = &program.statements[0].kind {
+            assert!(!*is_public);
         } else {
             panic!("Expected FnDecl");
         }

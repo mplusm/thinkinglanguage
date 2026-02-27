@@ -12,8 +12,10 @@ use rustyline::hint::Hinter;
 use rustyline::history::DefaultHistory;
 use rustyline::validate::Validator;
 use rustyline::{Config, Editor, Helper};
+use serde::Deserialize;
 use std::borrow::Cow;
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::process;
 
 use tl_errors::{report_parser_error, report_runtime_error, report_type_error, report_type_warning, TlError};
@@ -39,7 +41,7 @@ impl TlHelper {
             "let", "fn", "if", "else", "while", "for", "in", "return", "true", "false", "none",
             "struct", "enum", "impl", "try", "catch", "throw", "import", "test", "break", "continue",
             "and", "or", "not", "mut", "await", "yield", "match", "schema", "pipeline", "stream",
-            "source", "sink",
+            "source", "sink", "use", "pub", "mod",
             // Builtin functions
             "print", "println", "len", "str", "int", "float", "abs", "min", "max", "range",
             "push", "type_of", "map", "filter", "reduce", "sum", "any", "all",
@@ -225,6 +227,26 @@ enum Commands {
         #[arg(long, default_value = "vm")]
         backend: String,
     },
+    /// Initialize a new TL project
+    Init {
+        /// Project name
+        name: String,
+    },
+    /// Build and run the current project (requires tl.toml)
+    Build {
+        /// Backend: "vm" (default) or "interp"
+        #[arg(long, default_value = "vm")]
+        backend: String,
+        /// Dump compiled bytecode instead of executing
+        #[arg(long)]
+        dump_bytecode: bool,
+        /// Skip type checking
+        #[arg(long)]
+        no_check: bool,
+        /// Strict mode: require type annotations on function parameters
+        #[arg(long)]
+        strict: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -243,6 +265,50 @@ enum ModelsAction {
     },
 }
 
+// ---------------------------------------------------------------------------
+// tl.toml manifest
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct TlManifest {
+    project: ProjectConfig,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProjectConfig {
+    name: String,
+    version: String,
+    #[allow(dead_code)]
+    edition: Option<String>,
+    #[allow(dead_code)]
+    authors: Option<Vec<String>>,
+    #[allow(dead_code)]
+    description: Option<String>,
+}
+
+/// Find tl.toml by walking up from the given directory.
+fn find_manifest(start: &Path) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
+    loop {
+        let candidate = dir.join("tl.toml");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+/// Parse a tl.toml file into a TlManifest.
+fn parse_manifest(path: &Path) -> Result<TlManifest, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| format!("Cannot read '{}': {e}", path.display()))?;
+    let manifest: TlManifest = toml::from_str(&content)
+        .map_err(|e| format!("Invalid tl.toml: {e}"))?;
+    Ok(manifest)
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -254,6 +320,8 @@ fn main() {
         Some(Commands::Lineage { file, format }) => run_lineage(&file, &format),
         Some(Commands::Disasm { file }) => run_disasm(&file),
         Some(Commands::Test { path, backend }) => run_tests(&path, &backend),
+        Some(Commands::Init { name }) => run_init(&name),
+        Some(Commands::Build { backend, dump_bytecode, no_check, strict }) => run_build(&backend, dump_bytecode, no_check, strict),
         None => run_repl("vm"), // Default to REPL with VM backend
     }
 }
@@ -330,6 +398,7 @@ fn run_file(path: &str, backend: &str, dump_bytecode: bool, no_check: bool, stri
                 }
             };
             let mut vm = Vm::new();
+            vm.file_path = Some(path.to_string());
             if let Err(e) = vm.execute(&proto) {
                 match &e {
                     TlError::Runtime(re) => report_runtime_error(&source, path, re),
@@ -340,6 +409,7 @@ fn run_file(path: &str, backend: &str, dump_bytecode: bool, no_check: bool, stri
         }
         "interp" => {
             let mut interp = Interpreter::new();
+            interp.file_path = Some(path.to_string());
             if let Err(e) = interp.execute(&program) {
                 match &e {
                     TlError::Runtime(re) => report_runtime_error(&source, path, re),
@@ -799,6 +869,82 @@ fn run_tests(path: &str, backend: &str) {
     }
 }
 
+fn run_init(name: &str) {
+    let project_dir = Path::new(name);
+    if project_dir.exists() {
+        eprintln!("Directory '{name}' already exists");
+        process::exit(1);
+    }
+
+    // Create directory structure
+    let src_dir = project_dir.join("src");
+    if let Err(e) = fs::create_dir_all(&src_dir) {
+        eprintln!("Failed to create directory: {e}");
+        process::exit(1);
+    }
+
+    // Write tl.toml
+    let manifest = format!(
+        r#"[project]
+name = "{name}"
+version = "0.1.0"
+"#
+    );
+    if let Err(e) = fs::write(project_dir.join("tl.toml"), manifest) {
+        eprintln!("Failed to write tl.toml: {e}");
+        process::exit(1);
+    }
+
+    // Write src/main.tl
+    let main_tl = format!("print(\"Hello from {name}!\")\n");
+    if let Err(e) = fs::write(src_dir.join("main.tl"), main_tl) {
+        eprintln!("Failed to write src/main.tl: {e}");
+        process::exit(1);
+    }
+
+    println!("Created project '{name}'");
+    println!("  {name}/tl.toml");
+    println!("  {name}/src/main.tl");
+    println!("\nRun with: cd {name} && tl build");
+}
+
+fn run_build(backend: &str, dump_bytecode: bool, no_check: bool, strict: bool) {
+    let cwd = std::env::current_dir().unwrap_or_else(|e| {
+        eprintln!("Cannot determine current directory: {e}");
+        process::exit(1);
+    });
+
+    let manifest_path = match find_manifest(&cwd) {
+        Some(p) => p,
+        None => {
+            eprintln!("No tl.toml found in current directory or any parent directory.");
+            eprintln!("Run 'tl init <name>' to create a new project.");
+            process::exit(1);
+        }
+    };
+
+    let manifest = match parse_manifest(&manifest_path) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("{e}");
+            process::exit(1);
+        }
+    };
+
+    let project_root = manifest_path.parent().unwrap();
+    let entry = project_root.join("src").join("main.tl");
+
+    if !entry.exists() {
+        eprintln!("Entry point not found: {}", entry.display());
+        eprintln!("Expected src/main.tl in project '{}'", manifest.project.name);
+        process::exit(1);
+    }
+
+    let entry_str = entry.to_string_lossy().to_string();
+    println!("Building {} v{}", manifest.project.name, manifest.project.version);
+    run_file(&entry_str, backend, dump_bytecode, no_check, strict);
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -837,5 +983,87 @@ mod tests {
     #[test]
     fn test_needs_continuation_empty() {
         assert!(!needs_continuation(""));
+    }
+
+    // -- Step 6: tl.toml, tl init, tl build tests --
+
+    #[test]
+    fn test_parse_manifest_basic() {
+        let dir = tempfile::tempdir().unwrap();
+        let toml_path = dir.path().join("tl.toml");
+        fs::write(&toml_path, r#"
+[project]
+name = "myapp"
+version = "1.2.3"
+"#).unwrap();
+        let m = parse_manifest(&toml_path).unwrap();
+        assert_eq!(m.project.name, "myapp");
+        assert_eq!(m.project.version, "1.2.3");
+        assert!(m.project.edition.is_none());
+        assert!(m.project.authors.is_none());
+    }
+
+    #[test]
+    fn test_parse_manifest_all_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let toml_path = dir.path().join("tl.toml");
+        fs::write(&toml_path, r#"
+[project]
+name = "myapp"
+version = "0.1.0"
+edition = "2024"
+authors = ["Alice", "Bob"]
+description = "A great project"
+"#).unwrap();
+        let m = parse_manifest(&toml_path).unwrap();
+        assert_eq!(m.project.name, "myapp");
+        assert_eq!(m.project.edition.as_deref(), Some("2024"));
+        assert_eq!(m.project.authors.as_ref().unwrap().len(), 2);
+        assert_eq!(m.project.description.as_deref(), Some("A great project"));
+    }
+
+    #[test]
+    fn test_parse_manifest_invalid() {
+        let dir = tempfile::tempdir().unwrap();
+        let toml_path = dir.path().join("tl.toml");
+        fs::write(&toml_path, "not valid toml [[[").unwrap();
+        assert!(parse_manifest(&toml_path).is_err());
+    }
+
+    #[test]
+    fn test_find_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("a").join("b").join("c");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(dir.path().join("tl.toml"), "[project]\nname = \"x\"\nversion = \"0.1.0\"\n").unwrap();
+        let found = find_manifest(&sub).unwrap();
+        assert_eq!(found, dir.path().join("tl.toml"));
+    }
+
+    #[test]
+    fn test_find_manifest_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(find_manifest(dir.path()).is_none());
+    }
+
+    // -- Step 7: Type checker handles use/pub/mod --
+
+    #[test]
+    fn test_type_checker_use_pub_mod() {
+        // Type checker should not error on use, pub, or mod statements
+        let src = "use data.transforms\npub fn foo() { 42 }\nmod quality";
+        let program = tl_parser::parse(src).unwrap();
+        let config = tl_types::checker::CheckerConfig::default();
+        let result = tl_types::checker::check_program(&program, &config);
+        assert!(!result.has_errors(), "Type checker should pass through use/pub/mod");
+    }
+
+    #[test]
+    fn test_type_checker_pub_struct_enum() {
+        let src = "pub struct Point { x: int, y: int }\npub enum Color { Red, Blue }";
+        let program = tl_parser::parse(src).unwrap();
+        let config = tl_types::checker::CheckerConfig::default();
+        let result = tl_types::checker::check_program(&program, &config);
+        assert!(!result.has_errors(), "Type checker should handle pub struct/enum");
     }
 }

@@ -812,7 +812,7 @@ impl Interpreter {
                 }
                 Ok(Signal::None)
             }
-            StmtKind::Schema { name, fields } => {
+            StmtKind::Schema { name, fields, .. } => {
                 let arrow_fields: Vec<ArrowField> = fields
                     .iter()
                     .map(|f| {
@@ -842,7 +842,7 @@ impl Interpreter {
             StmtKind::SinkDecl { name, connector_type, config } => {
                 self.exec_sink_decl(name, connector_type, config)
             }
-            StmtKind::StructDecl { name, fields } => {
+            StmtKind::StructDecl { name, fields, .. } => {
                 let field_names: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
                 self.env.set(
                     name.clone(),
@@ -853,7 +853,7 @@ impl Interpreter {
                 );
                 Ok(Signal::None)
             }
-            StmtKind::EnumDecl { name, variants } => {
+            StmtKind::EnumDecl { name, variants, .. } => {
                 let variant_info: Vec<(String, usize)> = variants
                     .iter()
                     .map(|v| (v.name.clone(), v.fields.len()))
@@ -978,6 +978,13 @@ impl Interpreter {
                         println!("{msg}");
                     }
                 }
+                Ok(Signal::None)
+            }
+            StmtKind::Use { item, .. } => {
+                self.exec_use(item)
+            }
+            StmtKind::ModDecl { .. } => {
+                // ModDecl is handled at module load time
                 Ok(Signal::None)
             }
             StmtKind::Break => Ok(Signal::Break),
@@ -3622,6 +3629,17 @@ impl Interpreter {
             };
         }
 
+        // Module method dispatch (for aliased use: m.compute())
+        if let Value::Module { name, exports } = obj {
+            if let Some(func) = exports.get(method) {
+                return self.call_function(func, args);
+            } else {
+                return Err(runtime_err(format!(
+                    "Module '{}' has no export '{}'", name, method
+                )));
+            }
+        }
+
         // Struct/impl method dispatch
         if let Value::StructInstance { type_name, .. } = obj {
             if let Some(methods) = self.method_table.get(type_name) {
@@ -3639,6 +3657,64 @@ impl Interpreter {
             "No method `{method}` on {}",
             obj.type_name()
         )))
+    }
+
+    /// Execute a use statement (placeholder — full impl in Step 5)
+    fn exec_use(&mut self, item: &tl_ast::UseItem) -> Result<Signal, TlError> {
+        use tl_ast::UseItem;
+        match item {
+            UseItem::Single(path) | UseItem::Wildcard(path) | UseItem::Aliased(path, _) => {
+                let file_path = self.resolve_use_path(path)?;
+                let alias = match item {
+                    UseItem::Aliased(_, alias) => Some(alias.as_str()),
+                    // Single and Wildcard both merge exports into scope
+                    _ => None,
+                };
+                self.exec_import(&file_path, alias)
+            }
+            UseItem::Group(prefix, names) => {
+                let file_path = self.resolve_use_path(prefix)?;
+                // Import the module, then pick specific items
+                self.exec_import(&file_path, None)?;
+                // Items are already imported by wildcard for now
+                let _ = names;
+                Ok(Signal::None)
+            }
+        }
+    }
+
+    /// Resolve a dot-path to a file path for use statements
+    fn resolve_use_path(&self, segments: &[String]) -> Result<String, TlError> {
+        let base_dir = if let Some(ref fp) = self.file_path {
+            std::path::Path::new(fp)
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .to_path_buf()
+        } else {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        };
+
+        // Try: segments joined as path with .tl extension
+        // e.g., ["data", "transforms"] -> "data/transforms.tl"
+        let rel_path = segments.join("/");
+
+        // Try file module first
+        let file_path = base_dir.join(format!("{rel_path}.tl"));
+        if file_path.exists() {
+            return Ok(file_path.to_string_lossy().to_string());
+        }
+
+        // Try directory module (mod.tl)
+        let dir_path = base_dir.join(&rel_path).join("mod.tl");
+        if dir_path.exists() {
+            return Ok(dir_path.to_string_lossy().to_string());
+        }
+
+        Err(TlError::Runtime(tl_errors::RuntimeError {
+            message: format!("Module not found: {}", segments.join(".")),
+            span: None,
+            stack_trace: vec![],
+        }))
     }
 
     /// Execute an import statement
@@ -6364,5 +6440,157 @@ print(len(s2))"#);
 print(len(s))
 print(s.contains("b"))"#);
         assert_eq!(output, vec!["3", "true"]);
+    }
+
+    // ── Phase 11: Module System Interpreter Tests ──
+
+    #[test]
+    fn test_interp_use_single_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("math.tl"), "fn add(a, b) { a + b }").unwrap();
+
+        let main_path = dir.path().join("main.tl");
+        let main_src = "use math\nprint(add(1, 2))";
+        std::fs::write(&main_path, main_src).unwrap();
+
+        let program = tl_parser::parse(main_src).unwrap();
+        let mut interp = Interpreter::new();
+        interp.file_path = Some(main_path.to_string_lossy().to_string());
+        interp.execute(&program).unwrap();
+        assert_eq!(interp.output, vec!["3"]);
+    }
+
+    #[test]
+    fn test_interp_use_wildcard() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("helpers.tl"), "fn greet() { \"hello\" }\nfn farewell() { \"bye\" }").unwrap();
+
+        let main_path = dir.path().join("main.tl");
+        let main_src = "use helpers.*\nprint(greet())\nprint(farewell())";
+        std::fs::write(&main_path, main_src).unwrap();
+
+        let program = tl_parser::parse(main_src).unwrap();
+        let mut interp = Interpreter::new();
+        interp.file_path = Some(main_path.to_string_lossy().to_string());
+        interp.execute(&program).unwrap();
+        assert_eq!(interp.output, vec!["hello", "bye"]);
+    }
+
+    #[test]
+    fn test_interp_use_aliased() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("mylib.tl"), "fn compute() { 42 }").unwrap();
+
+        let main_path = dir.path().join("main.tl");
+        let main_src = "use mylib as m\nprint(m.compute())";
+        std::fs::write(&main_path, main_src).unwrap();
+
+        let program = tl_parser::parse(main_src).unwrap();
+        let mut interp = Interpreter::new();
+        interp.file_path = Some(main_path.to_string_lossy().to_string());
+        interp.execute(&program).unwrap();
+        assert_eq!(interp.output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_interp_use_directory_module() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("utils")).unwrap();
+        std::fs::write(dir.path().join("utils/mod.tl"), "fn helper() { 99 }").unwrap();
+
+        let main_path = dir.path().join("main.tl");
+        let main_src = "use utils\nprint(helper())";
+        std::fs::write(&main_path, main_src).unwrap();
+
+        let program = tl_parser::parse(main_src).unwrap();
+        let mut interp = Interpreter::new();
+        interp.file_path = Some(main_path.to_string_lossy().to_string());
+        interp.execute(&program).unwrap();
+        assert_eq!(interp.output, vec!["99"]);
+    }
+
+    #[test]
+    fn test_interp_use_nested_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("data")).unwrap();
+        std::fs::write(dir.path().join("data/transforms.tl"), "fn clean(x) { x + 1 }").unwrap();
+
+        let main_path = dir.path().join("main.tl");
+        let main_src = "use data.transforms\nprint(clean(41))";
+        std::fs::write(&main_path, main_src).unwrap();
+
+        let program = tl_parser::parse(main_src).unwrap();
+        let mut interp = Interpreter::new();
+        interp.file_path = Some(main_path.to_string_lossy().to_string());
+        interp.execute(&program).unwrap();
+        assert_eq!(interp.output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_interp_pub_fn() {
+        let output = run_output("pub fn add(a, b) { a + b }\nprint(add(1, 2))");
+        assert_eq!(output, vec!["3"]);
+    }
+
+    #[test]
+    fn test_interp_module_caching() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("cached.tl"), "let X = 42").unwrap();
+
+        let main_path = dir.path().join("main.tl");
+        let main_src = "use cached\nuse cached\nprint(X)";
+        std::fs::write(&main_path, main_src).unwrap();
+
+        let program = tl_parser::parse(main_src).unwrap();
+        let mut interp = Interpreter::new();
+        interp.file_path = Some(main_path.to_string_lossy().to_string());
+        interp.execute(&program).unwrap();
+        assert_eq!(interp.output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_interp_circular_import() {
+        let dir = tempfile::tempdir().unwrap();
+        let a_path = dir.path().join("a.tl");
+        let b_path = dir.path().join("b.tl");
+        std::fs::write(&a_path, &format!("import \"{}\"", b_path.to_string_lossy())).unwrap();
+        std::fs::write(&b_path, &format!("import \"{}\"", a_path.to_string_lossy())).unwrap();
+
+        let source = std::fs::read_to_string(&a_path).unwrap();
+        let program = tl_parser::parse(&source).unwrap();
+        let mut interp = Interpreter::new();
+        interp.file_path = Some(a_path.to_string_lossy().to_string());
+        let result = interp.execute(&program);
+        assert!(result.is_err());
+        assert!(format!("{:?}", result).contains("Circular"));
+    }
+
+    #[test]
+    fn test_interp_existing_import_still_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib_path = dir.path().join("lib.tl");
+        std::fs::write(&lib_path, "fn imported_fn() { 123 }").unwrap();
+
+        let main_src = format!("import \"{}\"\nprint(imported_fn())", lib_path.to_string_lossy());
+        let program = tl_parser::parse(&main_src).unwrap();
+        let mut interp = Interpreter::new();
+        interp.execute(&program).unwrap();
+        assert_eq!(interp.output, vec!["123"]);
+    }
+
+    #[test]
+    fn test_interp_use_group() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("lib.tl"), "fn foo() { 1 }\nfn bar() { 2 }\nfn baz() { 3 }").unwrap();
+
+        let main_path = dir.path().join("main.tl");
+        let main_src = "use lib.{foo, bar}\nprint(foo())\nprint(bar())";
+        std::fs::write(&main_path, main_src).unwrap();
+
+        let program = tl_parser::parse(main_src).unwrap();
+        let mut interp = Interpreter::new();
+        interp.file_path = Some(main_path.to_string_lossy().to_string());
+        interp.execute(&program).unwrap();
+        assert_eq!(interp.output, vec!["1", "2"]);
     }
 }

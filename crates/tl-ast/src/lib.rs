@@ -20,6 +20,19 @@ pub struct Stmt {
     pub span: Span,
 }
 
+/// A use-import target
+#[derive(Debug, Clone)]
+pub enum UseItem {
+    /// `use data.transforms.clean_users`
+    Single(Vec<String>),
+    /// `use data.transforms.{clean_users, CleanedUser}`
+    Group(Vec<String>, Vec<String>),
+    /// `use data.transforms.*`
+    Wildcard(Vec<String>),
+    /// `use data.connectors.postgres as pg`
+    Aliased(Vec<String>, String),
+}
+
 /// Statement variants
 #[derive(Debug, Clone)]
 pub enum StmtKind {
@@ -29,6 +42,7 @@ pub enum StmtKind {
         mutable: bool,
         type_ann: Option<TypeExpr>,
         value: Expr,
+        is_public: bool,
     },
 
     /// `fn name(params) -> return_type { body }`
@@ -38,6 +52,7 @@ pub enum StmtKind {
         return_type: Option<TypeExpr>,
         body: Vec<Stmt>,
         is_generator: bool,
+        is_public: bool,
     },
 
     /// Expression statement (e.g., a function call on its own line)
@@ -71,6 +86,7 @@ pub enum StmtKind {
     Schema {
         name: String,
         fields: Vec<SchemaField>,
+        is_public: bool,
     },
 
     /// `model name = train algorithm { key: value, ... }`
@@ -121,12 +137,14 @@ pub enum StmtKind {
     StructDecl {
         name: String,
         fields: Vec<SchemaField>,
+        is_public: bool,
     },
 
     /// `enum Name { Variant, Variant(types), ... }`
     EnumDecl {
         name: String,
         variants: Vec<EnumVariant>,
+        is_public: bool,
     },
 
     /// `impl Type { fn methods... }`
@@ -155,6 +173,18 @@ pub enum StmtKind {
     Test {
         name: String,
         body: Vec<Stmt>,
+    },
+
+    /// `use data.transforms.clean_users` etc.
+    Use {
+        item: UseItem,
+        is_public: bool,
+    },
+
+    /// `mod transforms` or `pub mod transforms`
+    ModDecl {
+        name: String,
+        is_public: bool,
     },
 
     /// `break`

@@ -21,6 +21,11 @@ tl-ai = { path = "../tl-ai" }
 tl-stream = { path = "../tl-stream" }
 clap.workspace = true
 rustyline.workspace = true
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [features]
 kafka = ["tl-stream/kafka"]
