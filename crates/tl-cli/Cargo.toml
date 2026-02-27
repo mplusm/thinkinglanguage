@@ -19,6 +19,7 @@ tl-errors = { path = "../tl-errors" }
 tl-types = { path = "../tl-types" }
 tl-ai = { path = "../tl-ai" }
 tl-stream = { path = "../tl-stream" }
+tl-lsp = { path = "../tl-lsp" }
 clap.workspace = true
 rustyline.workspace = true
 toml = "0.8"

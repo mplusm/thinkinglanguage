@@ -107,6 +107,23 @@ struct TypeChecker<'a> {
     used_imports: HashSet<String>,
 }
 
+/// Check if a name follows snake_case convention.
+pub fn is_snake_case(s: &str) -> bool {
+    if s.is_empty() || s.starts_with('_') {
+        return true; // _-prefixed names are always ok
+    }
+    s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// Check if a name follows PascalCase convention.
+pub fn is_pascal_case(s: &str) -> bool {
+    if s.is_empty() {
+        return true;
+    }
+    let first = s.chars().next().unwrap();
+    first.is_ascii_uppercase() && !s.contains('_')
+}
+
 /// Check if a statement is a control flow terminator (return/break/continue/throw).
 fn is_terminator(kind: &StmtKind) -> bool {
     matches!(
@@ -402,6 +419,30 @@ impl<'a> TypeChecker<'a> {
                     self.env.define(name.clone(), inferred);
                 }
 
+                // Lint: naming convention — variables should be snake_case
+                if !is_snake_case(name) {
+                    self.warnings.push(TypeError {
+                        message: format!("Variable `{name}` should be snake_case"),
+                        span: stmt.span,
+                        expected: None,
+                        found: None,
+                        hint: Some("Use lowercase with underscores for variable names".to_string()),
+                    });
+                }
+
+                // Lint: shadowing warning — check if variable already exists in outer scope
+                if !name.starts_with('_') {
+                    if self.defined_vars.iter().any(|(n, _, _)| n == name) {
+                        self.warnings.push(TypeError {
+                            message: format!("Variable `{name}` shadows a previous definition"),
+                            span: stmt.span,
+                            expected: None,
+                            found: None,
+                            hint: Some("Consider using a different name".to_string()),
+                        });
+                    }
+                }
+
                 // Track defined variable for unused-var checking
                 let depth = self.current_scope_depth();
                 self.defined_vars.push((name.clone(), stmt.span, depth));
@@ -416,6 +457,28 @@ impl<'a> TypeChecker<'a> {
                 body,
                 ..
             } => {
+                // Lint: function naming convention — should be snake_case
+                if !is_snake_case(name) {
+                    self.warnings.push(TypeError {
+                        message: format!("Function `{name}` should be snake_case"),
+                        span: stmt.span,
+                        expected: None,
+                        found: None,
+                        hint: Some("Use lowercase with underscores for function names".to_string()),
+                    });
+                }
+
+                // Lint: empty function body
+                if body.is_empty() {
+                    self.warnings.push(TypeError {
+                        message: format!("Empty function body in `{name}`"),
+                        span: stmt.span,
+                        expected: None,
+                        found: None,
+                        hint: Some("Consider adding an implementation or removing the function".to_string()),
+                    });
+                }
+
                 // Save outer unused-var state
                 let outer_defined = std::mem::take(&mut self.defined_vars);
                 let outer_used = std::mem::take(&mut self.used_vars);
@@ -662,14 +725,38 @@ impl<'a> TypeChecker<'a> {
                 }
             }
 
+            StmtKind::StructDecl { name, .. } => {
+                // Lint: struct naming convention — should be PascalCase
+                if !is_pascal_case(name) {
+                    self.warnings.push(TypeError {
+                        message: format!("Struct `{name}` should be PascalCase"),
+                        span: stmt.span,
+                        expected: None,
+                        found: None,
+                        hint: Some("Use PascalCase for struct names".to_string()),
+                    });
+                }
+            }
+
+            StmtKind::EnumDecl { name, .. } => {
+                // Lint: enum naming convention — should be PascalCase
+                if !is_pascal_case(name) {
+                    self.warnings.push(TypeError {
+                        message: format!("Enum `{name}` should be PascalCase"),
+                        span: stmt.span,
+                        expected: None,
+                        found: None,
+                        hint: Some("Use PascalCase for enum names".to_string()),
+                    });
+                }
+            }
+
             // Pass-through for statements we don't type check yet
             StmtKind::Return(None)
             | StmtKind::Break
             | StmtKind::Continue
             | StmtKind::Import { .. }
             | StmtKind::Schema { .. }
-            | StmtKind::StructDecl { .. }
-            | StmtKind::EnumDecl { .. }
             | StmtKind::Train { .. }
             | StmtKind::Pipeline { .. }
             | StmtKind::StreamDecl { .. }
@@ -678,6 +765,17 @@ impl<'a> TypeChecker<'a> {
             | StmtKind::ModDecl { .. } => {}
 
             StmtKind::TraitDef { name, type_params: _, methods, .. } => {
+                // Lint: trait naming convention — should be PascalCase
+                if !is_pascal_case(name) {
+                    self.warnings.push(TypeError {
+                        message: format!("Trait `{name}` should be PascalCase"),
+                        span: stmt.span,
+                        expected: None,
+                        found: None,
+                        hint: Some("Use PascalCase for trait names".to_string()),
+                    });
+                }
+
                 // Register the trait
                 let method_sigs: Vec<(String, Vec<Type>, Type)> = methods
                     .iter()
@@ -1270,5 +1368,49 @@ mod tests {
 
         let result = parse_and_check("let xs = [1, 2, 3]\nprint(xs)");
         assert!(!result.has_errors());
+    }
+
+    // ── Phase 14: Lint Rules ──────────────────────────
+
+    #[test]
+    fn test_snake_case_function_no_warning() {
+        let result = parse_and_check("fn my_func() { 1 }");
+        let naming: Vec<_> = result.warnings.iter().filter(|w| w.message.contains("snake_case")).collect();
+        assert!(naming.is_empty(), "snake_case function should not produce naming warning");
+    }
+
+    #[test]
+    fn test_camel_case_function_warning() {
+        let result = parse_and_check("fn myFunc() { 1 }");
+        let naming: Vec<_> = result.warnings.iter().filter(|w| w.message.contains("snake_case")).collect();
+        assert!(!naming.is_empty(), "camelCase function should produce naming warning");
+    }
+
+    #[test]
+    fn test_pascal_case_struct_no_warning() {
+        let result = parse_and_check("struct MyStruct { x: int }");
+        let naming: Vec<_> = result.warnings.iter().filter(|w| w.message.contains("PascalCase")).collect();
+        assert!(naming.is_empty(), "PascalCase struct should not produce naming warning");
+    }
+
+    #[test]
+    fn test_lowercase_struct_warning() {
+        let result = parse_and_check("struct my_struct { x: int }");
+        let naming: Vec<_> = result.warnings.iter().filter(|w| w.message.contains("PascalCase")).collect();
+        assert!(!naming.is_empty(), "lowercase struct should produce naming warning");
+    }
+
+    #[test]
+    fn test_variable_shadowing_warning() {
+        let result = parse_and_check("let x = 1\nlet x = 2\nprint(x)");
+        let shadow: Vec<_> = result.warnings.iter().filter(|w| w.message.contains("shadows")).collect();
+        assert!(!shadow.is_empty(), "Shadowed variable should produce warning: {:?}", result.warnings);
+    }
+
+    #[test]
+    fn test_underscore_shadow_no_warning() {
+        let result = parse_and_check("let _x = 1\nlet _x = 2");
+        let shadow: Vec<_> = result.warnings.iter().filter(|w| w.message.contains("shadows")).collect();
+        assert!(shadow.is_empty(), "_-prefixed shadow should not warn: {:?}", result.warnings);
     }
 }

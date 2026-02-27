@@ -349,6 +349,168 @@ impl Token {
     pub const EOF: Token = Token::None_; // Temporary sentinel
 }
 
+// ── Trivia-preserving tokenization (for formatter) ─────────────────────────
+
+/// Trivia items (non-code tokens)
+#[derive(Debug, Clone, PartialEq)]
+pub enum Trivia {
+    Comment(String),
+    Newline,
+    Whitespace(String),
+}
+
+/// A token or trivia with its source span
+#[derive(Debug, Clone)]
+pub enum TriviaOrToken {
+    Token(SpannedToken),
+    Trivia(Trivia, Span),
+}
+
+/// Tokenize source preserving comments, newlines, and whitespace as trivia.
+/// Used by the formatter for comment preservation.
+pub fn tokenize_with_trivia(source: &str) -> Vec<TriviaOrToken> {
+    let mut result = Vec::new();
+    // First get all real tokens (including newlines) from logos
+    let mut lexer = Token::lexer(source);
+    let mut logo_tokens: Vec<(Token, Span)> = Vec::new();
+    while let Some(res) = lexer.next() {
+        let span = Span::from(lexer.span());
+        if let Ok(tok) = res {
+            logo_tokens.push((tok, span));
+        }
+    }
+
+    // Also scan for comments since logos skips them
+    let mut comments: Vec<(String, Span)> = Vec::new();
+    let bytes = source.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            // skip string literals
+            i += 1;
+            while i < bytes.len() && bytes[i] != b'"' {
+                if bytes[i] == b'\\' { i += 1; }
+                i += 1;
+            }
+            if i < bytes.len() { i += 1; }
+        } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            let start = i;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            let text = source[start..i].to_string();
+            comments.push((text, Span::new(start, i)));
+        } else {
+            i += 1;
+        }
+    }
+
+    // Merge tokens and comments, sorted by start position
+    #[derive(Debug)]
+    enum Item {
+        Tok(Token, Span),
+        Comment(String, Span),
+    }
+
+    let mut items: Vec<Item> = Vec::new();
+    for (tok, span) in logo_tokens {
+        items.push(Item::Tok(tok, span));
+    }
+    for (text, span) in comments {
+        items.push(Item::Comment(text, span));
+    }
+    items.sort_by_key(|it| match it {
+        Item::Tok(_, s) => s.start,
+        Item::Comment(_, s) => s.start,
+    });
+
+    let mut last_end = 0;
+    for item in items {
+        let (item_start, item_end) = match &item {
+            Item::Tok(_, s) => (s.start, s.end),
+            Item::Comment(_, s) => (s.start, s.end),
+        };
+
+        // Emit whitespace gap between last_end and item_start
+        if item_start > last_end {
+            let gap = &source[last_end..item_start];
+            // Split gap into whitespace and newline trivia
+            let mut ws_start = last_end;
+            for (bi, b) in gap.bytes().enumerate() {
+                if b == b'\n' {
+                    if last_end + bi > ws_start {
+                        result.push(TriviaOrToken::Trivia(
+                            Trivia::Whitespace(source[ws_start..last_end + bi].to_string()),
+                            Span::new(ws_start, last_end + bi),
+                        ));
+                    }
+                    result.push(TriviaOrToken::Trivia(
+                        Trivia::Newline,
+                        Span::new(last_end + bi, last_end + bi + 1),
+                    ));
+                    ws_start = last_end + bi + 1;
+                }
+            }
+            if ws_start < item_start {
+                let ws = &source[ws_start..item_start];
+                if !ws.is_empty() {
+                    result.push(TriviaOrToken::Trivia(
+                        Trivia::Whitespace(ws.to_string()),
+                        Span::new(ws_start, item_start),
+                    ));
+                }
+            }
+        }
+
+        match item {
+            Item::Tok(tok, span) => {
+                if tok == Token::Newline {
+                    result.push(TriviaOrToken::Trivia(Trivia::Newline, span));
+                } else {
+                    result.push(TriviaOrToken::Token(SpannedToken { token: tok, span }));
+                }
+            }
+            Item::Comment(text, span) => {
+                result.push(TriviaOrToken::Trivia(Trivia::Comment(text), span));
+            }
+        }
+
+        last_end = item_end;
+    }
+
+    // Trailing whitespace/newlines
+    if last_end < source.len() {
+        let remaining = &source[last_end..];
+        let mut ws_start = last_end;
+        for (bi, b) in remaining.bytes().enumerate() {
+            if b == b'\n' {
+                if last_end + bi > ws_start {
+                    result.push(TriviaOrToken::Trivia(
+                        Trivia::Whitespace(source[ws_start..last_end + bi].to_string()),
+                        Span::new(ws_start, last_end + bi),
+                    ));
+                }
+                result.push(TriviaOrToken::Trivia(
+                    Trivia::Newline,
+                    Span::new(last_end + bi, last_end + bi + 1),
+                ));
+                ws_start = last_end + bi + 1;
+            }
+        }
+        if ws_start < source.len() {
+            let ws = &source[ws_start..source.len()];
+            if !ws.is_empty() {
+                result.push(TriviaOrToken::Trivia(
+                    Trivia::Whitespace(ws.to_string()),
+                    Span::new(ws_start, source.len()),
+                ));
+            }
+        }
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -474,5 +636,46 @@ mod tests {
         assert!(matches!(tokens[4].token, Token::LBrace));
         assert!(matches!(tokens[5].token, Token::Yield));
         assert!(matches!(&tokens[6].token, Token::Ident(s) if s == "x"));
+    }
+
+    // Phase 14: Trivia tokenizer tests
+
+    #[test]
+    fn test_trivia_comment_preserved() {
+        let items = tokenize_with_trivia("let x = 5 // comment");
+        let has_comment = items.iter().any(|it| matches!(it, TriviaOrToken::Trivia(Trivia::Comment(c), _) if c == "// comment"));
+        assert!(has_comment, "Comment should be preserved in trivia output");
+    }
+
+    #[test]
+    fn test_trivia_newlines_preserved() {
+        let items = tokenize_with_trivia("let x = 5\nlet y = 10");
+        let newline_count = items.iter().filter(|it| matches!(it, TriviaOrToken::Trivia(Trivia::Newline, _))).count();
+        assert!(newline_count >= 1, "Newlines should be preserved");
+    }
+
+    #[test]
+    fn test_trivia_token_spans_match() {
+        let source = "let x = 42";
+        let trivia_items = tokenize_with_trivia(source);
+        let regular_tokens = tokenize(source).unwrap();
+
+        // Collect tokens from trivia output
+        let trivia_tokens: Vec<&SpannedToken> = trivia_items
+            .iter()
+            .filter_map(|it| match it {
+                TriviaOrToken::Token(st) => Some(st),
+                _ => None,
+            })
+            .collect();
+
+        // Should have same number of tokens (minus EOF in regular)
+        assert_eq!(trivia_tokens.len(), regular_tokens.len() - 1, "Token count should match (excluding EOF)");
+
+        // Spans should match
+        for (tt, rt) in trivia_tokens.iter().zip(regular_tokens.iter()) {
+            assert_eq!(tt.span.start, rt.span.start, "Token start spans should match");
+            assert_eq!(tt.span.end, rt.span.end, "Token end spans should match");
+        }
     }
 }

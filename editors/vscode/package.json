@@ -1,0 +1,50 @@
+{
+  "name": "thinkinglanguage",
+  "displayName": "ThinkingLanguage",
+  "description": "Language support for ThinkingLanguage (.tl) — Data Engineering & AI",
+  "version": "0.1.0",
+  "publisher": "thinkingdbx",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:tl"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "tl",
+        "aliases": [
+          "ThinkingLanguage",
+          "tl"
+        ],
+        "extensions": [
+          ".tl"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "tl",
+        "scopeName": "source.tl",
+        "path": "./syntaxes/tl.tmLanguage.json"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.0.0"
+  }
+}

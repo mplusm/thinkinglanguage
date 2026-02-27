@@ -1584,8 +1584,8 @@ Reference: Compare against Polars (DataFrame performance), DuckDB (analytical qu
 | 9 | Module System | ✅ Complete | 566 |
 | 10 | Generics & Traits | ✅ Complete | 620 |
 | 11 | Semantic Analysis & Optimization | ✅ Complete | 685 |
-| 12 | LSP & Developer Tooling | **Next up** (Phase 14) | — |
-| 13 | Data Quality & Connectors | Planned (Phase 15) | — |
+| 12 | LSP & Developer Tooling | ✅ Complete | 732 |
+| 13 | Data Quality & Connectors | **Next up** (Phase 15) | — |
 
 **Current test count: 685 passed + 1 ignored**
 
@@ -1817,26 +1817,30 @@ Deferred to future phases:
   ◻ Column pruning — DataFusion already handles internally
 ```
 
-### Phase 12: LSP & Developer Tooling (Upcoming — Phase 14)
+### Phase 12: LSP & Developer Tooling (✅ Complete — Phase 14)
 
 **Goal:** World-class developer experience drives adoption
 
 ```
-Deliverables:
-  ✦ Language Server Protocol (LSP) implementation
-  ✦ VS Code extension with syntax highlighting, diagnostics, go-to-definition
-  ✦ Auto-completion for types, functions, modules, fields
-  ✦ Hover documentation
-  ✦ tl fmt — code formatter (opinionated, like gofmt)
-  ✦ tl lint — linter with data engineering best practices
-  ✦ tl doc — documentation generator from doc comments
-  ✦ tl explain — show query plan for pipeline
-  ✦ Inline type hints in editor
+Deliverables (implemented):
+  ✅ Language Server Protocol (LSP) implementation — lsp-server 0.7 + lsp-types 0.97
+  ✅ VS Code extension with syntax highlighting, diagnostics, go-to-definition
+  ✅ Auto-completion for types, functions, modules, fields, dot-completion
+  ✅ Hover documentation — function signatures, struct fields, builtins
+  ✅ Go-to-definition — variable, function, struct, enum, trait definitions
+  ✅ Document symbols — outline view in editor sidebar
+  ✅ tl fmt — code formatter (AST-guided with comment preservation)
+  ✅ tl lint — linter with naming conventions, shadowing, empty body warnings
+  ✅ Lexer trivia extension — tokenize_with_trivia() for comment-preserving formatting
 
-Foundation available:
-  — Type checker (Phase 11) provides diagnostics, type inference for hover/completion
-  — AST with spans (Phase 7) enables go-to-definition and source mapping
-  — Bytecode disassembler (Phase 7) provides basis for tl explain
+Deferred:
+  — tl doc — documentation generator (needs doc-comment syntax first)
+  — tl explain — query plan viewer (niche, low priority)
+  — Inline type hints (LSP inlay hints — can add once hover works)
+
+New crate: tl-lsp (diagnostics, completion, hover, goto-def, symbols, format, server)
+New files: editors/vscode/ (package.json, extension.ts, tmLanguage.json, etc.)
+Tests: 685 existing + 47 new = 732 passed, 1 ignored
 ```
 
 ### Phase 13: Data Quality & Connectors (Upcoming — Phase 15)

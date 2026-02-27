@@ -41,7 +41,7 @@ impl TlHelper {
             "let", "fn", "if", "else", "while", "for", "in", "return", "true", "false", "none",
             "struct", "enum", "impl", "try", "catch", "throw", "import", "test", "break", "continue",
             "and", "or", "not", "mut", "await", "yield", "match", "schema", "pipeline", "stream",
-            "source", "sink", "use", "pub", "mod", "trait", "where", "check",
+            "source", "sink", "use", "pub", "mod", "trait", "where", "check", "lsp", "fmt", "lint",
             // Builtin functions
             "print", "println", "len", "str", "int", "float", "abs", "min", "max", "range",
             "push", "type_of", "map", "filter", "reduce", "sum", "any", "all",
@@ -240,6 +240,24 @@ enum Commands {
         #[arg(long)]
         strict: bool,
     },
+    /// Start the Language Server Protocol server
+    Lsp,
+    /// Format .tl source files
+    Fmt {
+        /// Path to the .tl file
+        path: String,
+        /// Check formatting without writing (exit 1 if changes needed)
+        #[arg(long)]
+        check: bool,
+    },
+    /// Lint a .tl file for style and correctness issues
+    Lint {
+        /// Path to the .tl file
+        path: String,
+        /// Strict mode: require type annotations on function parameters
+        #[arg(long)]
+        strict: bool,
+    },
     /// Build and run the current project (requires tl.toml)
     Build {
         /// Backend: "vm" (default) or "interp"
@@ -330,6 +348,9 @@ fn main() {
         Some(Commands::Check { file, strict }) => run_check(&file, strict),
         Some(Commands::Test { path, backend }) => run_tests(&path, &backend),
         Some(Commands::Init { name }) => run_init(&name),
+        Some(Commands::Lsp) => run_lsp(),
+        Some(Commands::Fmt { path, check }) => run_fmt(&path, check),
+        Some(Commands::Lint { path, strict }) => run_lint(&path, strict),
         Some(Commands::Build { backend, dump_bytecode, no_check, strict }) => run_build(&backend, dump_bytecode, no_check, strict),
         None => run_repl("vm"), // Default to REPL with VM backend
     }
@@ -972,6 +993,103 @@ version = "0.1.0"
     println!("  {name}/tl.toml");
     println!("  {name}/src/main.tl");
     println!("\nRun with: cd {name} && tl build");
+}
+
+fn run_lsp() {
+    if let Err(e) = tl_lsp::run_server() {
+        eprintln!("LSP server error: {e}");
+        process::exit(1);
+    }
+}
+
+fn run_fmt(path: &str, check: bool) {
+    let source = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading file '{path}': {e}");
+            process::exit(1);
+        }
+    };
+
+    let formatted = match tl_lsp::format::Formatter::format(&source) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("{e}");
+            process::exit(1);
+        }
+    };
+
+    if check {
+        if formatted != source {
+            eprintln!("{path}: formatting changes needed");
+            process::exit(1);
+        }
+    } else if formatted != source {
+        if let Err(e) = fs::write(path, &formatted) {
+            eprintln!("Error writing file '{path}': {e}");
+            process::exit(1);
+        }
+        eprintln!("Formatted {path}");
+    } else {
+        eprintln!("{path}: already formatted");
+    }
+}
+
+fn run_lint(path: &str, strict: bool) {
+    let source = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading file '{path}': {e}");
+            process::exit(1);
+        }
+    };
+
+    let program = match parse(&source) {
+        Ok(p) => p,
+        Err(TlError::Parser(ref e)) => {
+            report_parser_error(&source, path, e);
+            process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            process::exit(1);
+        }
+    };
+
+    let config = CheckerConfig { strict };
+    let result = check_program(&program, &config);
+
+    for warning in &result.warnings {
+        report_type_warning(&source, path, &tl_errors::TypeError {
+            message: warning.message.clone(),
+            span: warning.span,
+            expected: warning.expected.clone(),
+            found: warning.found.clone(),
+            hint: warning.hint.clone(),
+        });
+    }
+
+    for error in &result.errors {
+        report_type_error(&source, path, &tl_errors::TypeError {
+            message: error.message.clone(),
+            span: error.span,
+            expected: error.expected.clone(),
+            found: error.found.clone(),
+            hint: error.hint.clone(),
+        });
+    }
+
+    let warning_count = result.warnings.len();
+    let error_count = result.errors.len();
+
+    if error_count > 0 {
+        eprintln!("{error_count} error(s), {warning_count} warning(s)");
+        process::exit(1);
+    } else if warning_count > 0 {
+        eprintln!("{warning_count} warning(s)");
+    } else {
+        eprintln!("No lint issues found.");
+    }
 }
 
 fn run_build(backend: &str, dump_bytecode: bool, no_check: bool, strict: bool) {
