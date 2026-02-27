@@ -2,7 +2,7 @@
 // Register-based VM that executes compiled bytecode.
 
 use std::collections::HashMap;
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use rayon::prelude::*;
@@ -296,6 +296,10 @@ pub struct Vm {
     pub output: Vec<String>,
     /// Try-catch handler stack
     try_handlers: Vec<TryHandler>,
+    /// Yielded value (Some when Op::Yield suspends a generator)
+    yielded_value: Option<VmValue>,
+    /// IP at the point of yield (instruction after the Yield op)
+    yielded_ip: usize,
 }
 
 impl Vm {
@@ -307,6 +311,8 @@ impl Vm {
             data_engine: None,
             output: Vec::new(),
             try_handlers: Vec::new(),
+            yielded_value: None,
+            yielded_ip: 0,
         }
     }
 
@@ -725,6 +731,16 @@ impl Vm {
                                 true
                             }
                         }
+                        VmValue::Generator(gen_arc) => {
+                            let g = gen_arc.clone();
+                            let val = self.generator_next(&g)?;
+                            if matches!(val, VmValue::None) {
+                                true
+                            } else {
+                                self.stack[base + c as usize] = val;
+                                false
+                            }
+                        }
                         _ => true,
                     };
                     if done {
@@ -1043,6 +1059,16 @@ impl Vm {
                         }
                     }
                 }
+                Op::Yield => {
+                    // a = value register to yield
+                    let val = self.stack[base + a as usize].clone();
+                    self.yielded_value = Some(val.clone());
+                    // Save the current ip (already advanced past Yield instruction)
+                    self.yielded_ip = self.frames[frame_idx].ip;
+                    // Pop the frame and return the value
+                    self.frames.pop();
+                    return Ok(Some(val));
+                }
             }
             Ok(None)
     }
@@ -1066,6 +1092,40 @@ impl Vm {
                         "Expected {} arguments, got {}",
                         arity, arg_count
                     )));
+                }
+
+                // If this is a generator function, create a Generator instead of executing
+                if proto.is_generator {
+                    // Close upvalues for the generator
+                    let mut closed_upvalues = Vec::new();
+                    for uv in &closure.upvalues {
+                        match uv {
+                            UpvalueRef::Open { stack_index } => {
+                                let val = self.stack[*stack_index].clone();
+                                closed_upvalues.push(UpvalueRef::Closed(val));
+                            }
+                            UpvalueRef::Closed(v) => {
+                                closed_upvalues.push(UpvalueRef::Closed(v.clone()));
+                            }
+                        }
+                    }
+
+                    // Build initial saved_stack with args
+                    let num_regs = proto.num_registers as usize;
+                    let mut saved_stack = vec![VmValue::None; num_regs];
+                    for i in 0..arg_count as usize {
+                        saved_stack[i] = self.stack[caller_base + args_start as usize + i].clone();
+                    }
+
+                    let gn = VmGenerator::new(GeneratorKind::UserDefined {
+                        prototype: proto,
+                        upvalues: closed_upvalues,
+                        saved_stack,
+                        ip: 0,
+                    });
+                    self.stack[caller_base + func_reg as usize] =
+                        VmValue::Generator(Arc::new(Mutex::new(gn)));
+                    return Ok(());
                 }
 
                 // Set up new frame
@@ -2526,6 +2586,172 @@ impl Vm {
                     _ => Err(runtime_err("timeout() expects a task as first argument")),
                 }
             }
+            // Phase 8: Iterators & Generators
+            BuiltinId::Next => {
+                if args.is_empty() {
+                    return Err(runtime_err("next() expects a generator"));
+                }
+                match &args[0] {
+                    VmValue::Generator(gen_arc) => {
+                        let g = gen_arc.clone();
+                        self.generator_next(&g)
+                    }
+                    _ => Err(runtime_err("next() expects a generator")),
+                }
+            }
+            BuiltinId::IsGenerator => {
+                let val = args.first().unwrap_or(&VmValue::None);
+                Ok(VmValue::Bool(matches!(val, VmValue::Generator(_))))
+            }
+            BuiltinId::Iter => {
+                if args.is_empty() {
+                    return Err(runtime_err("iter() expects a list"));
+                }
+                match &args[0] {
+                    VmValue::List(items) => {
+                        let gn = VmGenerator::new(GeneratorKind::ListIter {
+                            items: items.clone(),
+                            index: 0,
+                        });
+                        Ok(VmValue::Generator(Arc::new(Mutex::new(gn))))
+                    }
+                    _ => Err(runtime_err("iter() expects a list")),
+                }
+            }
+            BuiltinId::Take => {
+                if args.len() < 2 {
+                    return Err(runtime_err("take() expects a generator and a count"));
+                }
+                let gen_arc = match &args[0] {
+                    VmValue::Generator(g) => g.clone(),
+                    _ => return Err(runtime_err("take() expects a generator as first argument")),
+                };
+                let n = match &args[1] {
+                    VmValue::Int(n) => *n as usize,
+                    _ => return Err(runtime_err("take() expects an integer count")),
+                };
+                let gn = VmGenerator::new(GeneratorKind::Take {
+                    source: gen_arc,
+                    remaining: n,
+                });
+                Ok(VmValue::Generator(Arc::new(Mutex::new(gn))))
+            }
+            BuiltinId::Skip_ => {
+                if args.len() < 2 {
+                    return Err(runtime_err("skip() expects a generator and a count"));
+                }
+                let gen_arc = match &args[0] {
+                    VmValue::Generator(g) => g.clone(),
+                    _ => return Err(runtime_err("skip() expects a generator as first argument")),
+                };
+                let n = match &args[1] {
+                    VmValue::Int(n) => *n as usize,
+                    _ => return Err(runtime_err("skip() expects an integer count")),
+                };
+                let gn = VmGenerator::new(GeneratorKind::Skip {
+                    source: gen_arc,
+                    remaining: n,
+                });
+                Ok(VmValue::Generator(Arc::new(Mutex::new(gn))))
+            }
+            BuiltinId::GenCollect => {
+                if args.is_empty() {
+                    return Err(runtime_err("gen_collect() expects a generator"));
+                }
+                match &args[0] {
+                    VmValue::Generator(gen_arc) => {
+                        let g = gen_arc.clone();
+                        let mut items = Vec::new();
+                        loop {
+                            let val = self.generator_next(&g)?;
+                            if matches!(val, VmValue::None) {
+                                break;
+                            }
+                            items.push(val);
+                        }
+                        Ok(VmValue::List(items))
+                    }
+                    _ => Err(runtime_err("gen_collect() expects a generator")),
+                }
+            }
+            BuiltinId::GenMap => {
+                if args.len() < 2 {
+                    return Err(runtime_err("gen_map() expects a generator and a function"));
+                }
+                let gen_arc = match &args[0] {
+                    VmValue::Generator(g) => g.clone(),
+                    _ => return Err(runtime_err("gen_map() expects a generator as first argument")),
+                };
+                let func = args[1].clone();
+                let gn = VmGenerator::new(GeneratorKind::Map {
+                    source: gen_arc,
+                    func,
+                });
+                Ok(VmValue::Generator(Arc::new(Mutex::new(gn))))
+            }
+            BuiltinId::GenFilter => {
+                if args.len() < 2 {
+                    return Err(runtime_err("gen_filter() expects a generator and a function"));
+                }
+                let gen_arc = match &args[0] {
+                    VmValue::Generator(g) => g.clone(),
+                    _ => return Err(runtime_err("gen_filter() expects a generator as first argument")),
+                };
+                let func = args[1].clone();
+                let gn = VmGenerator::new(GeneratorKind::Filter {
+                    source: gen_arc,
+                    func,
+                });
+                Ok(VmValue::Generator(Arc::new(Mutex::new(gn))))
+            }
+            BuiltinId::Chain => {
+                if args.len() < 2 {
+                    return Err(runtime_err("chain() expects two generators"));
+                }
+                let first = match &args[0] {
+                    VmValue::Generator(g) => g.clone(),
+                    _ => return Err(runtime_err("chain() expects generators")),
+                };
+                let second = match &args[1] {
+                    VmValue::Generator(g) => g.clone(),
+                    _ => return Err(runtime_err("chain() expects generators")),
+                };
+                let gn = VmGenerator::new(GeneratorKind::Chain {
+                    first,
+                    second,
+                    on_second: false,
+                });
+                Ok(VmValue::Generator(Arc::new(Mutex::new(gn))))
+            }
+            BuiltinId::GenZip => {
+                if args.len() < 2 {
+                    return Err(runtime_err("gen_zip() expects two generators"));
+                }
+                let first = match &args[0] {
+                    VmValue::Generator(g) => g.clone(),
+                    _ => return Err(runtime_err("gen_zip() expects generators")),
+                };
+                let second = match &args[1] {
+                    VmValue::Generator(g) => g.clone(),
+                    _ => return Err(runtime_err("gen_zip() expects generators")),
+                };
+                let gn = VmGenerator::new(GeneratorKind::Zip { first, second });
+                Ok(VmValue::Generator(Arc::new(Mutex::new(gn))))
+            }
+            BuiltinId::GenEnumerate => {
+                if args.is_empty() {
+                    return Err(runtime_err("gen_enumerate() expects a generator"));
+                }
+                let gen_arc = match &args[0] {
+                    VmValue::Generator(g) => g.clone(),
+                    _ => return Err(runtime_err("gen_enumerate() expects a generator")),
+                };
+                let gn = VmGenerator::new(GeneratorKind::Enumerate {
+                    source: gen_arc,
+                    index: 0,
+                });
+                Ok(VmValue::Generator(Arc::new(Mutex::new(gn))))
+            }
         }
     }
 
@@ -2852,6 +3078,193 @@ impl Vm {
         };
 
         Ok(VmValue::Connector(Arc::new(config)))
+    }
+
+    /// Advance a generator by one step, returning the next value or None if done.
+    fn generator_next(&mut self, gen_arc: &Arc<Mutex<VmGenerator>>) -> Result<VmValue, TlError> {
+        let mut gn = gen_arc.lock().unwrap();
+        if gn.done {
+            return Ok(VmValue::None);
+        }
+        match &mut gn.kind {
+            GeneratorKind::UserDefined { prototype, upvalues, saved_stack, ip } => {
+                let proto = prototype.clone();
+                let uvs = upvalues.clone();
+                let stack_snapshot = saved_stack.clone();
+                let saved_ip = *ip;
+                drop(gn); // release lock before running VM
+
+                // Set up a frame to resume the generator
+                let new_base = self.stack.len();
+                let num_regs = proto.num_registers as usize;
+                self.ensure_stack(new_base + num_regs + 1);
+                // Restore saved registers
+                for (i, val) in stack_snapshot.iter().enumerate() {
+                    self.stack[new_base + i] = val.clone();
+                }
+
+                self.frames.push(CallFrame {
+                    prototype: proto,
+                    ip: saved_ip,
+                    base: new_base,
+                    upvalues: uvs,
+                });
+
+                self.yielded_value = None;
+                let _result = self.run()?;
+
+                if let Some(yielded) = self.yielded_value.take() {
+                    // Generator yielded — save state back
+                    let mut gn = gen_arc.lock().unwrap();
+                    if let GeneratorKind::UserDefined { saved_stack, ip, .. } = &mut gn.kind {
+                        // Save the current register state
+                        let num_regs_save = saved_stack.len();
+                        for i in 0..num_regs_save {
+                            if new_base + i < self.stack.len() {
+                                saved_stack[i] = self.stack[new_base + i].clone();
+                            }
+                        }
+                        // Save the ip (instruction after yield)
+                        *ip = self.yielded_ip;
+                    }
+                    self.stack.truncate(new_base);
+                    Ok(yielded)
+                } else {
+                    // Generator returned (no yield) — mark done
+                    let mut gn = gen_arc.lock().unwrap();
+                    gn.done = true;
+                    self.stack.truncate(new_base);
+                    Ok(VmValue::None)
+                }
+            }
+            GeneratorKind::ListIter { items, index } => {
+                if *index < items.len() {
+                    let val = items[*index].clone();
+                    *index += 1;
+                    Ok(val)
+                } else {
+                    gn.done = true;
+                    Ok(VmValue::None)
+                }
+            }
+            GeneratorKind::Take { source, remaining } => {
+                if *remaining == 0 {
+                    gn.done = true;
+                    return Ok(VmValue::None);
+                }
+                *remaining -= 1;
+                let src = source.clone();
+                drop(gn);
+                let val = self.generator_next(&src)?;
+                if matches!(val, VmValue::None) {
+                    let mut gn = gen_arc.lock().unwrap();
+                    gn.done = true;
+                }
+                Ok(val)
+            }
+            GeneratorKind::Skip { source, remaining } => {
+                let src = source.clone();
+                let skip_n = *remaining;
+                *remaining = 0;
+                drop(gn);
+                // Skip initial values
+                for _ in 0..skip_n {
+                    let val = self.generator_next(&src)?;
+                    if matches!(val, VmValue::None) {
+                        let mut gn = gen_arc.lock().unwrap();
+                        gn.done = true;
+                        return Ok(VmValue::None);
+                    }
+                }
+                let val = self.generator_next(&src)?;
+                if matches!(val, VmValue::None) {
+                    let mut gn = gen_arc.lock().unwrap();
+                    gn.done = true;
+                }
+                Ok(val)
+            }
+            GeneratorKind::Map { source, func } => {
+                let src = source.clone();
+                let f = func.clone();
+                drop(gn);
+                let val = self.generator_next(&src)?;
+                if matches!(val, VmValue::None) {
+                    let mut gn = gen_arc.lock().unwrap();
+                    gn.done = true;
+                    return Ok(VmValue::None);
+                }
+                self.call_vm_function(&f, &[val])
+            }
+            GeneratorKind::Filter { source, func } => {
+                let src = source.clone();
+                let f = func.clone();
+                drop(gn);
+                loop {
+                    let val = self.generator_next(&src)?;
+                    if matches!(val, VmValue::None) {
+                        let mut gn = gen_arc.lock().unwrap();
+                        gn.done = true;
+                        return Ok(VmValue::None);
+                    }
+                    let test = self.call_vm_function(&f, &[val.clone()])?;
+                    if test.is_truthy() {
+                        return Ok(val);
+                    }
+                }
+            }
+            GeneratorKind::Chain { first, second, on_second } => {
+                if !*on_second {
+                    let src = first.clone();
+                    drop(gn);
+                    let val = self.generator_next(&src)?;
+                    if matches!(val, VmValue::None) {
+                        let mut gn = gen_arc.lock().unwrap();
+                        if let GeneratorKind::Chain { on_second, second, .. } = &mut gn.kind {
+                            *on_second = true;
+                            let src2 = second.clone();
+                            drop(gn);
+                            return self.generator_next(&src2);
+                        }
+                    }
+                    Ok(val)
+                } else {
+                    let src = second.clone();
+                    drop(gn);
+                    let val = self.generator_next(&src)?;
+                    if matches!(val, VmValue::None) {
+                        let mut gn = gen_arc.lock().unwrap();
+                        gn.done = true;
+                    }
+                    Ok(val)
+                }
+            }
+            GeneratorKind::Zip { first, second } => {
+                let src1 = first.clone();
+                let src2 = second.clone();
+                drop(gn);
+                let val1 = self.generator_next(&src1)?;
+                let val2 = self.generator_next(&src2)?;
+                if matches!(val1, VmValue::None) || matches!(val2, VmValue::None) {
+                    let mut gn = gen_arc.lock().unwrap();
+                    gn.done = true;
+                    return Ok(VmValue::None);
+                }
+                Ok(VmValue::List(vec![val1, val2]))
+            }
+            GeneratorKind::Enumerate { source, index } => {
+                let src = source.clone();
+                let idx = *index;
+                *index += 1;
+                drop(gn);
+                let val = self.generator_next(&src)?;
+                if matches!(val, VmValue::None) {
+                    let mut gn = gen_arc.lock().unwrap();
+                    gn.done = true;
+                    return Ok(VmValue::None);
+                }
+                Ok(VmValue::List(vec![VmValue::Int(idx as i64), val]))
+            }
+        }
     }
 
     /// Dispatch a method call on an object.
@@ -3199,6 +3612,34 @@ impl Vm {
                         "Expected {} arguments, got {}",
                         arity, args.len()
                     )));
+                }
+
+                // If this is a generator function, create a Generator
+                if proto.is_generator {
+                    let mut closed_upvalues = Vec::new();
+                    for uv in &closure.upvalues {
+                        match uv {
+                            UpvalueRef::Open { stack_index } => {
+                                let val = self.stack[*stack_index].clone();
+                                closed_upvalues.push(UpvalueRef::Closed(val));
+                            }
+                            UpvalueRef::Closed(v) => {
+                                closed_upvalues.push(UpvalueRef::Closed(v.clone()));
+                            }
+                        }
+                    }
+                    let num_regs = proto.num_registers as usize;
+                    let mut saved_stack = vec![VmValue::None; num_regs];
+                    for (i, arg) in args.iter().enumerate() {
+                        saved_stack[i] = arg.clone();
+                    }
+                    let gn = VmGenerator::new(GeneratorKind::UserDefined {
+                        prototype: proto,
+                        upvalues: closed_upvalues,
+                        saved_stack,
+                        ip: 0,
+                    });
+                    return Ok(VmValue::Generator(Arc::new(Mutex::new(gn))));
                 }
 
                 let new_base = self.stack.len();
@@ -4479,5 +4920,281 @@ print(type_of(t))
 print(type_of(ch))
 await t"#);
         assert_eq!(output, vec!["task", "channel"]);
+    }
+
+    // ── Phase 8: Iterators & Generators ──
+
+    #[test]
+    fn test_vm_basic_generator() {
+        let output = run_output(r#"fn gen() {
+    yield 1
+    yield 2
+    yield 3
+}
+let g = gen()
+print(next(g))
+print(next(g))
+print(next(g))
+print(next(g))"#);
+        assert_eq!(output, vec!["1", "2", "3", "none"]);
+    }
+
+    #[test]
+    fn test_vm_generator_exhaustion() {
+        let output = run_output(r#"fn gen() {
+    yield 42
+}
+let g = gen()
+print(next(g))
+print(next(g))
+print(next(g))"#);
+        assert_eq!(output, vec!["42", "none", "none"]);
+    }
+
+    #[test]
+    fn test_vm_generator_with_loop() {
+        let output = run_output(r#"fn counter() {
+    let mut i = 0
+    while i < 3 {
+        yield i
+        i = i + 1
+    }
+}
+let g = counter()
+print(next(g))
+print(next(g))
+print(next(g))
+print(next(g))"#);
+        assert_eq!(output, vec!["0", "1", "2", "none"]);
+    }
+
+    #[test]
+    fn test_vm_generator_with_args() {
+        let output = run_output(r#"fn count_from(start) {
+    let mut i = start
+    while i < start + 3 {
+        yield i
+        i = i + 1
+    }
+}
+let g = count_from(10)
+print(next(g))
+print(next(g))
+print(next(g))
+print(next(g))"#);
+        assert_eq!(output, vec!["10", "11", "12", "none"]);
+    }
+
+    #[test]
+    fn test_vm_generator_yield_none() {
+        let output = run_output(r#"fn gen() {
+    yield
+    yield 5
+}
+let g = gen()
+print(next(g))
+print(next(g))
+print(next(g))"#);
+        assert_eq!(output, vec!["none", "5", "none"]);
+    }
+
+    #[test]
+    fn test_vm_is_generator() {
+        let output = run_output(r#"fn gen() { yield 1 }
+let g = gen()
+print(is_generator(g))
+print(is_generator(42))
+print(is_generator(none))"#);
+        assert_eq!(output, vec!["true", "false", "false"]);
+    }
+
+    #[test]
+    fn test_vm_multiple_generators() {
+        let output = run_output(r#"fn gen() {
+    yield 1
+    yield 2
+}
+let g1 = gen()
+let g2 = gen()
+print(next(g1))
+print(next(g2))
+print(next(g1))
+print(next(g2))"#);
+        assert_eq!(output, vec!["1", "1", "2", "2"]);
+    }
+
+    #[test]
+    fn test_vm_for_over_generator() {
+        let output = run_output(r#"fn gen() {
+    yield 10
+    yield 20
+    yield 30
+}
+for x in gen() {
+    print(x)
+}"#);
+        assert_eq!(output, vec!["10", "20", "30"]);
+    }
+
+    #[test]
+    fn test_vm_iter_builtin() {
+        let output = run_output(r#"let g = iter([1, 2, 3])
+print(next(g))
+print(next(g))
+print(next(g))
+print(next(g))"#);
+        assert_eq!(output, vec!["1", "2", "3", "none"]);
+    }
+
+    #[test]
+    fn test_vm_take_builtin() {
+        let output = run_output(r#"fn naturals() {
+    let mut n = 0
+    while true {
+        yield n
+        n = n + 1
+    }
+}
+let g = take(naturals(), 5)
+print(next(g))
+print(next(g))
+print(next(g))
+print(next(g))
+print(next(g))
+print(next(g))"#);
+        assert_eq!(output, vec!["0", "1", "2", "3", "4", "none"]);
+    }
+
+    #[test]
+    fn test_vm_skip_builtin() {
+        let output = run_output(r#"let g = skip(iter([10, 20, 30, 40, 50]), 2)
+print(next(g))
+print(next(g))
+print(next(g))
+print(next(g))"#);
+        assert_eq!(output, vec!["30", "40", "50", "none"]);
+    }
+
+    #[test]
+    fn test_vm_gen_collect() {
+        let output = run_output(r#"fn gen() {
+    yield 1
+    yield 2
+    yield 3
+}
+let result = gen_collect(gen())
+print(result)"#);
+        assert_eq!(output, vec!["[1, 2, 3]"]);
+    }
+
+    #[test]
+    fn test_vm_gen_map() {
+        let output = run_output(r#"let g = gen_map(iter([1, 2, 3]), (x) => x * 10)
+print(gen_collect(g))"#);
+        assert_eq!(output, vec!["[10, 20, 30]"]);
+    }
+
+    #[test]
+    fn test_vm_gen_filter() {
+        let output = run_output(r#"let g = gen_filter(iter([1, 2, 3, 4, 5, 6]), (x) => x % 2 == 0)
+print(gen_collect(g))"#);
+        assert_eq!(output, vec!["[2, 4, 6]"]);
+    }
+
+    #[test]
+    fn test_vm_chain() {
+        let output = run_output(r#"let g = chain(iter([1, 2]), iter([3, 4]))
+print(gen_collect(g))"#);
+        assert_eq!(output, vec!["[1, 2, 3, 4]"]);
+    }
+
+    #[test]
+    fn test_vm_gen_zip() {
+        let output = run_output(r#"let g = gen_zip(iter([1, 2, 3]), iter([10, 20, 30]))
+print(gen_collect(g))"#);
+        assert_eq!(output, vec!["[[1, 10], [2, 20], [3, 30]]"]);
+    }
+
+    #[test]
+    fn test_vm_gen_enumerate() {
+        let output = run_output(r#"let g = gen_enumerate(iter([10, 20, 30]))
+print(gen_collect(g))"#);
+        assert_eq!(output, vec!["[[0, 10], [1, 20], [2, 30]]"]);
+    }
+
+    #[test]
+    fn test_vm_combinator_chaining() {
+        let output = run_output(r#"fn naturals() {
+    let mut n = 0
+    while true {
+        yield n
+        n = n + 1
+    }
+}
+let result = gen_collect(gen_map(gen_filter(take(naturals(), 10), (x) => x % 2 == 0), (x) => x * x))
+print(result)"#);
+        assert_eq!(output, vec!["[0, 4, 16, 36, 64]"]);
+    }
+
+    #[test]
+    fn test_vm_for_over_take() {
+        let output = run_output(r#"fn naturals() {
+    let mut n = 0
+    while true {
+        yield n
+        n = n + 1
+    }
+}
+for x in take(naturals(), 5) {
+    print(x)
+}"#);
+        assert_eq!(output, vec!["0", "1", "2", "3", "4"]);
+    }
+
+    #[test]
+    fn test_vm_generator_error_propagation() {
+        let result = run(r#"fn bad_gen() {
+    yield 1
+    throw "oops"
+}
+let g = bad_gen()
+let mut caught = ""
+next(g)
+try {
+    next(g)
+} catch e {
+    caught = e
+}
+print(caught)"#);
+        // Should succeed (error caught)
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_vm_fibonacci_generator() {
+        let output = run_output(r#"fn fib() {
+    let mut a = 0
+    let mut b = 1
+    while true {
+        yield a
+        let temp = a + b
+        a = b
+        b = temp
+    }
+}
+print(gen_collect(take(fib(), 8)))"#);
+        assert_eq!(output, vec!["[0, 1, 1, 2, 3, 5, 8, 13]"]);
+    }
+
+    #[test]
+    fn test_vm_generator_method_syntax() {
+        let output = run_output(r#"fn gen() {
+    yield 1
+    yield 2
+    yield 3
+}
+let g = gen()
+print(type_of(g))"#);
+        assert_eq!(output, vec!["generator"]);
     }
 }

@@ -108,6 +108,70 @@ impl fmt::Debug for TlChannel {
     }
 }
 
+/// Counter for generating unique generator IDs in the interpreter.
+static INTERP_GENERATOR_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// A generator for the interpreter — thread-based coroutine model.
+pub enum TlGeneratorKind {
+    /// User-defined generator using thread-based coroutines
+    UserDefined {
+        /// Receive yielded values from the generator thread
+        receiver: Mutex<Option<mpsc::Receiver<Result<Value, String>>>>,
+        /// Signal the generator thread to resume
+        resume_tx: mpsc::SyncSender<()>,
+    },
+    /// Built-in iterator over a list
+    ListIter { items: Vec<Value>, index: Mutex<usize> },
+    /// Take at most N items
+    Take { source: Arc<TlGenerator>, remaining: Mutex<usize> },
+    /// Skip first N items
+    Skip { source: Arc<TlGenerator>, remaining: Mutex<usize> },
+    /// Map a function over yielded values
+    Map { source: Arc<TlGenerator>, func: Value },
+    /// Filter values with predicate
+    Filter { source: Arc<TlGenerator>, func: Value },
+    /// Chain two generators
+    Chain { first: Arc<TlGenerator>, second: Arc<TlGenerator>, on_second: Mutex<bool> },
+    /// Zip two generators
+    Zip { first: Arc<TlGenerator>, second: Arc<TlGenerator> },
+    /// Enumerate values with index
+    Enumerate { source: Arc<TlGenerator>, index: Mutex<usize> },
+}
+
+pub struct TlGenerator {
+    pub kind: TlGeneratorKind,
+    pub done: Mutex<bool>,
+    pub id: u64,
+}
+
+impl TlGenerator {
+    pub fn new(kind: TlGeneratorKind) -> Self {
+        TlGenerator {
+            kind,
+            done: Mutex::new(false),
+            id: INTERP_GENERATOR_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+}
+
+impl fmt::Debug for TlGenerator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<generator {}>", self.id)
+    }
+}
+
+impl Clone for TlGenerator {
+    fn clone(&self) -> Self {
+        // Generators are not truly cloneable (channels are single-use)
+        // but we need Clone for Value. This creates a "consumed" copy.
+        TlGenerator {
+            kind: TlGeneratorKind::ListIter { items: vec![], index: Mutex::new(0) },
+            done: Mutex::new(true),
+            id: self.id,
+        }
+    }
+}
+
 /// Runtime value
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -122,6 +186,7 @@ pub enum Value {
         name: String,
         params: Vec<Param>,
         body: Vec<Stmt>,
+        is_generator: bool,
     },
     /// A built-in function
     Builtin(String),
@@ -177,6 +242,8 @@ pub enum Value {
     Task(Arc<TlTask>),
     /// A channel for inter-task communication
     Channel(Arc<TlChannel>),
+    /// A generator (lazy iterator)
+    Generator(Arc<TlGenerator>),
 }
 
 impl fmt::Display for Value {
@@ -250,6 +317,7 @@ impl fmt::Display for Value {
             }
             Value::Task(t) => write!(f, "<task {}>", t.id),
             Value::Channel(c) => write!(f, "<channel {}>", c.id),
+            Value::Generator(g) => write!(f, "<generator {}>", g.id),
         }
     }
 }
@@ -299,6 +367,7 @@ impl Value {
             Value::Map(_) => "map",
             Value::Task(_) => "task",
             Value::Channel(_) => "channel",
+            Value::Generator(_) => "generator",
         }
     }
 }
@@ -310,6 +379,17 @@ enum Signal {
     Break,
     Continue,
     Throw(Value),
+    Yield(Value),
+}
+
+/// Generator-specific control flow signals (used in exec_stmt_gen).
+enum GenSignal {
+    None,
+    Return(Value),
+    Break,
+    Continue,
+    Throw(Value),
+    Yield(Value),
 }
 
 /// Variable environment (scope chain)
@@ -425,6 +505,18 @@ impl Environment {
         global.insert("await_all".to_string(), Value::Builtin("await_all".to_string()));
         global.insert("pmap".to_string(), Value::Builtin("pmap".to_string()));
         global.insert("timeout".to_string(), Value::Builtin("timeout".to_string()));
+        // Phase 8: Iterators & Generators
+        global.insert("next".to_string(), Value::Builtin("next".to_string()));
+        global.insert("is_generator".to_string(), Value::Builtin("is_generator".to_string()));
+        global.insert("iter".to_string(), Value::Builtin("iter".to_string()));
+        global.insert("take".to_string(), Value::Builtin("take".to_string()));
+        global.insert("skip".to_string(), Value::Builtin("skip".to_string()));
+        global.insert("gen_collect".to_string(), Value::Builtin("gen_collect".to_string()));
+        global.insert("gen_map".to_string(), Value::Builtin("gen_map".to_string()));
+        global.insert("gen_filter".to_string(), Value::Builtin("gen_filter".to_string()));
+        global.insert("chain".to_string(), Value::Builtin("chain".to_string()));
+        global.insert("gen_zip".to_string(), Value::Builtin("gen_zip".to_string()));
+        global.insert("gen_enumerate".to_string(), Value::Builtin("gen_enumerate".to_string()));
 
         Self {
             scopes: vec![global],
@@ -535,6 +627,7 @@ impl Interpreter {
                         span: None,
                     }))
                 }
+                Signal::Yield(_) => {} // yield outside generator is a no-op at top level
             }
             // Track last expression value for REPL
             if let Stmt::Expr(_) = stmt {
@@ -579,12 +672,14 @@ impl Interpreter {
                 name,
                 params,
                 body,
+                is_generator,
                 ..
             } => {
                 let func = Value::Function {
                     name: name.clone(),
                     params: params.clone(),
                     body: body.clone(),
+                    is_generator: *is_generator,
                 };
                 self.env.set(name.clone(), func);
                 Ok(Signal::None)
@@ -632,13 +727,33 @@ impl Interpreter {
                         Signal::Break => break,
                         Signal::Return(v) => return Ok(Signal::Return(v)),
                         Signal::Throw(v) => return Ok(Signal::Throw(v)),
-                        Signal::Continue | Signal::None => continue,
+                        Signal::Continue | Signal::None | Signal::Yield(_) => continue,
                     }
                 }
                 Ok(Signal::None)
             }
             Stmt::For { name, iter, body } => {
                 let iter_val = self.eval_expr(iter)?;
+                // Handle generator iteration
+                if let Value::Generator(ref g) = iter_val {
+                    let g = g.clone();
+                    loop {
+                        let val = self.interpreter_next(&g)?;
+                        if matches!(val, Value::None) { break; }
+                        self.env.push_scope();
+                        self.env.set(name.clone(), val);
+                        let signal = self.exec_block(body)?;
+                        self.env.pop_scope();
+                        match signal {
+                            Signal::Break => break,
+                            Signal::Return(v) => return Ok(Signal::Return(v)),
+                            Signal::Throw(v) => return Ok(Signal::Throw(v)),
+                            Signal::Continue | Signal::None => continue,
+                            _ => {}
+                        }
+                    }
+                    return Ok(Signal::None);
+                }
                 let items = match iter_val {
                     Value::List(items) => items,
                     Value::Map(pairs) => {
@@ -663,7 +778,7 @@ impl Interpreter {
                         Signal::Break => break,
                         Signal::Return(v) => return Ok(Signal::Return(v)),
                         Signal::Throw(v) => return Ok(Signal::Throw(v)),
-                        Signal::Continue | Signal::None => continue,
+                        Signal::Continue | Signal::None | Signal::Yield(_) => continue,
                     }
                 }
                 Ok(Signal::None)
@@ -729,13 +844,14 @@ impl Interpreter {
                     .remove(type_name)
                     .unwrap_or_default();
                 for method in methods {
-                    if let Stmt::FnDecl { name, params, body, .. } = method {
+                    if let Stmt::FnDecl { name, params, body, is_generator, .. } = method {
                         method_map.insert(
                             name.clone(),
                             Value::Function {
                                 name: name.clone(),
                                 params: params.clone(),
                                 body: body.clone(),
+                                is_generator: *is_generator,
                             },
                         );
                     }
@@ -846,7 +962,7 @@ impl Interpreter {
         for stmt in stmts {
             result = self.exec_stmt(stmt)?;
             match &result {
-                Signal::Return(_) | Signal::Break | Signal::Continue | Signal::Throw(_) => {
+                Signal::Return(_) | Signal::Break | Signal::Continue | Signal::Throw(_) | Signal::Yield(_) => {
                     self.env.pop_scope();
                     return Ok(result);
                 }
@@ -1232,6 +1348,12 @@ impl Interpreter {
                 }
             }
 
+            Expr::Yield(_) => {
+                // Yield should not be directly evaluated in interpreter — it's handled
+                // by the generator thread infrastructure. If we get here, yield was used
+                // outside a generator context.
+                Err(runtime_err("yield used outside of a generator function".to_string()))
+            }
             Expr::Await(inner) => {
                 let val = self.eval_expr(inner)?;
                 match val {
@@ -1383,7 +1505,7 @@ impl Interpreter {
         match func {
             Value::Builtin(name) => self.call_builtin(name, args),
             Value::Function {
-                params, body, ..
+                params, body, is_generator, ..
             } => {
                 if args.len() != params.len() {
                     return Err(runtime_err(format!(
@@ -1392,6 +1514,12 @@ impl Interpreter {
                         args.len()
                     )));
                 }
+
+                // If this is a generator function, create a generator coroutine
+                if *is_generator {
+                    return self.create_generator(params, body, args);
+                }
+
                 self.env.push_scope();
                 for (param, arg) in params.iter().zip(args) {
                     self.env.set(param.name.clone(), arg.clone());
@@ -1441,6 +1569,205 @@ impl Interpreter {
                 "Cannot call {}",
                 func.type_name()
             ))),
+        }
+    }
+
+    /// Create a generator from a function with yield.
+    /// Spawns a thread that executes the function body, pausing at each yield.
+    fn create_generator(&mut self, params: &[Param], body: &[Stmt], args: &[Value]) -> Result<Value, TlError> {
+        let params = params.to_vec();
+        let body = body.to_vec();
+        let args = args.to_vec();
+        let env_scopes = self.env.scopes.clone();
+        let method_table = self.method_table.clone();
+
+        // Channel for yielded values: generator thread → consumer
+        let (yield_tx, yield_rx) = mpsc::channel::<Result<Value, String>>();
+        // Channel for resume signals: consumer → generator thread
+        let (resume_tx, resume_rx) = mpsc::sync_channel::<()>(0);
+
+        std::thread::spawn(move || {
+            let mut interp = Interpreter::new();
+            interp.env.scopes = env_scopes;
+            interp.method_table = method_table;
+
+            // Override yield behavior: instead of Expr::Yield erroring,
+            // we handle Signal::Yield from exec_stmt
+            interp.env.push_scope();
+            for (param, arg) in params.iter().zip(&args) {
+                interp.env.set(param.name.clone(), arg.clone());
+            }
+
+            // Wait for first next() call before starting
+            if resume_rx.recv().is_err() {
+                return; // Consumer dropped — generator abandoned
+            }
+
+            for stmt in &body {
+                match interp.exec_stmt_gen(stmt, &yield_tx, &resume_rx) {
+                    Ok(GenSignal::None) => {}
+                    Ok(GenSignal::Return(_)) => break,
+                    Ok(GenSignal::Break) | Ok(GenSignal::Continue) => {}
+                    Ok(GenSignal::Yield(_)) => {
+                        // Already handled inside exec_stmt_gen
+                    }
+                    Ok(GenSignal::Throw(v)) => {
+                        let _ = yield_tx.send(Err(format!("{v}")));
+                        return;
+                    }
+                    Err(e) => {
+                        let _ = yield_tx.send(Err(format!("{e}")));
+                        return;
+                    }
+                }
+            }
+            interp.env.pop_scope();
+            // Generator function completed — channel closes naturally
+        });
+
+        let gn = TlGenerator::new(TlGeneratorKind::UserDefined {
+            receiver: Mutex::new(Some(yield_rx)),
+            resume_tx,
+        });
+        Ok(Value::Generator(Arc::new(gn)))
+    }
+
+    /// Advance a generator by one step.
+    fn interpreter_next(&mut self, gen_arc: &Arc<TlGenerator>) -> Result<Value, TlError> {
+        let done = *gen_arc.done.lock().unwrap();
+        if done {
+            return Ok(Value::None);
+        }
+
+        match &gen_arc.kind {
+            TlGeneratorKind::UserDefined { receiver, resume_tx } => {
+                // Signal the generator thread to continue
+                if resume_tx.send(()).is_err() {
+                    *gen_arc.done.lock().unwrap() = true;
+                    return Ok(Value::None);
+                }
+                // Wait for the next yielded value
+                let rx_guard = receiver.lock().unwrap();
+                if let Some(rx) = rx_guard.as_ref() {
+                    match rx.recv() {
+                        Ok(Ok(val)) => Ok(val),
+                        Ok(Err(err_msg)) => {
+                            *gen_arc.done.lock().unwrap() = true;
+                            Err(runtime_err(err_msg))
+                        }
+                        Err(_) => {
+                            // Channel closed — generator exhausted
+                            *gen_arc.done.lock().unwrap() = true;
+                            Ok(Value::None)
+                        }
+                    }
+                } else {
+                    *gen_arc.done.lock().unwrap() = true;
+                    Ok(Value::None)
+                }
+            }
+            TlGeneratorKind::ListIter { items, index } => {
+                let mut idx = index.lock().unwrap();
+                if *idx < items.len() {
+                    let val = items[*idx].clone();
+                    *idx += 1;
+                    Ok(val)
+                } else {
+                    *gen_arc.done.lock().unwrap() = true;
+                    Ok(Value::None)
+                }
+            }
+            TlGeneratorKind::Take { source, remaining } => {
+                let mut rem = remaining.lock().unwrap();
+                if *rem == 0 {
+                    *gen_arc.done.lock().unwrap() = true;
+                    return Ok(Value::None);
+                }
+                *rem -= 1;
+                drop(rem);
+                let val = self.interpreter_next(source)?;
+                if matches!(val, Value::None) {
+                    *gen_arc.done.lock().unwrap() = true;
+                }
+                Ok(val)
+            }
+            TlGeneratorKind::Skip { source, remaining } => {
+                let mut rem = remaining.lock().unwrap();
+                let skip_n = *rem;
+                *rem = 0;
+                drop(rem);
+                for _ in 0..skip_n {
+                    let val = self.interpreter_next(source)?;
+                    if matches!(val, Value::None) {
+                        *gen_arc.done.lock().unwrap() = true;
+                        return Ok(Value::None);
+                    }
+                }
+                let val = self.interpreter_next(source)?;
+                if matches!(val, Value::None) {
+                    *gen_arc.done.lock().unwrap() = true;
+                }
+                Ok(val)
+            }
+            TlGeneratorKind::Map { source, func } => {
+                let val = self.interpreter_next(source)?;
+                if matches!(val, Value::None) {
+                    *gen_arc.done.lock().unwrap() = true;
+                    return Ok(Value::None);
+                }
+                self.call_function(func, &[val])
+            }
+            TlGeneratorKind::Filter { source, func } => {
+                loop {
+                    let val = self.interpreter_next(source)?;
+                    if matches!(val, Value::None) {
+                        *gen_arc.done.lock().unwrap() = true;
+                        return Ok(Value::None);
+                    }
+                    let test = self.call_function(func, &[val.clone()])?;
+                    if test.is_truthy() {
+                        return Ok(val);
+                    }
+                }
+            }
+            TlGeneratorKind::Chain { first, second, on_second } => {
+                let is_second = *on_second.lock().unwrap();
+                if !is_second {
+                    let val = self.interpreter_next(first)?;
+                    if matches!(val, Value::None) {
+                        *on_second.lock().unwrap() = true;
+                        return self.interpreter_next(second);
+                    }
+                    Ok(val)
+                } else {
+                    let val = self.interpreter_next(second)?;
+                    if matches!(val, Value::None) {
+                        *gen_arc.done.lock().unwrap() = true;
+                    }
+                    Ok(val)
+                }
+            }
+            TlGeneratorKind::Zip { first, second } => {
+                let val1 = self.interpreter_next(first)?;
+                let val2 = self.interpreter_next(second)?;
+                if matches!(val1, Value::None) || matches!(val2, Value::None) {
+                    *gen_arc.done.lock().unwrap() = true;
+                    return Ok(Value::None);
+                }
+                Ok(Value::List(vec![val1, val2]))
+            }
+            TlGeneratorKind::Enumerate { source, index } => {
+                let mut idx = index.lock().unwrap();
+                let cur_idx = *idx;
+                *idx += 1;
+                drop(idx);
+                let val = self.interpreter_next(source)?;
+                if matches!(val, Value::None) {
+                    *gen_arc.done.lock().unwrap() = true;
+                    return Ok(Value::None);
+                }
+                Ok(Value::List(vec![Value::Int(cur_idx as i64), val]))
+            }
         }
     }
 
@@ -2237,7 +2564,7 @@ impl Interpreter {
                     return Err(runtime_err_s("spawn() expects a function argument"));
                 }
                 match &args[0] {
-                    Value::Function { params, body, name } => {
+                    Value::Function { params, body, name, .. } => {
                         let params = params.clone();
                         let body = body.clone();
                         let _name = name.clone();
@@ -2412,7 +2739,7 @@ impl Interpreter {
                 let method_table = self.method_table.clone();
 
                 match &args[1] {
-                    Value::Function { params, body, name: _ } => {
+                    Value::Function { params, body, .. } => {
                         let params = params.clone();
                         let body = body.clone();
                         let mut handles = Vec::with_capacity(items.len());
@@ -2530,6 +2857,167 @@ impl Interpreter {
                     }
                     _ => Err(runtime_err_s("timeout() expects a task as first argument")),
                 }
+            }
+
+            // Phase 8: Iterators & Generators
+            "next" => {
+                if args.is_empty() {
+                    return Err(runtime_err_s("next() expects a generator"));
+                }
+                match &args[0] {
+                    Value::Generator(g) => self.interpreter_next(g),
+                    _ => Err(runtime_err_s("next() expects a generator")),
+                }
+            }
+            "is_generator" => {
+                let val = args.first().unwrap_or(&Value::None);
+                Ok(Value::Bool(matches!(val, Value::Generator(_))))
+            }
+            "iter" => {
+                if args.is_empty() {
+                    return Err(runtime_err_s("iter() expects a list"));
+                }
+                match &args[0] {
+                    Value::List(items) => {
+                        let g = TlGenerator::new(TlGeneratorKind::ListIter {
+                            items: items.clone(),
+                            index: Mutex::new(0),
+                        });
+                        Ok(Value::Generator(Arc::new(g)))
+                    }
+                    _ => Err(runtime_err_s("iter() expects a list")),
+                }
+            }
+            "take" => {
+                if args.len() < 2 {
+                    return Err(runtime_err_s("take() expects a generator and a count"));
+                }
+                let g = match &args[0] {
+                    Value::Generator(g) => g.clone(),
+                    _ => return Err(runtime_err_s("take() expects a generator")),
+                };
+                let n = match &args[1] {
+                    Value::Int(n) => *n as usize,
+                    _ => return Err(runtime_err_s("take() expects an integer count")),
+                };
+                let gn = TlGenerator::new(TlGeneratorKind::Take {
+                    source: g,
+                    remaining: Mutex::new(n),
+                });
+                Ok(Value::Generator(Arc::new(gn)))
+            }
+            "skip" => {
+                if args.len() < 2 {
+                    return Err(runtime_err_s("skip() expects a generator and a count"));
+                }
+                let g = match &args[0] {
+                    Value::Generator(g) => g.clone(),
+                    _ => return Err(runtime_err_s("skip() expects a generator")),
+                };
+                let n = match &args[1] {
+                    Value::Int(n) => *n as usize,
+                    _ => return Err(runtime_err_s("skip() expects an integer count")),
+                };
+                let gn = TlGenerator::new(TlGeneratorKind::Skip {
+                    source: g,
+                    remaining: Mutex::new(n),
+                });
+                Ok(Value::Generator(Arc::new(gn)))
+            }
+            "gen_collect" => {
+                if args.is_empty() {
+                    return Err(runtime_err_s("gen_collect() expects a generator"));
+                }
+                match &args[0] {
+                    Value::Generator(g) => {
+                        let mut items = Vec::new();
+                        loop {
+                            let val = self.interpreter_next(g)?;
+                            if matches!(val, Value::None) {
+                                break;
+                            }
+                            items.push(val);
+                        }
+                        Ok(Value::List(items))
+                    }
+                    _ => Err(runtime_err_s("gen_collect() expects a generator")),
+                }
+            }
+            "gen_map" => {
+                if args.len() < 2 {
+                    return Err(runtime_err_s("gen_map() expects a generator and a function"));
+                }
+                let g = match &args[0] {
+                    Value::Generator(g) => g.clone(),
+                    _ => return Err(runtime_err_s("gen_map() expects a generator")),
+                };
+                let gn = TlGenerator::new(TlGeneratorKind::Map {
+                    source: g,
+                    func: args[1].clone(),
+                });
+                Ok(Value::Generator(Arc::new(gn)))
+            }
+            "gen_filter" => {
+                if args.len() < 2 {
+                    return Err(runtime_err_s("gen_filter() expects a generator and a function"));
+                }
+                let g = match &args[0] {
+                    Value::Generator(g) => g.clone(),
+                    _ => return Err(runtime_err_s("gen_filter() expects a generator")),
+                };
+                let gn = TlGenerator::new(TlGeneratorKind::Filter {
+                    source: g,
+                    func: args[1].clone(),
+                });
+                Ok(Value::Generator(Arc::new(gn)))
+            }
+            "chain" => {
+                if args.len() < 2 {
+                    return Err(runtime_err_s("chain() expects two generators"));
+                }
+                let first = match &args[0] {
+                    Value::Generator(g) => g.clone(),
+                    _ => return Err(runtime_err_s("chain() expects generators")),
+                };
+                let second = match &args[1] {
+                    Value::Generator(g) => g.clone(),
+                    _ => return Err(runtime_err_s("chain() expects generators")),
+                };
+                let gn = TlGenerator::new(TlGeneratorKind::Chain {
+                    first,
+                    second,
+                    on_second: Mutex::new(false),
+                });
+                Ok(Value::Generator(Arc::new(gn)))
+            }
+            "gen_zip" => {
+                if args.len() < 2 {
+                    return Err(runtime_err_s("gen_zip() expects two generators"));
+                }
+                let first = match &args[0] {
+                    Value::Generator(g) => g.clone(),
+                    _ => return Err(runtime_err_s("gen_zip() expects generators")),
+                };
+                let second = match &args[1] {
+                    Value::Generator(g) => g.clone(),
+                    _ => return Err(runtime_err_s("gen_zip() expects generators")),
+                };
+                let gn = TlGenerator::new(TlGeneratorKind::Zip { first, second });
+                Ok(Value::Generator(Arc::new(gn)))
+            }
+            "gen_enumerate" => {
+                if args.is_empty() {
+                    return Err(runtime_err_s("gen_enumerate() expects a generator"));
+                }
+                let g = match &args[0] {
+                    Value::Generator(g) => g.clone(),
+                    _ => return Err(runtime_err_s("gen_enumerate() expects a generator")),
+                };
+                let gn = TlGenerator::new(TlGeneratorKind::Enumerate {
+                    source: g,
+                    index: Mutex::new(0),
+                });
+                Ok(Value::Generator(Arc::new(gn)))
             }
 
             _ => Err(runtime_err(format!("Unknown builtin: {name}"))),
@@ -2792,6 +3280,26 @@ impl Interpreter {
                     }
                 }
                 _ => Err(runtime_err(format!("Map has no method `{method}`"))),
+            };
+        }
+
+        // Generator method dispatch
+        if let Value::Generator(gen_arc) = obj {
+            let gen_arc = gen_arc.clone();
+            return match method {
+                "next" => self.interpreter_next(&gen_arc),
+                "collect" => {
+                    let mut items = Vec::new();
+                    loop {
+                        let val = self.interpreter_next(&gen_arc)?;
+                        if matches!(val, Value::None) {
+                            break;
+                        }
+                        items.push(val);
+                    }
+                    Ok(Value::List(items))
+                }
+                _ => Err(runtime_err(format!("Generator has no method `{method}`"))),
             };
         }
 
@@ -3626,6 +4134,211 @@ impl Interpreter {
                 Ok(Value::Model(model))
             }
             _ => Err(runtime_err("model_get() expects a model name string".to_string())),
+        }
+    }
+
+    /// Execute a statement inside a generator thread, handling yield via channels.
+    fn exec_stmt_gen(
+        &mut self,
+        stmt: &Stmt,
+        yield_tx: &mpsc::Sender<Result<Value, String>>,
+        resume_rx: &mpsc::Receiver<()>,
+    ) -> Result<GenSignal, TlError> {
+        match stmt {
+            Stmt::Expr(expr) => {
+                let val = self.eval_expr_gen(expr, yield_tx, resume_rx)?;
+                self.last_expr_value = Some(val);
+                Ok(GenSignal::None)
+            }
+            Stmt::Let { name, value, .. } => {
+                let val = self.eval_expr_gen(value, yield_tx, resume_rx)?;
+                self.env.set(name.clone(), val);
+                Ok(GenSignal::None)
+            }
+            Stmt::Return(expr) => {
+                let val = match expr {
+                    Some(e) => self.eval_expr_gen(e, yield_tx, resume_rx)?,
+                    None => Value::None,
+                };
+                Ok(GenSignal::Return(val))
+            }
+            Stmt::If { condition, then_body, else_ifs, else_body } => {
+                let cond = self.eval_expr_gen(condition, yield_tx, resume_rx)?;
+                if cond.is_truthy() {
+                    for s in then_body {
+                        let sig = self.exec_stmt_gen(s, yield_tx, resume_rx)?;
+                        if !matches!(sig, GenSignal::None) { return Ok(sig); }
+                    }
+                } else {
+                    let mut handled = false;
+                    for (ec, eb) in else_ifs {
+                        let ecv = self.eval_expr_gen(ec, yield_tx, resume_rx)?;
+                        if ecv.is_truthy() {
+                            for s in eb {
+                                let sig = self.exec_stmt_gen(s, yield_tx, resume_rx)?;
+                                if !matches!(sig, GenSignal::None) { return Ok(sig); }
+                            }
+                            handled = true;
+                            break;
+                        }
+                    }
+                    if !handled {
+                        if let Some(eb) = else_body {
+                            for s in eb {
+                                let sig = self.exec_stmt_gen(s, yield_tx, resume_rx)?;
+                                if !matches!(sig, GenSignal::None) { return Ok(sig); }
+                            }
+                        }
+                    }
+                }
+                Ok(GenSignal::None)
+            }
+            Stmt::While { condition, body } => {
+                loop {
+                    let cond = self.eval_expr_gen(condition, yield_tx, resume_rx)?;
+                    if !cond.is_truthy() { break; }
+                    self.env.push_scope();
+                    let mut brk = false;
+                    for s in body {
+                        let sig = self.exec_stmt_gen(s, yield_tx, resume_rx)?;
+                        match sig {
+                            GenSignal::Break => { brk = true; break; }
+                            GenSignal::Continue => break,
+                            GenSignal::Return(v) => {
+                                self.env.pop_scope();
+                                return Ok(GenSignal::Return(v));
+                            }
+                            GenSignal::Throw(v) => {
+                                self.env.pop_scope();
+                                return Ok(GenSignal::Throw(v));
+                            }
+                            _ => {}
+                        }
+                    }
+                    self.env.pop_scope();
+                    if brk { break; }
+                }
+                Ok(GenSignal::None)
+            }
+            Stmt::For { name, iter, body } => {
+                let iter_val = self.eval_expr_gen(iter, yield_tx, resume_rx)?;
+                let items = match iter_val {
+                    Value::List(items) => items,
+                    Value::Map(pairs) => pairs.into_iter()
+                        .map(|(k, v)| Value::List(vec![Value::String(k), v]))
+                        .collect(),
+                    Value::Generator(g) => {
+                        // For generator: pull items one by one
+                        let mut results = Vec::new();
+                        loop {
+                            let val = self.interpreter_next(&g)?;
+                            if matches!(val, Value::None) { break; }
+                            results.push(val);
+                        }
+                        results
+                    }
+                    _ => return Err(runtime_err(format!("Cannot iterate over {}", iter_val.type_name()))),
+                };
+                for item in items {
+                    self.env.push_scope();
+                    self.env.set(name.clone(), item);
+                    let mut brk = false;
+                    for s in body {
+                        let sig = self.exec_stmt_gen(s, yield_tx, resume_rx)?;
+                        match sig {
+                            GenSignal::Break => { brk = true; break; }
+                            GenSignal::Continue => break,
+                            GenSignal::Return(v) => {
+                                self.env.pop_scope();
+                                return Ok(GenSignal::Return(v));
+                            }
+                            GenSignal::Throw(v) => {
+                                self.env.pop_scope();
+                                return Ok(GenSignal::Throw(v));
+                            }
+                            _ => {}
+                        }
+                    }
+                    self.env.pop_scope();
+                    if brk { break; }
+                }
+                Ok(GenSignal::None)
+            }
+            Stmt::Break => Ok(GenSignal::Break),
+            Stmt::Continue => Ok(GenSignal::Continue),
+            Stmt::Throw(expr) => {
+                let val = self.eval_expr_gen(expr, yield_tx, resume_rx)?;
+                Ok(GenSignal::Throw(val))
+            }
+            Stmt::FnDecl { name, params, body, is_generator, .. } => {
+                let func = Value::Function {
+                    name: name.clone(),
+                    params: params.clone(),
+                    body: body.clone(),
+                    is_generator: *is_generator,
+                };
+                self.env.set(name.clone(), func);
+                Ok(GenSignal::None)
+            }
+            // For other statements, delegate to regular exec_stmt
+            other => {
+                let sig = self.exec_stmt(other)?;
+                Ok(match sig {
+                    Signal::None => GenSignal::None,
+                    Signal::Return(v) => GenSignal::Return(v),
+                    Signal::Break => GenSignal::Break,
+                    Signal::Continue => GenSignal::Continue,
+                    Signal::Throw(v) => GenSignal::Throw(v),
+                    Signal::Yield(v) => GenSignal::Yield(v),
+                })
+            }
+        }
+    }
+
+    /// Evaluate expression inside a generator, handling yield.
+    fn eval_expr_gen(
+        &mut self,
+        expr: &Expr,
+        yield_tx: &mpsc::Sender<Result<Value, String>>,
+        resume_rx: &mpsc::Receiver<()>,
+    ) -> Result<Value, TlError> {
+        match expr {
+            Expr::Yield(opt_expr) => {
+                let val = match opt_expr {
+                    Some(e) => self.eval_expr_gen(e, yield_tx, resume_rx)?,
+                    None => Value::None,
+                };
+                // Send the yielded value to the consumer
+                yield_tx.send(Ok(val.clone()))
+                    .map_err(|_| runtime_err("Generator consumer disconnected".to_string()))?;
+                // Wait for resume signal
+                resume_rx.recv()
+                    .map_err(|_| runtime_err("Generator consumer disconnected".to_string()))?;
+                Ok(val)
+            }
+            // For assign with yield: handle specially
+            Expr::Assign { target, value } => {
+                let val = self.eval_expr_gen(value, yield_tx, resume_rx)?;
+                match target.as_ref() {
+                    Expr::Ident(name) => {
+                        if !self.env.update(name, val.clone()) {
+                            return Err(runtime_err(format!("Variable '{name}' not found")));
+                        }
+                        Ok(val)
+                    }
+                    _ => {
+                        // For complex assignments, use regular eval
+                        self.eval_expr(&Expr::Assign {
+                            target: target.clone(),
+                            value: Box::new(Expr::None),
+                        }).ok();
+                        // Actually just set the value
+                        Ok(val)
+                    }
+                }
+            }
+            // For most expressions, delegate to regular eval_expr
+            _ => self.eval_expr(expr),
         }
     }
 
@@ -4872,5 +5585,253 @@ while count < 5 {
 await t
 print(total)"#);
         assert_eq!(output, vec!["100"]);
+    }
+
+    // ── Phase 8: Generators & Iterators ──────────────────────
+
+    #[test]
+    fn test_interp_basic_generator() {
+        let output = run_output(r#"fn gen() {
+    yield 1
+    yield 2
+    yield 3
+}
+let g = gen()
+print(next(g))
+print(next(g))
+print(next(g))
+print(next(g))"#);
+        assert_eq!(output, vec!["1", "2", "3", "none"]);
+    }
+
+    #[test]
+    fn test_interp_generator_exhaustion() {
+        let output = run_output(r#"fn gen() { yield 42 }
+let g = gen()
+print(next(g))
+print(next(g))
+print(next(g))"#);
+        assert_eq!(output, vec!["42", "none", "none"]);
+    }
+
+    #[test]
+    fn test_interp_generator_with_loop() {
+        let output = run_output(r#"fn counter() {
+    let mut i = 0
+    while i < 5 {
+        yield i
+        i = i + 1
+    }
+}
+print(gen_collect(counter()))"#);
+        assert_eq!(output, vec!["[0, 1, 2, 3, 4]"]);
+    }
+
+    #[test]
+    fn test_interp_generator_with_args() {
+        let output = run_output(r#"fn range_gen(start, end) {
+    let mut i = start
+    while i < end {
+        yield i
+        i = i + 1
+    }
+}
+let g = range_gen(3, 7)
+print(next(g))
+print(next(g))
+print(next(g))
+print(next(g))
+print(next(g))"#);
+        assert_eq!(output, vec!["3", "4", "5", "6", "none"]);
+    }
+
+    #[test]
+    fn test_interp_generator_yield_none() {
+        let output = run_output(r#"fn gen() {
+    yield
+    yield 5
+}
+let g = gen()
+print(next(g))
+print(next(g))
+print(next(g))"#);
+        assert_eq!(output, vec!["none", "5", "none"]);
+    }
+
+    #[test]
+    fn test_interp_is_generator() {
+        let output = run_output(r#"fn gen() { yield 1 }
+let g = gen()
+print(is_generator(g))
+print(is_generator(42))
+print(is_generator(none))"#);
+        assert_eq!(output, vec!["true", "false", "false"]);
+    }
+
+    #[test]
+    fn test_interp_multiple_generators() {
+        let output = run_output(r#"fn gen() {
+    yield 1
+    yield 2
+}
+let g1 = gen()
+let g2 = gen()
+print(next(g1))
+print(next(g2))
+print(next(g1))
+print(next(g2))"#);
+        assert_eq!(output, vec!["1", "1", "2", "2"]);
+    }
+
+    #[test]
+    fn test_interp_for_over_generator() {
+        let output = run_output(r#"fn gen() {
+    yield 10
+    yield 20
+    yield 30
+}
+let mut sum = 0
+for x in gen() {
+    sum = sum + x
+}
+print(sum)"#);
+        assert_eq!(output, vec!["60"]);
+    }
+
+    #[test]
+    fn test_interp_iter_builtin() {
+        let output = run_output(r#"let g = iter([10, 20, 30])
+print(next(g))
+print(next(g))
+print(next(g))
+print(next(g))"#);
+        assert_eq!(output, vec!["10", "20", "30", "none"]);
+    }
+
+    #[test]
+    fn test_interp_take_builtin() {
+        let output = run_output(r#"fn naturals() {
+    let mut n = 0
+    while true {
+        yield n
+        n = n + 1
+    }
+}
+print(gen_collect(take(naturals(), 5)))"#);
+        assert_eq!(output, vec!["[0, 1, 2, 3, 4]"]);
+    }
+
+    #[test]
+    fn test_interp_skip_builtin() {
+        let output = run_output(r#"let g = skip(iter([1, 2, 3, 4, 5]), 3)
+print(gen_collect(g))"#);
+        assert_eq!(output, vec!["[4, 5]"]);
+    }
+
+    #[test]
+    fn test_interp_gen_collect() {
+        let output = run_output(r#"fn gen() {
+    yield 1
+    yield 2
+    yield 3
+}
+print(gen_collect(gen()))"#);
+        assert_eq!(output, vec!["[1, 2, 3]"]);
+    }
+
+    #[test]
+    fn test_interp_gen_map() {
+        let output = run_output(r#"let g = gen_map(iter([1, 2, 3]), (x) => x * 10)
+print(gen_collect(g))"#);
+        assert_eq!(output, vec!["[10, 20, 30]"]);
+    }
+
+    #[test]
+    fn test_interp_gen_filter() {
+        let output = run_output(r#"let g = gen_filter(iter([1, 2, 3, 4, 5, 6]), (x) => x % 2 == 0)
+print(gen_collect(g))"#);
+        assert_eq!(output, vec!["[2, 4, 6]"]);
+    }
+
+    #[test]
+    fn test_interp_chain() {
+        let output = run_output(r#"let g = chain(iter([1, 2]), iter([3, 4]))
+print(gen_collect(g))"#);
+        assert_eq!(output, vec!["[1, 2, 3, 4]"]);
+    }
+
+    #[test]
+    fn test_interp_gen_zip() {
+        let output = run_output(r#"let g = gen_zip(iter([1, 2, 3]), iter([10, 20]))
+print(gen_collect(g))"#);
+        assert_eq!(output, vec!["[[1, 10], [2, 20]]"]);
+    }
+
+    #[test]
+    fn test_interp_gen_enumerate() {
+        let output = run_output(r#"let g = gen_enumerate(iter([10, 20, 30]))
+print(gen_collect(g))"#);
+        assert_eq!(output, vec!["[[0, 10], [1, 20], [2, 30]]"]);
+    }
+
+    #[test]
+    fn test_interp_combinator_chaining() {
+        let output = run_output(r#"fn naturals() {
+    let mut n = 0
+    while true {
+        yield n
+        n = n + 1
+    }
+}
+let result = gen_collect(gen_map(gen_filter(take(naturals(), 10), (x) => x % 2 == 0), (x) => x * x))
+print(result)"#);
+        assert_eq!(output, vec!["[0, 4, 16, 36, 64]"]);
+    }
+
+    #[test]
+    fn test_interp_for_over_take() {
+        let output = run_output(r#"fn naturals() {
+    let mut n = 0
+    while true {
+        yield n
+        n = n + 1
+    }
+}
+let mut sum = 0
+for x in take(naturals(), 5) {
+    sum = sum + x
+}
+print(sum)"#);
+        assert_eq!(output, vec!["10"]);
+    }
+
+    #[test]
+    fn test_interp_fibonacci_generator() {
+        let output = run_output(r#"fn fib() {
+    let mut a = 0
+    let mut b = 1
+    while true {
+        yield a
+        let tmp = a + b
+        a = b
+        b = tmp
+    }
+}
+print(gen_collect(take(fib(), 8)))"#);
+        assert_eq!(output, vec!["[0, 1, 1, 2, 3, 5, 8, 13]"]);
+    }
+
+    #[test]
+    fn test_interp_generator_method_syntax() {
+        let output = run_output(r#"fn gen() {
+    yield 1
+    yield 2
+    yield 3
+}
+let g = gen()
+print(g.next())
+print(g.next())
+print(g.collect())"#);
+        assert_eq!(output, vec!["1", "2", "[3]"]);
     }
 }

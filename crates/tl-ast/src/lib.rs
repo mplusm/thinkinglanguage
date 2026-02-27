@@ -28,6 +28,7 @@ pub enum Stmt {
         params: Vec<Param>,
         return_type: Option<TypeExpr>,
         body: Vec<Stmt>,
+        is_generator: bool,
     },
 
     /// Expression statement (e.g., a function call on its own line)
@@ -290,6 +291,9 @@ pub enum Expr {
 
     /// Await expression: `await expr`
     Await(Box<Expr>),
+
+    /// Yield expression: `yield expr` or bare `yield`
+    Yield(Option<Box<Expr>>),
 }
 
 /// Binary operators

@@ -454,4 +454,23 @@ mod tests {
         assert!(matches!(tokens[3].token, Token::Await));
         assert!(matches!(&tokens[4].token, Token::Ident(s) if s == "spawn"));
     }
+
+    // Phase 8: Generator token tests
+
+    #[test]
+    fn test_yield_token() {
+        let tokens = tokenize("yield 42").unwrap();
+        assert!(matches!(tokens[0].token, Token::Yield));
+        assert!(matches!(tokens[1].token, Token::Int(42)));
+    }
+
+    #[test]
+    fn test_yield_in_function() {
+        let tokens = tokenize("fn gen() { yield x }").unwrap();
+        assert!(matches!(tokens[0].token, Token::Fn));
+        assert!(matches!(&tokens[1].token, Token::Ident(s) if s == "gen"));
+        assert!(matches!(tokens[4].token, Token::LBrace));
+        assert!(matches!(tokens[5].token, Token::Yield));
+        assert!(matches!(&tokens[6].token, Token::Ident(s) if s == "x"));
+    }
 }

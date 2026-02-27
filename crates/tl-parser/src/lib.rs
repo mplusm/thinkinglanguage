@@ -51,7 +51,9 @@ impl Parser {
     }
 
     fn is_at_end(&self) -> bool {
-        self.pos >= self.tokens.len() || matches!(self.peek(), Token::None_)
+        // The tokenizer always appends a Token::None_ (EOF) sentinel as the last token.
+        // Check position rather than token value so the `none` keyword works correctly.
+        self.pos >= self.tokens.len() - 1
     }
 
     fn expect(&mut self, expected: &Token) -> Result<Span, TlError> {
@@ -520,11 +522,13 @@ impl Parser {
         self.expect(&Token::LBrace)?;
         let body = self.parse_block_body()?;
         self.expect(&Token::RBrace)?;
+        let is_generator = body_contains_yield(&body);
         Ok(Stmt::FnDecl {
             name,
             params,
             return_type,
             body,
+            is_generator,
         })
     }
 
@@ -747,8 +751,21 @@ impl Parser {
         }
     }
 
-    /// Unary: not expr | -expr
+    /// Unary: not expr | -expr | yield expr | await expr
     fn parse_unary(&mut self) -> Result<Expr, TlError> {
+        if self.match_token(&Token::Yield) {
+            // yield with no value if next token is a statement boundary or statement-starting keyword
+            if self.is_at_end() || matches!(self.peek(),
+                Token::RBrace | Token::RParen | Token::Comma | Token::Semicolon |
+                Token::Let | Token::Fn | Token::If | Token::While | Token::For |
+                Token::Return | Token::Yield | Token::Struct | Token::Enum |
+                Token::Impl | Token::Import | Token::Try | Token::Throw
+            ) {
+                return Ok(Expr::Yield(None));
+            }
+            let expr = self.parse_expression()?;
+            return Ok(Expr::Yield(Some(Box::new(expr))));
+        }
         if self.match_token(&Token::Await) {
             let expr = self.parse_unary()?;
             return Ok(Expr::Await(Box::new(expr)));
@@ -1010,7 +1027,7 @@ impl Parser {
                             && self.tokens[i + 1].token == Token::FatArrow;
                     }
                 }
-                Token::None_ => return false, // hit EOF
+                _ if i >= self.tokens.len() - 1 => return false, // hit EOF sentinel
                 _ => {}
             }
             i += 1;
@@ -1301,6 +1318,60 @@ pub fn parse(source: &str) -> Result<Program, TlError> {
     let tokens = tl_lexer::tokenize(source)?;
     let mut parser = Parser::new(tokens);
     parser.parse_program()
+}
+
+/// Check if a function body contains any yield expressions (makes it a generator).
+fn body_contains_yield(stmts: &[Stmt]) -> bool {
+    for stmt in stmts {
+        if stmt_contains_yield(stmt) {
+            return true;
+        }
+    }
+    false
+}
+
+fn stmt_contains_yield(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Expr(e) | Stmt::Return(Some(e)) | Stmt::Throw(e) => expr_contains_yield(e),
+        Stmt::Let { value, .. } => expr_contains_yield(value),
+        Stmt::If { condition, then_body, else_ifs, else_body } => {
+            expr_contains_yield(condition)
+                || body_contains_yield(then_body)
+                || else_ifs.iter().any(|(c, b)| expr_contains_yield(c) || body_contains_yield(b))
+                || else_body.as_ref().map_or(false, |b| body_contains_yield(b))
+        }
+        Stmt::While { condition, body } => expr_contains_yield(condition) || body_contains_yield(body),
+        Stmt::For { iter, body, .. } => expr_contains_yield(iter) || body_contains_yield(body),
+        Stmt::TryCatch { try_body, catch_body, .. } => body_contains_yield(try_body) || body_contains_yield(catch_body),
+        // Don't recurse into nested FnDecl — yield in nested fn is for that fn
+        Stmt::FnDecl { .. } => false,
+        _ => false,
+    }
+}
+
+fn expr_contains_yield(expr: &Expr) -> bool {
+    match expr {
+        Expr::Yield(_) => true,
+        Expr::BinOp { left, right, .. } => expr_contains_yield(left) || expr_contains_yield(right),
+        Expr::UnaryOp { expr, .. } => expr_contains_yield(expr),
+        Expr::Call { function, args } => expr_contains_yield(function) || args.iter().any(expr_contains_yield),
+        Expr::Pipe { left, right } => expr_contains_yield(left) || expr_contains_yield(right),
+        Expr::Member { object, .. } => expr_contains_yield(object),
+        Expr::Index { object, index } => expr_contains_yield(object) || expr_contains_yield(index),
+        Expr::List(items) => items.iter().any(expr_contains_yield),
+        Expr::Map(pairs) => pairs.iter().any(|(k, v)| expr_contains_yield(k) || expr_contains_yield(v)),
+        Expr::Block { stmts, expr } => body_contains_yield(stmts) || expr.as_ref().map_or(false, |e| expr_contains_yield(e)),
+        Expr::Closure { .. } => false, // Don't recurse — yield in closure is not our yield
+        Expr::Assign { target, value } => expr_contains_yield(target) || expr_contains_yield(value),
+        Expr::NullCoalesce { expr, default } => expr_contains_yield(expr) || expr_contains_yield(default),
+        Expr::Range { start, end } => expr_contains_yield(start) || expr_contains_yield(end),
+        Expr::Await(e) => expr_contains_yield(e),
+        Expr::NamedArg { value, .. } => expr_contains_yield(value),
+        Expr::Case { arms } | Expr::Match { arms, .. } => arms.iter().any(|(a, b)| expr_contains_yield(a) || expr_contains_yield(b)),
+        Expr::StructInit { fields, .. } => fields.iter().any(|(_, e)| expr_contains_yield(e)),
+        Expr::EnumVariant { args, .. } => args.iter().any(expr_contains_yield),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -1767,6 +1838,53 @@ mod tests {
             assert!(matches!(inner.as_ref(), Expr::Call { .. }));
         } else {
             panic!("Expected Await(Call(...))");
+        }
+    }
+
+    #[test]
+    fn test_parse_yield_expr() {
+        let program = parse("yield 42").unwrap();
+        if let Stmt::Expr(Expr::Yield(Some(inner))) = &program.statements[0] {
+            assert!(matches!(inner.as_ref(), Expr::Int(42)));
+        } else {
+            panic!("Expected Yield(Some(Int(42)))");
+        }
+    }
+
+    #[test]
+    fn test_parse_bare_yield() {
+        let program = parse("fn gen() { yield }").unwrap();
+        if let Stmt::FnDecl { body, is_generator, .. } = &program.statements[0] {
+            assert!(*is_generator);
+            if let Stmt::Expr(Expr::Yield(None)) = &body[0] {
+                // ok
+            } else {
+                panic!("Expected bare Yield(None), got {:?}", body[0]);
+            }
+        } else {
+            panic!("Expected FnDecl");
+        }
+    }
+
+    #[test]
+    fn test_parse_generator_fn() {
+        let program = parse("fn gen() { yield 1\nyield 2 }").unwrap();
+        if let Stmt::FnDecl { name, is_generator, body, .. } = &program.statements[0] {
+            assert_eq!(name, "gen");
+            assert!(*is_generator);
+            assert_eq!(body.len(), 2);
+        } else {
+            panic!("Expected FnDecl");
+        }
+    }
+
+    #[test]
+    fn test_parse_non_generator_fn() {
+        let program = parse("fn add(a, b) { return a }").unwrap();
+        if let Stmt::FnDecl { is_generator, .. } = &program.statements[0] {
+            assert!(!*is_generator);
+        } else {
+            panic!("Expected FnDecl");
         }
     }
 }

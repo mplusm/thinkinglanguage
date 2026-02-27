@@ -56,6 +56,8 @@ pub enum VmValue {
     Task(Arc<VmTask>),
     /// A channel for inter-task communication
     Channel(Arc<VmChannel>),
+    /// A generator (lazy iterator)
+    Generator(Arc<Mutex<VmGenerator>>),
 }
 
 /// Struct type definition
@@ -154,6 +156,75 @@ impl fmt::Debug for VmChannel {
     }
 }
 
+/// Counter for generating unique generator IDs
+static GENERATOR_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// The kind of generator — user-defined (via yield) or built-in combinator.
+pub enum GeneratorKind {
+    /// User-defined generator (from fn with yield)
+    UserDefined {
+        prototype: Arc<Prototype>,
+        upvalues: Vec<UpvalueRef>,
+        saved_stack: Vec<VmValue>,
+        ip: usize,
+    },
+    /// Built-in iterator over a list
+    ListIter { items: Vec<VmValue>, index: usize },
+    /// Take at most N items from a source generator
+    Take { source: Arc<Mutex<VmGenerator>>, remaining: usize },
+    /// Skip the first N items from a source generator
+    Skip { source: Arc<Mutex<VmGenerator>>, remaining: usize },
+    /// Map a function over each yielded value
+    Map { source: Arc<Mutex<VmGenerator>>, func: VmValue },
+    /// Filter values using a predicate function
+    Filter { source: Arc<Mutex<VmGenerator>>, func: VmValue },
+    /// Chain two generators: yield from first, then second
+    Chain { first: Arc<Mutex<VmGenerator>>, second: Arc<Mutex<VmGenerator>>, on_second: bool },
+    /// Zip two generators: yield [a, b] pairs
+    Zip { first: Arc<Mutex<VmGenerator>>, second: Arc<Mutex<VmGenerator>> },
+    /// Enumerate: yield [index, value] pairs
+    Enumerate { source: Arc<Mutex<VmGenerator>>, index: usize },
+}
+
+impl fmt::Debug for GeneratorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GeneratorKind::UserDefined { .. } => write!(f, "UserDefined"),
+            GeneratorKind::ListIter { .. } => write!(f, "ListIter"),
+            GeneratorKind::Take { .. } => write!(f, "Take"),
+            GeneratorKind::Skip { .. } => write!(f, "Skip"),
+            GeneratorKind::Map { .. } => write!(f, "Map"),
+            GeneratorKind::Filter { .. } => write!(f, "Filter"),
+            GeneratorKind::Chain { .. } => write!(f, "Chain"),
+            GeneratorKind::Zip { .. } => write!(f, "Zip"),
+            GeneratorKind::Enumerate { .. } => write!(f, "Enumerate"),
+        }
+    }
+}
+
+/// A generator object — wraps a GeneratorKind with done state.
+pub struct VmGenerator {
+    pub kind: GeneratorKind,
+    pub done: bool,
+    pub id: u64,
+}
+
+impl VmGenerator {
+    pub fn new(kind: GeneratorKind) -> Self {
+        VmGenerator {
+            kind,
+            done: false,
+            id: GENERATOR_COUNTER.fetch_add(1, Ordering::Relaxed),
+        }
+    }
+}
+
+impl fmt::Debug for VmGenerator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<generator {}>", self.id)
+    }
+}
+
 /// A closure: compiled function prototype + captured upvalues.
 #[derive(Debug)]
 pub struct VmClosure {
@@ -229,6 +300,7 @@ impl VmValue {
             VmValue::Map(_) => "map",
             VmValue::Task(_) => "task",
             VmValue::Channel(_) => "channel",
+            VmValue::Generator(_) => "generator",
         }
     }
 }
@@ -280,6 +352,10 @@ impl fmt::Debug for VmValue {
             }
             VmValue::Task(t) => write!(f, "<task {}>", t.id),
             VmValue::Channel(c) => write!(f, "<channel {}>", c.id),
+            VmValue::Generator(g) => {
+                let guard = g.lock().unwrap();
+                write!(f, "<generator {}>", guard.id)
+            }
         }
     }
 }
@@ -351,6 +427,10 @@ impl fmt::Display for VmValue {
             }
             VmValue::Task(t) => write!(f, "<task {}>", t.id),
             VmValue::Channel(c) => write!(f, "<channel {}>", c.id),
+            VmValue::Generator(g) => {
+                let guard = g.lock().unwrap();
+                write!(f, "<generator {}>", guard.id)
+            }
         }
     }
 }

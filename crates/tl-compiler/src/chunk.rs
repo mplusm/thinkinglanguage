@@ -22,6 +22,8 @@ pub struct Prototype {
     pub upvalue_defs: Vec<UpvalueDef>,
     /// Function name (for debugging)
     pub name: String,
+    /// Whether this function contains yield (is a generator)
+    pub is_generator: bool,
 }
 
 impl Prototype {
@@ -35,6 +37,7 @@ impl Prototype {
             num_registers: 0,
             upvalue_defs: Vec::new(),
             name,
+            is_generator: false,
         }
     }
 }
@@ -169,6 +172,18 @@ pub enum BuiltinId {
     AwaitAll = 91,
     Pmap = 92,
     Timeout = 93,
+    // Phase 8: Iterators & Generators
+    Next = 94,
+    IsGenerator = 95,
+    Iter = 96,
+    Take = 97,
+    Skip_ = 98,
+    GenCollect = 99,
+    GenMap = 100,
+    GenFilter = 101,
+    Chain = 102,
+    GenZip = 103,
+    GenEnumerate = 104,
 }
 
 impl BuiltinId {
@@ -268,6 +283,17 @@ impl BuiltinId {
             "await_all" => Some(BuiltinId::AwaitAll),
             "pmap" => Some(BuiltinId::Pmap),
             "timeout" => Some(BuiltinId::Timeout),
+            "next" => Some(BuiltinId::Next),
+            "is_generator" => Some(BuiltinId::IsGenerator),
+            "iter" => Some(BuiltinId::Iter),
+            "take" => Some(BuiltinId::Take),
+            "skip" => Some(BuiltinId::Skip_),
+            "gen_collect" => Some(BuiltinId::GenCollect),
+            "gen_map" => Some(BuiltinId::GenMap),
+            "gen_filter" => Some(BuiltinId::GenFilter),
+            "chain" => Some(BuiltinId::Chain),
+            "gen_zip" => Some(BuiltinId::GenZip),
+            "gen_enumerate" => Some(BuiltinId::GenEnumerate),
             _ => None,
         }
     }
@@ -368,6 +394,17 @@ impl BuiltinId {
             BuiltinId::AwaitAll => "await_all",
             BuiltinId::Pmap => "pmap",
             BuiltinId::Timeout => "timeout",
+            BuiltinId::Next => "next",
+            BuiltinId::IsGenerator => "is_generator",
+            BuiltinId::Iter => "iter",
+            BuiltinId::Take => "take",
+            BuiltinId::Skip_ => "skip",
+            BuiltinId::GenCollect => "gen_collect",
+            BuiltinId::GenMap => "gen_map",
+            BuiltinId::GenFilter => "gen_filter",
+            BuiltinId::Chain => "chain",
+            BuiltinId::GenZip => "gen_zip",
+            BuiltinId::GenEnumerate => "gen_enumerate",
         }
     }
 }

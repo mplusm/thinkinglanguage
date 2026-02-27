@@ -49,6 +49,7 @@ struct CompilerState {
     scope_depth: u32,
     next_register: u8,
     loop_stack: Vec<LoopCtx>,
+    has_yield: bool,
 }
 
 impl CompilerState {
@@ -60,6 +61,7 @@ impl CompilerState {
             scope_depth: 0,
             next_register: 0,
             loop_stack: Vec::new(),
+            has_yield: false,
         }
     }
 
@@ -496,6 +498,7 @@ impl Compiler {
         // Pop the function state
         let fn_state = self.states.pop().unwrap();
         let mut proto = fn_state.proto;
+        proto.is_generator = fn_state.has_yield;
         proto.upvalue_defs = fn_state.upvalues.iter().map(|uv| UpvalueDef {
             is_local: uv.is_local,
             index: uv.index,
@@ -1128,6 +1131,18 @@ impl Compiler {
                 self.compile_expr(expr, src)?;
                 self.current().emit_abc(Op::Await, dest, src, 0, 0);
                 self.current().free_register();
+            }
+            Expr::Yield(opt_expr) => {
+                self.current().has_yield = true;
+                match opt_expr {
+                    Some(expr) => {
+                        self.compile_expr(expr, dest)?;
+                    }
+                    None => {
+                        self.current().emit_abx(Op::LoadNone, dest, 0, 0);
+                    }
+                }
+                self.current().emit_abc(Op::Yield, dest, 0, 0, 0);
             }
             Expr::Call { function, args } => {
                 self.compile_call(function, args, dest)?;

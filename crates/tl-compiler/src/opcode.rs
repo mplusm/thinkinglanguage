@@ -170,6 +170,10 @@ pub enum Op {
     // ── Phase 7: Concurrency ──
     /// Await: A = dest, B = task register (passthrough if not a task)
     Await = 59,
+
+    // ── Phase 8: Iterators & Generators ──
+    /// Yield: A = value register to yield (suspends generator)
+    Yield = 60,
 }
 
 /// Encode an ABC-format instruction: [op:8][A:8][B:8][C:8]
