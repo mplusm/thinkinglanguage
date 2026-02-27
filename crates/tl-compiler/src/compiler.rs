@@ -1175,6 +1175,12 @@ impl Compiler {
                 self.current().emit_abc(Op::Await, dest, src, 0, 0);
                 self.current().free_register();
             }
+            Expr::Try(inner) => {
+                let src = self.current().alloc_register();
+                self.compile_expr(inner, src)?;
+                self.current().emit_abc(Op::TryPropagate, dest, src, 0, 0);
+                self.current().free_register();
+            }
             Expr::Yield(opt_expr) => {
                 self.current().has_yield = true;
                 match opt_expr {

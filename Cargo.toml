@@ -5,6 +5,7 @@ members = [
     "crates/tl-parser",
     "crates/tl-interpreter",
     "crates/tl-errors",
+    "crates/tl-types",
     "crates/tl-cli",
     "crates/tl-data",
     "crates/tl-compiler",

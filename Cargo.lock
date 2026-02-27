@@ -4225,6 +4225,7 @@ dependencies = [
  "tl-lexer",
  "tl-parser",
  "tl-stream",
+ "tl-types",
 ]
 
 [[package]]
@@ -4319,6 +4320,15 @@ dependencies = [
  "tl-ast",
  "tl-errors",
  "tokio",
+]
+
+[[package]]
+name = "tl-types"
+version = "0.1.0"
+dependencies = [
+ "tl-ast",
+ "tl-errors",
+ "tl-parser",
 ]
 
 [[package]]

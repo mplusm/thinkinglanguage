@@ -282,6 +282,9 @@ impl Prototype {
 
                 // Phase 8: generators
                 Op::Yield => format!("yield R{a}"),
+
+                // Phase 10: type system
+                Op::TryPropagate => format!("R{a} = try R{b}"),
             };
 
             out.push_str(&format!(
@@ -470,6 +473,19 @@ pub enum BuiltinId {
     Chain = 102,
     GenZip = 103,
     GenEnumerate = 104,
+    // Phase 10: Type system
+    Ok = 105,
+    Err_ = 106,
+    IsOk = 107,
+    IsErr = 108,
+    Unwrap = 109,
+    SetFrom = 110,
+    SetAdd = 111,
+    SetRemove = 112,
+    SetContains = 113,
+    SetUnion = 114,
+    SetIntersection = 115,
+    SetDifference = 116,
 }
 
 impl BuiltinId {
@@ -580,6 +596,18 @@ impl BuiltinId {
             "chain" => Some(BuiltinId::Chain),
             "gen_zip" => Some(BuiltinId::GenZip),
             "gen_enumerate" => Some(BuiltinId::GenEnumerate),
+            "Ok" => Some(BuiltinId::Ok),
+            "Err" => Some(BuiltinId::Err_),
+            "is_ok" => Some(BuiltinId::IsOk),
+            "is_err" => Some(BuiltinId::IsErr),
+            "unwrap" => Some(BuiltinId::Unwrap),
+            "set_from" => Some(BuiltinId::SetFrom),
+            "set_add" => Some(BuiltinId::SetAdd),
+            "set_remove" => Some(BuiltinId::SetRemove),
+            "set_contains" => Some(BuiltinId::SetContains),
+            "set_union" => Some(BuiltinId::SetUnion),
+            "set_intersection" => Some(BuiltinId::SetIntersection),
+            "set_difference" => Some(BuiltinId::SetDifference),
             _ => None,
         }
     }
@@ -691,6 +719,18 @@ impl BuiltinId {
             BuiltinId::Chain => "chain",
             BuiltinId::GenZip => "gen_zip",
             BuiltinId::GenEnumerate => "gen_enumerate",
+            BuiltinId::Ok => "Ok",
+            BuiltinId::Err_ => "Err",
+            BuiltinId::IsOk => "is_ok",
+            BuiltinId::IsErr => "is_err",
+            BuiltinId::Unwrap => "unwrap",
+            BuiltinId::SetFrom => "set_from",
+            BuiltinId::SetAdd => "set_add",
+            BuiltinId::SetRemove => "set_remove",
+            BuiltinId::SetContains => "set_contains",
+            BuiltinId::SetUnion => "set_union",
+            BuiltinId::SetIntersection => "set_intersection",
+            BuiltinId::SetDifference => "set_difference",
         }
     }
 }

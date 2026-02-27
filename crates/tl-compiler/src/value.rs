@@ -58,6 +58,8 @@ pub enum VmValue {
     Channel(Arc<VmChannel>),
     /// A generator (lazy iterator)
     Generator(Arc<Mutex<VmGenerator>>),
+    /// A set (unique values)
+    Set(Vec<VmValue>),
 }
 
 /// Struct type definition
@@ -269,6 +271,7 @@ impl VmValue {
             VmValue::String(s) => !s.is_empty(),
             VmValue::List(items) => !items.is_empty(),
             VmValue::Map(pairs) => !pairs.is_empty(),
+            VmValue::Set(items) => !items.is_empty(),
             VmValue::None => false,
             _ => true,
         }
@@ -298,6 +301,7 @@ impl VmValue {
             VmValue::EnumInstance(_) => "enum",
             VmValue::Module(_) => "module",
             VmValue::Map(_) => "map",
+            VmValue::Set(_) => "set",
             VmValue::Task(_) => "task",
             VmValue::Channel(_) => "channel",
             VmValue::Generator(_) => "generator",
@@ -355,6 +359,14 @@ impl fmt::Debug for VmValue {
             VmValue::Generator(g) => {
                 let guard = g.lock().unwrap();
                 write!(f, "<generator {}>", guard.id)
+            }
+            VmValue::Set(items) => {
+                write!(f, "Set{{")?;
+                for (i, v) in items.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{v:?}")?;
+                }
+                write!(f, "}}")
             }
         }
     }
@@ -430,6 +442,14 @@ impl fmt::Display for VmValue {
             VmValue::Generator(g) => {
                 let guard = g.lock().unwrap();
                 write!(f, "<generator {}>", guard.id)
+            }
+            VmValue::Set(items) => {
+                write!(f, "{{")?;
+                for (i, v) in items.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{v}")?;
+                }
+                write!(f, "}}")
             }
         }
     }

@@ -16,10 +16,11 @@ use std::borrow::Cow;
 use std::fs;
 use std::process;
 
-use tl_errors::{report_parser_error, report_runtime_error, TlError};
+use tl_errors::{report_parser_error, report_runtime_error, report_type_error, report_type_warning, TlError};
 use tl_interpreter::Interpreter;
 use tl_compiler::{compile, compile_with_source, Vm, VmValue};
 use tl_parser::parse;
+use tl_types::checker::{CheckerConfig, check_program};
 
 mod deploy;
 
@@ -51,6 +52,8 @@ impl TlHelper {
             "spawn", "sleep", "channel", "send", "recv", "try_recv", "await_all", "pmap", "timeout",
             "next", "is_generator", "iter", "take", "skip", "gen_collect", "gen_map", "gen_filter",
             "chain", "gen_zip", "gen_enumerate",
+            "Ok", "Err", "is_ok", "is_err", "unwrap",
+            "set_from", "set_add", "set_remove", "set_contains", "set_union", "set_intersection", "set_difference",
         ].iter().map(|s| String::from(*s)).collect();
         completions.sort();
         TlHelper { completions }
@@ -172,6 +175,12 @@ enum Commands {
         /// Dump compiled bytecode instead of executing
         #[arg(long)]
         dump_bytecode: bool,
+        /// Skip type checking
+        #[arg(long)]
+        no_check: bool,
+        /// Strict mode: require type annotations on function parameters
+        #[arg(long)]
+        strict: bool,
     },
     /// Start the interactive REPL
     Shell {
@@ -238,7 +247,7 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Run { file, backend, dump_bytecode }) => run_file(&file, &backend, dump_bytecode),
+        Some(Commands::Run { file, backend, dump_bytecode, no_check, strict }) => run_file(&file, &backend, dump_bytecode, no_check, strict),
         Some(Commands::Shell { backend }) => run_repl(&backend),
         Some(Commands::Models { action }) => run_models(action),
         Some(Commands::Deploy { file, target, output }) => run_deploy(&file, &target, &output),
@@ -249,7 +258,7 @@ fn main() {
     }
 }
 
-fn run_file(path: &str, backend: &str, dump_bytecode: bool) {
+fn run_file(path: &str, backend: &str, dump_bytecode: bool, no_check: bool, strict: bool) {
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -269,6 +278,35 @@ fn run_file(path: &str, backend: &str, dump_bytecode: bool) {
             process::exit(1);
         }
     };
+
+    // Type checking pass (unless --no-check)
+    if !no_check {
+        let config = CheckerConfig { strict };
+        let result = check_program(&program, &config);
+
+        for warning in &result.warnings {
+            report_type_warning(&source, path, &tl_errors::TypeError {
+                message: warning.message.clone(),
+                span: warning.span,
+                expected: warning.expected.clone(),
+                found: warning.found.clone(),
+                hint: warning.hint.clone(),
+            });
+        }
+
+        if result.has_errors() {
+            for error in &result.errors {
+                report_type_error(&source, path, &tl_errors::TypeError {
+                    message: error.message.clone(),
+                    span: error.span,
+                    expected: error.expected.clone(),
+                    found: error.found.clone(),
+                    hint: error.hint.clone(),
+                });
+            }
+            process::exit(1);
+        }
+    }
 
     if dump_bytecode {
         let proto = match compile_with_source(&program, &source) {
@@ -407,6 +445,27 @@ fn run_repl_vm(editor: &mut Editor<TlHelper, DefaultHistory>) {
 
                 match parse(&input) {
                     Ok(program) => {
+                        // Type check (warnings only in REPL — don't block execution)
+                        let check_result = check_program(&program, &CheckerConfig::default());
+                        for warning in &check_result.warnings {
+                            report_type_warning(&input, "<repl>", &tl_errors::TypeError {
+                                message: warning.message.clone(),
+                                span: warning.span,
+                                expected: warning.expected.clone(),
+                                found: warning.found.clone(),
+                                hint: warning.hint.clone(),
+                            });
+                        }
+                        for error in &check_result.errors {
+                            report_type_error(&input, "<repl>", &tl_errors::TypeError {
+                                message: error.message.clone(),
+                                span: error.span,
+                                expected: error.expected.clone(),
+                                found: error.found.clone(),
+                                hint: error.hint.clone(),
+                            });
+                        }
+
                         let proto = match compile(&program) {
                             Ok(p) => p,
                             Err(e) => {
@@ -474,6 +533,27 @@ fn run_repl_interp(editor: &mut Editor<TlHelper, DefaultHistory>) {
 
                 match parse(&input) {
                     Ok(program) => {
+                        // Type check (warnings only in REPL — don't block execution)
+                        let check_result = check_program(&program, &CheckerConfig::default());
+                        for warning in &check_result.warnings {
+                            report_type_warning(&input, "<repl>", &tl_errors::TypeError {
+                                message: warning.message.clone(),
+                                span: warning.span,
+                                expected: warning.expected.clone(),
+                                found: warning.found.clone(),
+                                hint: warning.hint.clone(),
+                            });
+                        }
+                        for error in &check_result.errors {
+                            report_type_error(&input, "<repl>", &tl_errors::TypeError {
+                                message: error.message.clone(),
+                                span: error.span,
+                                expected: error.expected.clone(),
+                                found: error.found.clone(),
+                                hint: error.hint.clone(),
+                            });
+                        }
+
                         for stmt in &program.statements {
                             match interp.execute_stmt(stmt) {
                                 Ok(val) => {

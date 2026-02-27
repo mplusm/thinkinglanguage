@@ -303,6 +303,9 @@ pub enum Expr {
 
     /// Yield expression: `yield expr` or bare `yield`
     Yield(Option<Box<Expr>>),
+
+    /// Try propagation: `expr?` — unwrap Result/Option or early return
+    Try(Box<Expr>),
 }
 
 /// Binary operators

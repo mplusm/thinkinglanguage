@@ -879,6 +879,9 @@ impl Parser {
                     object: Box::new(expr),
                     index: Box::new(index),
                 };
+            } else if self.match_token(&Token::Question) {
+                // Postfix ? operator: expr? → Try(expr)
+                expr = Expr::Try(Box::new(expr));
             } else {
                 break;
             }
@@ -1132,17 +1135,49 @@ impl Parser {
     // ── Type Parsing ─────────────────────────────────────────
 
     fn parse_type(&mut self) -> Result<TypeExpr, TlError> {
-        let name = self.expect_ident()?;
-        if self.match_token(&Token::Lt) {
-            let mut args = Vec::new();
-            args.push(self.parse_type()?);
-            while self.match_token(&Token::Comma) {
-                args.push(self.parse_type()?);
+        // Handle `fn(params) -> ret` function types
+        let base = if self.check(&Token::Fn) {
+            self.advance(); // consume 'fn'
+            self.expect(&Token::LParen)?;
+            let mut params = Vec::new();
+            if !self.check(&Token::RParen) {
+                params.push(self.parse_type()?);
+                while self.match_token(&Token::Comma) {
+                    if self.check(&Token::RParen) {
+                        break;
+                    }
+                    params.push(self.parse_type()?);
+                }
             }
-            self.expect(&Token::Gt)?;
-            Ok(TypeExpr::Generic { name, args })
+            self.expect(&Token::RParen)?;
+            let return_type = if self.match_token(&Token::Arrow) {
+                self.parse_type()?
+            } else {
+                TypeExpr::Named("unit".to_string())
+            };
+            TypeExpr::Function {
+                params,
+                return_type: Box::new(return_type),
+            }
         } else {
-            Ok(TypeExpr::Named(name))
+            let name = self.expect_ident()?;
+            if self.match_token(&Token::Lt) {
+                let mut args = Vec::new();
+                args.push(self.parse_type()?);
+                while self.match_token(&Token::Comma) {
+                    args.push(self.parse_type()?);
+                }
+                self.expect(&Token::Gt)?;
+                TypeExpr::Generic { name, args }
+            } else {
+                TypeExpr::Named(name)
+            }
+        };
+        // Handle postfix `?` for optional types: T? -> Optional(T)
+        if self.match_token(&Token::Question) {
+            Ok(TypeExpr::Optional(Box::new(base)))
+        } else {
+            Ok(base)
         }
     }
 

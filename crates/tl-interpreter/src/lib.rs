@@ -238,6 +238,8 @@ pub enum Value {
     },
     /// An ordered map (string keys)
     Map(Vec<(String, Value)>),
+    /// A set (unique values)
+    Set(Vec<Value>),
     /// A spawned task handle
     Task(Arc<TlTask>),
     /// A channel for inter-task communication
@@ -315,6 +317,14 @@ impl fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
+            Value::Set(items) => {
+                write!(f, "set{{")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{item}")?;
+                }
+                write!(f, "}}")
+            }
             Value::Task(t) => write!(f, "<task {}>", t.id),
             Value::Channel(c) => write!(f, "<channel {}>", c.id),
             Value::Generator(g) => write!(f, "<generator {}>", g.id),
@@ -365,6 +375,7 @@ impl Value {
             Value::EnumInstance { .. } => "enum",
             Value::Module { .. } => "module",
             Value::Map(_) => "map",
+            Value::Set(_) => "set",
             Value::Task(_) => "task",
             Value::Channel(_) => "channel",
             Value::Generator(_) => "generator",
@@ -517,6 +528,20 @@ impl Environment {
         global.insert("chain".to_string(), Value::Builtin("chain".to_string()));
         global.insert("gen_zip".to_string(), Value::Builtin("gen_zip".to_string()));
         global.insert("gen_enumerate".to_string(), Value::Builtin("gen_enumerate".to_string()));
+        // Phase 10: Result builtins
+        global.insert("Ok".to_string(), Value::Builtin("Ok".to_string()));
+        global.insert("Err".to_string(), Value::Builtin("Err".to_string()));
+        global.insert("is_ok".to_string(), Value::Builtin("is_ok".to_string()));
+        global.insert("is_err".to_string(), Value::Builtin("is_err".to_string()));
+        global.insert("unwrap".to_string(), Value::Builtin("unwrap".to_string()));
+        // Phase 10: Set builtins
+        global.insert("set_from".to_string(), Value::Builtin("set_from".to_string()));
+        global.insert("set_add".to_string(), Value::Builtin("set_add".to_string()));
+        global.insert("set_remove".to_string(), Value::Builtin("set_remove".to_string()));
+        global.insert("set_contains".to_string(), Value::Builtin("set_contains".to_string()));
+        global.insert("set_union".to_string(), Value::Builtin("set_union".to_string()));
+        global.insert("set_intersection".to_string(), Value::Builtin("set_intersection".to_string()));
+        global.insert("set_difference".to_string(), Value::Builtin("set_difference".to_string()));
 
         Self {
             scopes: vec![global],
@@ -764,6 +789,7 @@ impl Interpreter {
                             .map(|(k, v)| Value::List(vec![Value::String(k), v]))
                             .collect()
                     }
+                    Value::Set(items) => items,
                     _ => {
                         return Err(TlError::Runtime(RuntimeError {
                             message: format!("Cannot iterate over {}", iter_val.type_name()),
@@ -1383,6 +1409,36 @@ impl Interpreter {
                 }
             }
 
+            Expr::Try(inner) => {
+                let val = self.eval_expr(inner)?;
+                match val {
+                    Value::EnumInstance { ref type_name, ref variant, ref fields } if type_name == "Result" => {
+                        if variant == "Ok" && !fields.is_empty() {
+                            Ok(fields[0].clone())
+                        } else if variant == "Err" {
+                            // Propagate: signal early return with Err value
+                            let err_msg = if fields.is_empty() { "error".to_string() } else { format!("{}", fields[0]) };
+                            Err(TlError::Runtime(tl_errors::RuntimeError {
+                                message: format!("__try_propagate__:{err_msg}"),
+                                span: None,
+                                stack_trace: vec![],
+                            }))
+                        } else {
+                            Ok(val)
+                        }
+                    }
+                    Value::None => {
+                        // Propagate: early return None
+                        Err(TlError::Runtime(tl_errors::RuntimeError {
+                            message: "__try_propagate_none__".to_string(),
+                            span: None,
+                            stack_trace: vec![],
+                        }))
+                    }
+                    _ => Ok(val), // passthrough
+                }
+            }
+
             _ => Err(runtime_err(format!("Unsupported expression: {expr:?}"))),
         }
     }
@@ -1531,17 +1587,36 @@ impl Interpreter {
                 }
                 let mut result = Value::None;
                 for stmt in body {
-                    match self.exec_stmt(stmt)? {
-                        Signal::Return(val) => {
+                    match self.exec_stmt(stmt) {
+                        Ok(Signal::Return(val)) => {
                             result = val;
                             break;
                         }
-                        Signal::None => {
+                        Ok(Signal::None) => {
                             if let Some(val) = &self.last_expr_value {
                                 result = val.clone();
                             }
                         }
-                        _ => {}
+                        Err(TlError::Runtime(ref e)) if e.message.starts_with("__try_propagate__:") => {
+                            // ? operator hit an Err — return the Err as this function's return value
+                            let err_msg = e.message.strip_prefix("__try_propagate__:").unwrap_or("error");
+                            self.env.pop_scope();
+                            return Ok(Value::EnumInstance {
+                                type_name: "Result".to_string(),
+                                variant: "Err".to_string(),
+                                fields: vec![Value::String(err_msg.to_string())],
+                            });
+                        }
+                        Err(TlError::Runtime(ref e)) if e.message == "__try_propagate_none__" => {
+                            // ? operator hit None — return None as this function's return value
+                            self.env.pop_scope();
+                            return Ok(Value::None);
+                        }
+                        Err(e) => {
+                            self.env.pop_scope();
+                            return Err(e);
+                        }
+                        Ok(_) => {}
                     }
                 }
                 self.env.pop_scope();
@@ -1800,7 +1875,8 @@ impl Interpreter {
                 Some(Value::String(s)) => Ok(Value::Int(s.len() as i64)),
                 Some(Value::List(l)) => Ok(Value::Int(l.len() as i64)),
                 Some(Value::Map(pairs)) => Ok(Value::Int(pairs.len() as i64)),
-                _ => Err(runtime_err("len() expects a string, list, or map".to_string())),
+                Some(Value::Set(items)) => Ok(Value::Int(items.len() as i64)),
+                _ => Err(runtime_err("len() expects a string, list, map, or set".to_string())),
             },
             "str" => Ok(Value::String(
                 args.first().map(|v| format!("{v}")).unwrap_or_default(),
@@ -3025,6 +3101,177 @@ impl Interpreter {
                 Ok(Value::Generator(Arc::new(gn)))
             }
 
+            // Phase 10: Result builtins
+            "Ok" => {
+                let val = if args.is_empty() { Value::None } else { args[0].clone() };
+                Ok(Value::EnumInstance {
+                    type_name: "Result".to_string(),
+                    variant: "Ok".to_string(),
+                    fields: vec![val],
+                })
+            }
+            "Err" => {
+                let val = if args.is_empty() { Value::String("error".to_string()) } else { args[0].clone() };
+                Ok(Value::EnumInstance {
+                    type_name: "Result".to_string(),
+                    variant: "Err".to_string(),
+                    fields: vec![val],
+                })
+            }
+            "is_ok" => {
+                if args.is_empty() {
+                    return Err(runtime_err_s("is_ok() expects an argument"));
+                }
+                match &args[0] {
+                    Value::EnumInstance { type_name, variant, .. } if type_name == "Result" => {
+                        Ok(Value::Bool(variant == "Ok"))
+                    }
+                    _ => Ok(Value::Bool(false)),
+                }
+            }
+            "is_err" => {
+                if args.is_empty() {
+                    return Err(runtime_err_s("is_err() expects an argument"));
+                }
+                match &args[0] {
+                    Value::EnumInstance { type_name, variant, .. } if type_name == "Result" => {
+                        Ok(Value::Bool(variant == "Err"))
+                    }
+                    _ => Ok(Value::Bool(false)),
+                }
+            }
+            "unwrap" => {
+                if args.is_empty() {
+                    return Err(runtime_err_s("unwrap() expects an argument"));
+                }
+                match &args[0] {
+                    Value::EnumInstance { type_name, variant, fields } if type_name == "Result" => {
+                        if variant == "Ok" && !fields.is_empty() {
+                            Ok(fields[0].clone())
+                        } else if variant == "Err" {
+                            let msg = if fields.is_empty() {
+                                "error".to_string()
+                            } else {
+                                format!("{}", fields[0])
+                            };
+                            Err(runtime_err(format!("unwrap() called on Err({msg})")))
+                        } else {
+                            Ok(Value::None)
+                        }
+                    }
+                    Value::None => Err(runtime_err_s("unwrap() called on none")),
+                    other => Ok(other.clone()),
+                }
+            }
+            "set_from" => {
+                if args.is_empty() {
+                    return Ok(Value::Set(Vec::new()));
+                }
+                match &args[0] {
+                    Value::List(items) => {
+                        let mut result = Vec::new();
+                        for item in items {
+                            if !result.iter().any(|x| values_equal(x, item)) {
+                                result.push(item.clone());
+                            }
+                        }
+                        Ok(Value::Set(result))
+                    }
+                    _ => Err(runtime_err_s("set_from() expects a list")),
+                }
+            }
+            "set_add" => {
+                if args.len() < 2 {
+                    return Err(runtime_err_s("set_add() expects (set, value)"));
+                }
+                match &args[0] {
+                    Value::Set(items) => {
+                        let val = &args[1];
+                        let mut new_items = items.clone();
+                        if !new_items.iter().any(|x| values_equal(x, val)) {
+                            new_items.push(val.clone());
+                        }
+                        Ok(Value::Set(new_items))
+                    }
+                    _ => Err(runtime_err_s("set_add() expects a set as first argument")),
+                }
+            }
+            "set_remove" => {
+                if args.len() < 2 {
+                    return Err(runtime_err_s("set_remove() expects (set, value)"));
+                }
+                match &args[0] {
+                    Value::Set(items) => {
+                        let val = &args[1];
+                        let new_items: Vec<Value> = items.iter()
+                            .filter(|x| !values_equal(x, val))
+                            .cloned()
+                            .collect();
+                        Ok(Value::Set(new_items))
+                    }
+                    _ => Err(runtime_err_s("set_remove() expects a set as first argument")),
+                }
+            }
+            "set_contains" => {
+                if args.len() < 2 {
+                    return Err(runtime_err_s("set_contains() expects (set, value)"));
+                }
+                match &args[0] {
+                    Value::Set(items) => {
+                        let val = &args[1];
+                        Ok(Value::Bool(items.iter().any(|x| values_equal(x, val))))
+                    }
+                    _ => Err(runtime_err_s("set_contains() expects a set as first argument")),
+                }
+            }
+            "set_union" => {
+                if args.len() < 2 {
+                    return Err(runtime_err_s("set_union() expects (set, set)"));
+                }
+                match (&args[0], &args[1]) {
+                    (Value::Set(a), Value::Set(b)) => {
+                        let mut result = a.clone();
+                        for item in b {
+                            if !result.iter().any(|x| values_equal(x, item)) {
+                                result.push(item.clone());
+                            }
+                        }
+                        Ok(Value::Set(result))
+                    }
+                    _ => Err(runtime_err_s("set_union() expects two sets")),
+                }
+            }
+            "set_intersection" => {
+                if args.len() < 2 {
+                    return Err(runtime_err_s("set_intersection() expects (set, set)"));
+                }
+                match (&args[0], &args[1]) {
+                    (Value::Set(a), Value::Set(b)) => {
+                        let result: Vec<Value> = a.iter()
+                            .filter(|x| b.iter().any(|y| values_equal(x, y)))
+                            .cloned()
+                            .collect();
+                        Ok(Value::Set(result))
+                    }
+                    _ => Err(runtime_err_s("set_intersection() expects two sets")),
+                }
+            }
+            "set_difference" => {
+                if args.len() < 2 {
+                    return Err(runtime_err_s("set_difference() expects (set, set)"));
+                }
+                match (&args[0], &args[1]) {
+                    (Value::Set(a), Value::Set(b)) => {
+                        let result: Vec<Value> = a.iter()
+                            .filter(|x| !b.iter().any(|y| values_equal(x, y)))
+                            .cloned()
+                            .collect();
+                        Ok(Value::Set(result))
+                    }
+                    _ => Err(runtime_err_s("set_difference() expects two sets")),
+                }
+            }
+
             _ => Err(runtime_err(format!("Unknown builtin: {name}"))),
         }
     }
@@ -3285,6 +3532,73 @@ impl Interpreter {
                     }
                 }
                 _ => Err(runtime_err(format!("Map has no method `{method}`"))),
+            };
+        }
+
+        // Set methods
+        if let Value::Set(items) = obj {
+            return match method {
+                "len" => Ok(Value::Int(items.len() as i64)),
+                "contains" => {
+                    if args.is_empty() { return Err(runtime_err_s("contains() expects a value")); }
+                    Ok(Value::Bool(items.iter().any(|x| values_equal(x, &args[0]))))
+                }
+                "add" => {
+                    if args.is_empty() { return Err(runtime_err_s("add() expects a value")); }
+                    let mut new_items = items.clone();
+                    if !new_items.iter().any(|x| values_equal(x, &args[0])) {
+                        new_items.push(args[0].clone());
+                    }
+                    Ok(Value::Set(new_items))
+                }
+                "remove" => {
+                    if args.is_empty() { return Err(runtime_err_s("remove() expects a value")); }
+                    let new_items: Vec<Value> = items.iter()
+                        .filter(|x| !values_equal(x, &args[0]))
+                        .cloned()
+                        .collect();
+                    Ok(Value::Set(new_items))
+                }
+                "to_list" => Ok(Value::List(items.clone())),
+                "union" => {
+                    if args.is_empty() { return Err(runtime_err_s("union() expects a set")); }
+                    if let Value::Set(b) = &args[0] {
+                        let mut result = items.clone();
+                        for item in b {
+                            if !result.iter().any(|x| values_equal(x, item)) {
+                                result.push(item.clone());
+                            }
+                        }
+                        Ok(Value::Set(result))
+                    } else {
+                        Err(runtime_err_s("union() expects a set"))
+                    }
+                }
+                "intersection" => {
+                    if args.is_empty() { return Err(runtime_err_s("intersection() expects a set")); }
+                    if let Value::Set(b) = &args[0] {
+                        let result: Vec<Value> = items.iter()
+                            .filter(|x| b.iter().any(|y| values_equal(x, y)))
+                            .cloned()
+                            .collect();
+                        Ok(Value::Set(result))
+                    } else {
+                        Err(runtime_err_s("intersection() expects a set"))
+                    }
+                }
+                "difference" => {
+                    if args.is_empty() { return Err(runtime_err_s("difference() expects a set")); }
+                    if let Value::Set(b) = &args[0] {
+                        let result: Vec<Value> = items.iter()
+                            .filter(|x| !b.iter().any(|y| values_equal(x, y)))
+                            .cloned()
+                            .collect();
+                        Ok(Value::Set(result))
+                    } else {
+                        Err(runtime_err_s("difference() expects a set"))
+                    }
+                }
+                _ => Err(runtime_err(format!("Set has no method `{method}`"))),
             };
         }
 
@@ -3875,6 +4189,18 @@ fn json_to_value(v: &serde_json::Value) -> Value {
 }
 
 /// Convert interpreter Value to serde_json::Value
+/// Compare two values for equality (used by set operations).
+fn values_equal(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => x == y,
+        (Value::Float(x), Value::Float(y)) => x == y,
+        (Value::String(x), Value::String(y)) => x == y,
+        (Value::Bool(x), Value::Bool(y)) => x == y,
+        (Value::None, Value::None) => true,
+        _ => false,
+    }
+}
+
 fn value_to_json(v: &Value) -> serde_json::Value {
     match v {
         Value::None => serde_json::Value::Null,
@@ -5841,5 +6167,202 @@ print(g.next())
 print(g.next())
 print(g.collect())"#);
         assert_eq!(output, vec!["1", "2", "[3]"]);
+    }
+
+    // ── Phase 10: Result/Option + ? operator tests ──
+
+    #[test]
+    fn test_interp_ok_err_builtins() {
+        let output = run_output("let r = Ok(42)\nprint(r)");
+        assert_eq!(output, vec!["Result::Ok(42)"]);
+
+        let output = run_output("let r = Err(\"fail\")\nprint(r)");
+        assert_eq!(output, vec!["Result::Err(fail)"]);
+    }
+
+    #[test]
+    fn test_interp_is_ok_is_err() {
+        let output = run_output("print(is_ok(Ok(42)))");
+        assert_eq!(output, vec!["true"]);
+        let output = run_output("print(is_err(Err(\"fail\")))");
+        assert_eq!(output, vec!["true"]);
+    }
+
+    #[test]
+    fn test_interp_unwrap_ok() {
+        let output = run_output("print(unwrap(Ok(42)))");
+        assert_eq!(output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_interp_unwrap_err_panics() {
+        let result = run("unwrap(Err(\"fail\"))");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_interp_try_on_ok() {
+        let output = run_output(r#"fn get_val() { Ok(42) }
+fn process() { let v = get_val()? + 1
+Ok(v) }
+print(process())"#);
+        assert_eq!(output, vec!["Result::Ok(43)"]);
+    }
+
+    #[test]
+    fn test_interp_try_on_err_propagates() {
+        let output = run_output(r#"fn failing() { Err("oops") }
+fn process() { let v = failing()?
+Ok(v) }
+print(process())"#);
+        assert_eq!(output, vec!["Result::Err(oops)"]);
+    }
+
+    #[test]
+    fn test_interp_try_on_none_propagates() {
+        let output = run_output(r#"fn get_none() { none }
+fn process() { let v = get_none()?
+42 }
+print(process())"#);
+        assert_eq!(output, vec!["none"]);
+    }
+
+    #[test]
+    fn test_interp_result_match() {
+        let output = run_output(r#"let r = Ok(42)
+match r {
+    Result::Ok(v) => print(v),
+    Result::Err(e) => print(e)
+}"#);
+        assert_eq!(output, vec!["42"]);
+    }
+
+    // ── Set tests ──
+
+    #[test]
+    fn test_interp_set_from_dedup() {
+        let output = run_output(r#"let s = set_from([1, 2, 3, 2, 1])
+print(len(s))
+print(type_of(s))"#);
+        assert_eq!(output, vec!["3", "set"]);
+    }
+
+    #[test]
+    fn test_interp_set_add() {
+        let output = run_output(r#"let s = set_from([1, 2])
+let s2 = set_add(s, 3)
+let s3 = set_add(s2, 2)
+print(len(s2))
+print(len(s3))"#);
+        assert_eq!(output, vec!["3", "3"]);
+    }
+
+    #[test]
+    fn test_interp_set_remove() {
+        let output = run_output(r#"let s = set_from([1, 2, 3])
+let s2 = set_remove(s, 2)
+print(len(s2))
+print(set_contains(s2, 2))"#);
+        assert_eq!(output, vec!["2", "false"]);
+    }
+
+    #[test]
+    fn test_interp_set_contains() {
+        let output = run_output(r#"let s = set_from([1, 2, 3])
+print(set_contains(s, 2))
+print(set_contains(s, 5))"#);
+        assert_eq!(output, vec!["true", "false"]);
+    }
+
+    #[test]
+    fn test_interp_set_union() {
+        let output = run_output(r#"let a = set_from([1, 2, 3])
+let b = set_from([3, 4, 5])
+let c = set_union(a, b)
+print(len(c))"#);
+        assert_eq!(output, vec!["5"]);
+    }
+
+    #[test]
+    fn test_interp_set_intersection() {
+        let output = run_output(r#"let a = set_from([1, 2, 3])
+let b = set_from([2, 3, 4])
+let c = set_intersection(a, b)
+print(len(c))"#);
+        assert_eq!(output, vec!["2"]);
+    }
+
+    #[test]
+    fn test_interp_set_difference() {
+        let output = run_output(r#"let a = set_from([1, 2, 3])
+let b = set_from([2, 3, 4])
+let c = set_difference(a, b)
+print(len(c))"#);
+        assert_eq!(output, vec!["1"]);
+    }
+
+    #[test]
+    fn test_interp_set_for_loop() {
+        let output = run_output(r#"let s = set_from([10, 20, 30])
+let total = 0
+for item in s {
+    total = total + item
+}
+print(total)"#);
+        assert_eq!(output, vec!["60"]);
+    }
+
+    #[test]
+    fn test_interp_set_to_list() {
+        let output = run_output(r#"let s = set_from([3, 1, 2])
+let lst = s.to_list()
+print(type_of(lst))
+print(len(lst))"#);
+        assert_eq!(output, vec!["list", "3"]);
+    }
+
+    #[test]
+    fn test_interp_set_method_contains() {
+        let output = run_output(r#"let s = set_from([1, 2, 3])
+print(s.contains(2))
+print(s.contains(5))"#);
+        assert_eq!(output, vec!["true", "false"]);
+    }
+
+    #[test]
+    fn test_interp_set_method_add_remove() {
+        let output = run_output(r#"let s = set_from([1, 2])
+let s2 = s.add(3)
+print(s2.len())
+let s3 = s2.remove(1)
+print(s3.len())"#);
+        assert_eq!(output, vec!["3", "2"]);
+    }
+
+    #[test]
+    fn test_interp_set_method_union_intersection_difference() {
+        let output = run_output(r#"let a = set_from([1, 2, 3])
+let b = set_from([2, 3, 4])
+print(a.union(b).len())
+print(a.intersection(b).len())
+print(a.difference(b).len())"#);
+        assert_eq!(output, vec!["4", "2", "1"]);
+    }
+
+    #[test]
+    fn test_interp_set_empty() {
+        let output = run_output(r#"let s = set_from([])
+print(len(s))
+let s2 = s.add(1)
+print(len(s2))"#);
+        assert_eq!(output, vec!["0", "1"]);
+    }
+
+    #[test]
+    fn test_interp_set_string_values() {
+        let output = run_output(r#"let s = set_from(["a", "b", "a", "c"])
+print(len(s))
+print(s.contains("b"))"#);
+        assert_eq!(output, vec!["3", "true"]);
     }
 }

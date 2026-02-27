@@ -23,6 +23,18 @@ fn runtime_err(msg: impl Into<String>) -> TlError {
         })
 }
 
+/// Compare two VmValues for equality (used by set operations).
+fn vm_values_equal(a: &VmValue, b: &VmValue) -> bool {
+    match (a, b) {
+        (VmValue::Int(x), VmValue::Int(y)) => x == y,
+        (VmValue::Float(x), VmValue::Float(y)) => x == y,
+        (VmValue::String(x), VmValue::String(y)) => x == y,
+        (VmValue::Bool(x), VmValue::Bool(y)) => x == y,
+        (VmValue::None, VmValue::None) => true,
+        _ => false,
+    }
+}
+
 /// Convert serde_json::Value to VmValue
 fn vm_json_to_value(v: &serde_json::Value) -> VmValue {
     match v {
@@ -763,6 +775,16 @@ impl Vm {
                                 true
                             }
                         }
+                        VmValue::Set(items) => {
+                            if idx < items.len() {
+                                let item = items[idx].clone();
+                                self.stack[base + c as usize] = item;
+                                self.stack[base + a as usize] = VmValue::Int((idx + 1) as i64);
+                                false
+                            } else {
+                                true
+                            }
+                        }
                         VmValue::Generator(gen_arc) => {
                             let g = gen_arc.clone();
                             let val = self.generator_next(&g)?;
@@ -796,6 +818,10 @@ impl Vm {
                         (VmValue::String(a), VmValue::String(b)) => a == b,
                         (VmValue::Bool(a), VmValue::Bool(b)) => a == b,
                         (VmValue::None, VmValue::None) => true,
+                        // Enum instance matching: same type + same variant
+                        (VmValue::EnumInstance(subj), VmValue::EnumInstance(pat)) => {
+                            subj.type_name == pat.type_name && subj.variant == pat.variant
+                        }
                         _ => false,
                     };
                     self.stack[base + c as usize] = VmValue::Bool(matched);
@@ -1100,6 +1126,37 @@ impl Vm {
                     // Pop the frame and return the value
                     self.frames.pop();
                     return Ok(Some(val));
+                }
+                Op::TryPropagate => {
+                    // A = dest, B = source register
+                    // If source is Err(...) → early return from current function
+                    // If source is Ok(v) → A = v (unwrap)
+                    // If source is None → early return None
+                    // Otherwise → passthrough
+                    let src = self.stack[base + b as usize].clone();
+                    match &src {
+                        VmValue::EnumInstance(ei) if ei.type_name.as_ref() == "Result" => {
+                            if ei.variant.as_ref() == "Ok" && !ei.fields.is_empty() {
+                                // Unwrap: A = inner value
+                                self.stack[base + a as usize] = ei.fields[0].clone();
+                            } else if ei.variant.as_ref() == "Err" {
+                                // Propagate: return the Err from current function
+                                self.frames.pop();
+                                return Ok(Some(src));
+                            } else {
+                                self.stack[base + a as usize] = src;
+                            }
+                        }
+                        VmValue::None => {
+                            // Propagate: return None from current function
+                            self.frames.pop();
+                            return Ok(Some(VmValue::None));
+                        }
+                        _ => {
+                            // Passthrough
+                            self.stack[base + a as usize] = src;
+                        }
+                    }
                 }
             }
             Ok(None)
@@ -1451,7 +1508,8 @@ impl Vm {
                 Some(VmValue::String(s)) => Ok(VmValue::Int(s.len() as i64)),
                 Some(VmValue::List(l)) => Ok(VmValue::Int(l.len() as i64)),
                 Some(VmValue::Map(pairs)) => Ok(VmValue::Int(pairs.len() as i64)),
-                _ => Err(runtime_err("len() expects a string, list, or map")),
+                Some(VmValue::Set(items)) => Ok(VmValue::Int(items.len() as i64)),
+                _ => Err(runtime_err("len() expects a string, list, map, or set")),
             },
             BuiltinId::Str => Ok(VmValue::String(
                 Arc::from(args.first().map(|v| format!("{v}")).unwrap_or_default().as_str()),
@@ -2784,6 +2842,163 @@ impl Vm {
                 });
                 Ok(VmValue::Generator(Arc::new(Mutex::new(gn))))
             }
+            // Phase 10: Result builtins
+            BuiltinId::Ok => {
+                let val = if args.is_empty() { VmValue::None } else { args[0].clone() };
+                Ok(VmValue::EnumInstance(Arc::new(VmEnumInstance {
+                    type_name: Arc::from("Result"),
+                    variant: Arc::from("Ok"),
+                    fields: vec![val],
+                })))
+            }
+            BuiltinId::Err_ => {
+                let val = if args.is_empty() { VmValue::String(Arc::from("error")) } else { args[0].clone() };
+                Ok(VmValue::EnumInstance(Arc::new(VmEnumInstance {
+                    type_name: Arc::from("Result"),
+                    variant: Arc::from("Err"),
+                    fields: vec![val],
+                })))
+            }
+            BuiltinId::IsOk => {
+                if args.is_empty() {
+                    return Err(runtime_err("is_ok() expects an argument"));
+                }
+                match &args[0] {
+                    VmValue::EnumInstance(ei) if ei.type_name.as_ref() == "Result" => {
+                        Ok(VmValue::Bool(ei.variant.as_ref() == "Ok"))
+                    }
+                    _ => Ok(VmValue::Bool(false)),
+                }
+            }
+            BuiltinId::IsErr => {
+                if args.is_empty() {
+                    return Err(runtime_err("is_err() expects an argument"));
+                }
+                match &args[0] {
+                    VmValue::EnumInstance(ei) if ei.type_name.as_ref() == "Result" => {
+                        Ok(VmValue::Bool(ei.variant.as_ref() == "Err"))
+                    }
+                    _ => Ok(VmValue::Bool(false)),
+                }
+            }
+            BuiltinId::Unwrap => {
+                if args.is_empty() {
+                    return Err(runtime_err("unwrap() expects an argument"));
+                }
+                match &args[0] {
+                    VmValue::EnumInstance(ei) if ei.type_name.as_ref() == "Result" => {
+                        if ei.variant.as_ref() == "Ok" && !ei.fields.is_empty() {
+                            Ok(ei.fields[0].clone())
+                        } else if ei.variant.as_ref() == "Err" {
+                            let msg = if ei.fields.is_empty() {
+                                "error".to_string()
+                            } else {
+                                format!("{}", ei.fields[0])
+                            };
+                            Err(runtime_err(format!("unwrap() called on Err({msg})")))
+                        } else {
+                            Ok(VmValue::None)
+                        }
+                    }
+                    VmValue::None => Err(runtime_err("unwrap() called on none".to_string())),
+                    other => Ok(other.clone()),
+                }
+            }
+            BuiltinId::SetFrom => {
+                let list = match args.first() {
+                    Some(VmValue::List(items)) => items,
+                    _ => return Err(runtime_err("set_from() expects a list")),
+                };
+                if list.is_empty() {
+                    return Ok(VmValue::Set(Vec::new()));
+                }
+                let mut result = Vec::new();
+                for item in list {
+                    if !result.iter().any(|x| vm_values_equal(x, item)) {
+                        result.push(item.clone());
+                    }
+                }
+                Ok(VmValue::Set(result))
+            }
+            BuiltinId::SetAdd => {
+                if args.len() < 2 { return Err(runtime_err("set_add() expects 2 arguments")); }
+                let val = &args[1];
+                match &args[0] {
+                    VmValue::Set(items) => {
+                        let mut new_items = items.clone();
+                        if !new_items.iter().any(|x| vm_values_equal(x, val)) {
+                            new_items.push(val.clone());
+                        }
+                        Ok(VmValue::Set(new_items))
+                    }
+                    _ => Err(runtime_err("set_add() first argument must be a set")),
+                }
+            }
+            BuiltinId::SetRemove => {
+                if args.len() < 2 { return Err(runtime_err("set_remove() expects 2 arguments")); }
+                let val = &args[1];
+                match &args[0] {
+                    VmValue::Set(items) => {
+                        let new_items: Vec<VmValue> = items.iter()
+                            .filter(|x| !vm_values_equal(x, val))
+                            .cloned()
+                            .collect();
+                        Ok(VmValue::Set(new_items))
+                    }
+                    _ => Err(runtime_err("set_remove() first argument must be a set")),
+                }
+            }
+            BuiltinId::SetContains => {
+                if args.len() < 2 { return Err(runtime_err("set_contains() expects 2 arguments")); }
+                let val = &args[1];
+                match &args[0] {
+                    VmValue::Set(items) => {
+                        Ok(VmValue::Bool(items.iter().any(|x| vm_values_equal(x, val))))
+                    }
+                    _ => Err(runtime_err("set_contains() first argument must be a set")),
+                }
+            }
+            BuiltinId::SetUnion => {
+                if args.len() < 2 { return Err(runtime_err("set_union() expects 2 arguments")); }
+                match (&args[0], &args[1]) {
+                    (VmValue::Set(a), VmValue::Set(b)) => {
+                        let mut result = a.clone();
+                        for item in b {
+                            if !result.iter().any(|x| vm_values_equal(x, item)) {
+                                result.push(item.clone());
+                            }
+                        }
+                        Ok(VmValue::Set(result))
+                    }
+                    _ => Err(runtime_err("set_union() expects two sets")),
+                }
+            }
+            BuiltinId::SetIntersection => {
+                if args.len() < 2 { return Err(runtime_err("set_intersection() expects 2 arguments")); }
+                match (&args[0], &args[1]) {
+                    (VmValue::Set(a), VmValue::Set(b)) => {
+                        let result: Vec<VmValue> = a.iter()
+                            .filter(|x| b.iter().any(|y| vm_values_equal(x, y)))
+                            .cloned()
+                            .collect();
+                        Ok(VmValue::Set(result))
+                    }
+                    _ => Err(runtime_err("set_intersection() expects two sets")),
+                }
+            }
+            BuiltinId::SetDifference => {
+                if args.len() < 2 { return Err(runtime_err("set_difference() expects 2 arguments")); }
+                match (&args[0], &args[1]) {
+                    (VmValue::Set(a), VmValue::Set(b)) => {
+                        let result: Vec<VmValue> = a.iter()
+                            .filter(|x| !b.iter().any(|y| vm_values_equal(x, y)))
+                            .cloned()
+                            .collect();
+                        Ok(VmValue::Set(result))
+                    }
+                    _ => Err(runtime_err("set_difference() expects two sets")),
+                }
+            }
         }
     }
 
@@ -3305,6 +3520,7 @@ impl Vm {
             VmValue::String(s) => self.dispatch_string_method(s.clone(), method, args),
             VmValue::List(items) => self.dispatch_list_method(items.clone(), method, args),
             VmValue::Map(pairs) => self.dispatch_map_method(pairs.clone(), method, args),
+            VmValue::Set(items) => self.dispatch_set_method(items.clone(), method, args),
             VmValue::StructInstance(inst) => {
                 // Look up impl method: Type::method in globals
                 let mangled = format!("{}::{}", inst.type_name, method);
@@ -3589,6 +3805,70 @@ impl Vm {
                 }
             }
             _ => Err(runtime_err(format!("No method '{}' on map", method))),
+        }
+    }
+
+    /// Dispatch set methods.
+    fn dispatch_set_method(&self, items: Vec<VmValue>, method: &str, args: &[VmValue]) -> Result<VmValue, TlError> {
+        match method {
+            "len" => Ok(VmValue::Int(items.len() as i64)),
+            "contains" => {
+                if args.is_empty() { return Err(runtime_err("contains() expects a value")); }
+                Ok(VmValue::Bool(items.iter().any(|x| vm_values_equal(x, &args[0]))))
+            }
+            "add" => {
+                if args.is_empty() { return Err(runtime_err("add() expects a value")); }
+                let mut new_items = items;
+                if !new_items.iter().any(|x| vm_values_equal(x, &args[0])) {
+                    new_items.push(args[0].clone());
+                }
+                Ok(VmValue::Set(new_items))
+            }
+            "remove" => {
+                if args.is_empty() { return Err(runtime_err("remove() expects a value")); }
+                let new_items: Vec<VmValue> = items.into_iter()
+                    .filter(|x| !vm_values_equal(x, &args[0]))
+                    .collect();
+                Ok(VmValue::Set(new_items))
+            }
+            "to_list" => Ok(VmValue::List(items)),
+            "union" => {
+                if args.is_empty() { return Err(runtime_err("union() expects a set")); }
+                if let VmValue::Set(b) = &args[0] {
+                    let mut result = items;
+                    for item in b {
+                        if !result.iter().any(|x| vm_values_equal(x, item)) {
+                            result.push(item.clone());
+                        }
+                    }
+                    Ok(VmValue::Set(result))
+                } else {
+                    Err(runtime_err("union() expects a set"))
+                }
+            }
+            "intersection" => {
+                if args.is_empty() { return Err(runtime_err("intersection() expects a set")); }
+                if let VmValue::Set(b) = &args[0] {
+                    let result: Vec<VmValue> = items.into_iter()
+                        .filter(|x| b.iter().any(|y| vm_values_equal(x, y)))
+                        .collect();
+                    Ok(VmValue::Set(result))
+                } else {
+                    Err(runtime_err("intersection() expects a set"))
+                }
+            }
+            "difference" => {
+                if args.is_empty() { return Err(runtime_err("difference() expects a set")); }
+                if let VmValue::Set(b) = &args[0] {
+                    let result: Vec<VmValue> = items.into_iter()
+                        .filter(|x| !b.iter().any(|y| vm_values_equal(x, y)))
+                        .collect();
+                    Ok(VmValue::Set(result))
+                } else {
+                    Err(runtime_err("difference() expects a set"))
+                }
+            }
+            _ => Err(runtime_err(format!("No method '{}' on set", method))),
         }
     }
 
@@ -5228,5 +5508,225 @@ print(gen_collect(take(fib(), 8)))"#);
 let g = gen()
 print(type_of(g))"#);
         assert_eq!(output, vec!["generator"]);
+    }
+
+    // ── Phase 10: Result/Option + ? operator tests ──
+
+    #[test]
+    fn test_vm_ok_err_builtins() {
+        let output = run_output("let r = Ok(42)\nprint(r)");
+        assert_eq!(output, vec!["Result::Ok(42)"]);
+
+        let output = run_output("let r = Err(\"fail\")\nprint(r)");
+        assert_eq!(output, vec!["Result::Err(fail)"]);
+    }
+
+    #[test]
+    fn test_vm_is_ok_is_err() {
+        let output = run_output("print(is_ok(Ok(42)))");
+        assert_eq!(output, vec!["true"]);
+        let output = run_output("print(is_err(Ok(42)))");
+        assert_eq!(output, vec!["false"]);
+        let output = run_output("print(is_ok(Err(\"fail\")))");
+        assert_eq!(output, vec!["false"]);
+        let output = run_output("print(is_err(Err(\"fail\")))");
+        assert_eq!(output, vec!["true"]);
+    }
+
+    #[test]
+    fn test_vm_unwrap_ok() {
+        let output = run_output("print(unwrap(Ok(42)))");
+        assert_eq!(output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_vm_unwrap_err_panics() {
+        let result = run("unwrap(Err(\"fail\"))");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_vm_try_on_ok() {
+        let output = run_output(r#"fn get_val() { Ok(42) }
+fn process() { let v = get_val()? + 1
+Ok(v) }
+print(process())"#);
+        assert_eq!(output, vec!["Result::Ok(43)"]);
+    }
+
+    #[test]
+    fn test_vm_try_on_err_propagates() {
+        let output = run_output(r#"fn failing() { Err("oops") }
+fn process() { let v = failing()?
+Ok(v) }
+print(process())"#);
+        assert_eq!(output, vec!["Result::Err(oops)"]);
+    }
+
+    #[test]
+    fn test_vm_try_on_none_propagates() {
+        let output = run_output(r#"fn get_none() { none }
+fn process() { let v = get_none()?
+42 }
+print(process())"#);
+        assert_eq!(output, vec!["none"]);
+    }
+
+    #[test]
+    fn test_vm_try_passthrough() {
+        // ? on a normal value should passthrough
+        let output = run_output(r#"fn get_val() { 42 }
+fn process() { let v = get_val()?
+v + 1 }
+print(process())"#);
+        assert_eq!(output, vec!["43"]);
+    }
+
+    #[test]
+    fn test_vm_result_match() {
+        let output = run_output(r#"let r = Ok(42)
+print(is_ok(r))
+print(unwrap(r))"#);
+        assert_eq!(output, vec!["true", "42"]);
+    }
+
+    #[test]
+    fn test_vm_result_match_err() {
+        let output = run_output(r#"let r = Err("fail")
+print(is_err(r))
+match r {
+    Result::Err(e) => print("got error"),
+    _ => print("no error")
+}"#);
+        assert_eq!(output, vec!["true", "got error"]);
+    }
+
+    // ── Set tests ──
+
+    #[test]
+    fn test_vm_set_from_dedup() {
+        let output = run_output(r#"let s = set_from([1, 2, 3, 2, 1])
+print(len(s))
+print(type_of(s))"#);
+        assert_eq!(output, vec!["3", "set"]);
+    }
+
+    #[test]
+    fn test_vm_set_add() {
+        let output = run_output(r#"let s = set_from([1, 2])
+let s2 = set_add(s, 3)
+let s3 = set_add(s2, 2)
+print(len(s2))
+print(len(s3))"#);
+        assert_eq!(output, vec!["3", "3"]);
+    }
+
+    #[test]
+    fn test_vm_set_remove() {
+        let output = run_output(r#"let s = set_from([1, 2, 3])
+let s2 = set_remove(s, 2)
+print(len(s2))
+print(set_contains(s2, 2))"#);
+        assert_eq!(output, vec!["2", "false"]);
+    }
+
+    #[test]
+    fn test_vm_set_contains() {
+        let output = run_output(r#"let s = set_from([1, 2, 3])
+print(set_contains(s, 2))
+print(set_contains(s, 5))"#);
+        assert_eq!(output, vec!["true", "false"]);
+    }
+
+    #[test]
+    fn test_vm_set_union() {
+        let output = run_output(r#"let a = set_from([1, 2, 3])
+let b = set_from([3, 4, 5])
+let c = set_union(a, b)
+print(len(c))"#);
+        assert_eq!(output, vec!["5"]);
+    }
+
+    #[test]
+    fn test_vm_set_intersection() {
+        let output = run_output(r#"let a = set_from([1, 2, 3])
+let b = set_from([2, 3, 4])
+let c = set_intersection(a, b)
+print(len(c))"#);
+        assert_eq!(output, vec!["2"]);
+    }
+
+    #[test]
+    fn test_vm_set_difference() {
+        let output = run_output(r#"let a = set_from([1, 2, 3])
+let b = set_from([2, 3, 4])
+let c = set_difference(a, b)
+print(len(c))"#);
+        assert_eq!(output, vec!["1"]);
+    }
+
+    #[test]
+    fn test_vm_set_for_loop() {
+        let output = run_output(r#"let s = set_from([10, 20, 30])
+let total = 0
+for item in s {
+    total = total + item
+}
+print(total)"#);
+        assert_eq!(output, vec!["60"]);
+    }
+
+    #[test]
+    fn test_vm_set_to_list() {
+        let output = run_output(r#"let s = set_from([3, 1, 2])
+let lst = s.to_list()
+print(type_of(lst))
+print(len(lst))"#);
+        assert_eq!(output, vec!["list", "3"]);
+    }
+
+    #[test]
+    fn test_vm_set_method_contains() {
+        let output = run_output(r#"let s = set_from([1, 2, 3])
+print(s.contains(2))
+print(s.contains(5))"#);
+        assert_eq!(output, vec!["true", "false"]);
+    }
+
+    #[test]
+    fn test_vm_set_method_add_remove() {
+        let output = run_output(r#"let s = set_from([1, 2])
+let s2 = s.add(3)
+print(s2.len())
+let s3 = s2.remove(1)
+print(s3.len())"#);
+        assert_eq!(output, vec!["3", "2"]);
+    }
+
+    #[test]
+    fn test_vm_set_method_union_intersection_difference() {
+        let output = run_output(r#"let a = set_from([1, 2, 3])
+let b = set_from([2, 3, 4])
+print(a.union(b).len())
+print(a.intersection(b).len())
+print(a.difference(b).len())"#);
+        assert_eq!(output, vec!["4", "2", "1"]);
+    }
+
+    #[test]
+    fn test_vm_set_empty() {
+        let output = run_output(r#"let s = set_from([])
+print(len(s))
+let s2 = s.add(1)
+print(len(s2))"#);
+        assert_eq!(output, vec!["0", "1"]);
+    }
+
+    #[test]
+    fn test_vm_set_string_values() {
+        let output = run_output(r#"let s = set_from(["a", "b", "a", "c"])
+print(len(s))
+print(s.contains("b"))"#);
+        assert_eq!(output, vec!["3", "true"]);
     }
 }

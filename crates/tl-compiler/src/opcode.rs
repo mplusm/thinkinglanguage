@@ -174,6 +174,14 @@ pub enum Op {
     // ── Phase 8: Iterators & Generators ──
     /// Yield: A = value register to yield (suspends generator)
     Yield = 60,
+
+    // ── Phase 10: Type System ──
+    /// TryPropagate: A = dest, B = source register
+    /// If source is Err(...) → early return from current function
+    /// If source is Ok(v) → A = v (unwrap)
+    /// If source is None → early return None
+    /// Otherwise → passthrough
+    TryPropagate = 61,
 }
 
 impl Op {
@@ -241,6 +249,7 @@ impl Op {
             Op::Import => "Import",
             Op::Await => "Await",
             Op::Yield => "Yield",
+            Op::TryPropagate => "TryPropagate",
         }
     }
 }

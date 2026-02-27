@@ -39,6 +39,16 @@ pub enum TlError {
     Lexer(LexerError),
     Parser(ParserError),
     Runtime(RuntimeError),
+    Type(TypeError),
+}
+
+#[derive(Debug, Clone)]
+pub struct TypeError {
+    pub message: String,
+    pub span: Span,
+    pub expected: Option<String>,
+    pub found: Option<String>,
+    pub hint: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +84,13 @@ impl fmt::Display for TlError {
             TlError::Lexer(e) => write!(f, "Lexer error: {}", e.message),
             TlError::Parser(e) => write!(f, "Parse error: {}", e.message),
             TlError::Runtime(e) => write!(f, "Runtime error: {}", e.message),
+            TlError::Type(e) => {
+                write!(f, "Type error: {}", e.message)?;
+                if let (Some(expected), Some(found)) = (&e.expected, &e.found) {
+                    write!(f, " (expected `{expected}`, found `{found}`)")?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -89,6 +106,58 @@ pub fn report_parser_error(source: &str, filename: &str, error: &ParserError) {
                 .with_message(&error.message)
                 .with_color(Color::Red),
         );
+
+    if let Some(hint) = &error.hint {
+        builder = builder.with_help(hint);
+    }
+
+    builder
+        .finish()
+        .eprint((filename, Source::from(source)))
+        .unwrap();
+}
+
+/// Pretty-print a type error with source context using ariadne
+pub fn report_type_error(source: &str, filename: &str, error: &TypeError) {
+    let mut builder = Report::build(ReportKind::Error, filename, error.span.start)
+        .with_message(&error.message);
+
+    let mut label_msg = error.message.clone();
+    if let (Some(expected), Some(found)) = (&error.expected, &error.found) {
+        label_msg = format!("expected `{expected}`, found `{found}`");
+    }
+
+    builder = builder.with_label(
+        Label::new((filename, error.span.range()))
+            .with_message(&label_msg)
+            .with_color(Color::Red),
+    );
+
+    if let Some(hint) = &error.hint {
+        builder = builder.with_help(hint);
+    }
+
+    builder
+        .finish()
+        .eprint((filename, Source::from(source)))
+        .unwrap();
+}
+
+/// Pretty-print a type warning with source context using ariadne
+pub fn report_type_warning(source: &str, filename: &str, error: &TypeError) {
+    let mut builder = Report::build(ReportKind::Warning, filename, error.span.start)
+        .with_message(&error.message);
+
+    let mut label_msg = error.message.clone();
+    if let (Some(expected), Some(found)) = (&error.expected, &error.found) {
+        label_msg = format!("expected `{expected}`, found `{found}`");
+    }
+
+    builder = builder.with_label(
+        Label::new((filename, error.span.range()))
+            .with_message(&label_msg)
+            .with_color(Color::Yellow),
+    );
 
     if let Some(hint) = &error.hint {
         builder = builder.with_help(hint);

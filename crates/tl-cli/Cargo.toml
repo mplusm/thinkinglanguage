@@ -16,6 +16,7 @@ tl-ast = { path = "../tl-ast" }
 tl-interpreter = { path = "../tl-interpreter" }
 tl-compiler = { path = "../tl-compiler" }
 tl-errors = { path = "../tl-errors" }
+tl-types = { path = "../tl-types" }
 tl-ai = { path = "../tl-ai" }
 tl-stream = { path = "../tl-stream" }
 clap.workspace = true

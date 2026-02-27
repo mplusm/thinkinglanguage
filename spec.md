@@ -1699,6 +1699,127 @@ Deliverables:
 Team: 8-12 people
 ```
 
+### Phase 7: Language Completeness & Runtime (Implemented)
+
+**Goal:** Full language feature set with production runtime
+
+```
+Delivered (our Phases 5-9):
+  ✦ Structs, enums, impl blocks, method dispatch
+  ✦ Try/catch/throw error handling
+  ✦ Import system (basic)
+  ✦ Stdlib: string, list, math, map, JSON, file I/O, regex, date/time
+  ✦ Concurrency: spawn/await, channels, combinators (pmap, timeout)
+  ✦ Iterators & generators: yield, next, lazy combinators
+  ✦ Error quality: statement-level spans, stack traces, bytecode disassembler
+  ✦ REPL improvements: history, multi-line input, tab completion
+  ✦ 437 tests passing
+```
+
+### Phase 8: Type System Foundation (Month 25-27)
+
+**Goal:** Gradual static typing — catch errors at compile time, not runtime
+
+```
+Deliverables:
+  ✦ Type checker pass between parse and compile/interpret
+  ✦ Type annotations enforced on function signatures
+  ✦ Type inference for let bindings (Hindley-Milner subset)
+  ✦ result<T, E> type with ? operator for error propagation
+  ✦ option<T> / T? with ?? null coalescing operator
+  ✦ Typed table<T>, stream<T>, tensor<dtype, shape>
+  ✦ set<T> type
+  ✦ Type-aware pattern matching with destructuring
+  ✦ Compile-time type error messages with suggestions
+  ✦ Gradual: untyped code still works (inferred as `any`)
+```
+
+### Phase 9: Module System (Month 28-30)
+
+**Goal:** Multi-file projects with proper namespacing
+
+```
+Deliverables:
+  ✦ File-based modules: one .tl file = one module
+  ✦ Directory modules with mod.tl
+  ✦ pub visibility modifier for functions, structs, schemas
+  ✦ use imports: single item, multiple items, wildcard, aliased
+  ✦ Re-exports (pub use)
+  ✦ tl.toml project manifest (project metadata, dependencies, build config)
+  ✦ tl init command to scaffold new projects
+  ✦ tl build command for multi-file compilation
+  ✦ Module-scoped namespaces (no global pollution)
+  ✦ Circular dependency detection
+```
+
+### Phase 10: Generics & Traits (Month 31-33)
+
+**Goal:** Parametric polymorphism for type-safe reusable code
+
+```
+Deliverables:
+  ✦ Generic functions: fn first<T>(items: list<T>) -> T?
+  ✦ Generic structs: struct Pair<A, B> { first: A, second: B }
+  ✦ Trait definitions: trait Connectable { fn connect() -> result<Connection, Error> }
+  ✦ Trait implementations: impl Connectable for PostgresSource { ... }
+  ✦ Trait bounds: fn process<T: Serializable>(data: T) -> bytes
+  ✦ Monomorphization (compile-time specialization)
+  ✦ Built-in traits: Display, Debug, Clone, Serialize, Deserialize
+  ✦ Where clauses for complex bounds
+```
+
+### Phase 11: Semantic Analysis & Optimization (Month 34-36)
+
+**Goal:** Compile-time correctness guarantees and performance
+
+```
+Deliverables:
+  ✦ Full type checker integrated into compilation pipeline
+  ✦ Schema validation: verify table schemas match between pipeline stages
+  ✦ Ownership analysis: pipe |> moves values, use-after-move errors
+  ✦ Dead code elimination
+  ✦ Constant folding and propagation
+  ✦ TL-IR intermediate representation (unified code + query plan)
+  ✦ Predicate pushdown for table operations
+  ✦ Column pruning optimization
+  ✦ Borrow checking (simplified — no lifetime annotations)
+```
+
+### Phase 12: LSP & Developer Tooling (Month 37-39)
+
+**Goal:** World-class developer experience drives adoption
+
+```
+Deliverables:
+  ✦ Language Server Protocol (LSP) implementation
+  ✦ VS Code extension with syntax highlighting, diagnostics, go-to-definition
+  ✦ Auto-completion for types, functions, modules, fields
+  ✦ Hover documentation
+  ✦ tl fmt — code formatter (opinionated, like gofmt)
+  ✦ tl lint — linter with data engineering best practices
+  ✦ tl doc — documentation generator from doc comments
+  ✦ tl explain — show query plan for pipeline
+  ✦ Inline type hints in editor
+```
+
+### Phase 13: Data Quality & Connectors (Month 40-42)
+
+**Goal:** Production data engineering with clean/validate and connectors
+
+```
+Deliverables:
+  ✦ clean block: null handling (fill, drop_row, median), dedup, outlier clamping
+  ✦ validate block: row_count, null_rate, uniqueness assertions
+  ✦ data_profile() — statistical profile of all columns
+  ✦ Validation builtins: is_email(), is_url(), is_phone(), is_between()
+  ✦ Fuzzy matching: levenshtein(), soundex()
+  ✦ MySQL connector
+  ✦ S3 connector (AWS S3 / MinIO)
+  ✦ Redis connector
+  ✦ GraphQL client
+  ✦ Connector trait — user-defined custom connectors
+```
+
 ---
 
 ## 10. Competitive Landscape
