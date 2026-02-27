@@ -126,6 +126,8 @@ pub enum Token {
     Mod,
     #[token("trait")]
     Trait,
+    #[token("where")]
+    Where,
     #[token("impl")]
     Impl,
     #[token("let")]

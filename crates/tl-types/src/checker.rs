@@ -7,9 +7,9 @@
 use tl_ast::{Program, Stmt, StmtKind};
 use tl_errors::Span;
 
-use crate::convert::convert_type_expr;
+use crate::convert::{convert_type_expr, convert_type_expr_with_params};
 use crate::infer::infer_expr;
-use crate::{FnSig, Type, TypeEnv, is_compatible};
+use crate::{FnSig, TraitInfo, Type, TypeEnv, is_compatible};
 
 /// A type error with source location.
 #[derive(Debug, Clone)]
@@ -95,6 +95,7 @@ impl<'a> TypeChecker<'a> {
         match &stmt.kind {
             StmtKind::FnDecl {
                 name,
+                type_params,
                 params,
                 return_type,
                 ..
@@ -105,14 +106,14 @@ impl<'a> TypeChecker<'a> {
                         let ty = p
                             .type_ann
                             .as_ref()
-                            .map(|t| convert_type_expr(t))
+                            .map(|t| convert_type_expr_with_params(t, type_params))
                             .unwrap_or(Type::Any);
                         (p.name.clone(), ty)
                     })
                     .collect();
                 let ret = return_type
                     .as_ref()
-                    .map(|t| convert_type_expr(t))
+                    .map(|t| convert_type_expr_with_params(t, type_params))
                     .unwrap_or(Type::Any);
                 self.env.define_fn(
                     name.clone(),
@@ -128,14 +129,14 @@ impl<'a> TypeChecker<'a> {
                         .map(|p| {
                             p.type_ann
                                 .as_ref()
-                                .map(|t| convert_type_expr(t))
+                                .map(|t| convert_type_expr_with_params(t, type_params))
                                 .unwrap_or(Type::Any)
                         })
                         .collect(),
                     ret: Box::new(
                         return_type
                             .as_ref()
-                            .map(|t| convert_type_expr(t))
+                            .map(|t| convert_type_expr_with_params(t, type_params))
                             .unwrap_or(Type::Any),
                     ),
                 };
@@ -161,6 +162,26 @@ impl<'a> TypeChecker<'a> {
                     .collect();
                 self.env.define_enum(name.clone(), variant_types);
                 self.env.define(name.clone(), Type::Enum(name.clone()));
+            }
+            StmtKind::TraitDef { name, methods, .. } => {
+                let method_sigs: Vec<(String, Vec<Type>, Type)> = methods
+                    .iter()
+                    .map(|m| {
+                        let param_types: Vec<Type> = m.params.iter()
+                            .map(|p| p.type_ann.as_ref().map(|t| convert_type_expr(t)).unwrap_or(Type::Any))
+                            .collect();
+                        let ret = m.return_type.as_ref().map(|t| convert_type_expr(t)).unwrap_or(Type::Any);
+                        (m.name.clone(), param_types, ret)
+                    })
+                    .collect();
+                self.env.define_trait(
+                    name.clone(),
+                    TraitInfo {
+                        name: name.clone(),
+                        methods: method_sigs,
+                        supertrait: None,
+                    },
+                );
             }
             _ => {}
         }
@@ -194,19 +215,51 @@ impl<'a> TypeChecker<'a> {
 
             StmtKind::FnDecl {
                 name,
+                type_params,
                 params,
                 return_type,
+                bounds,
                 body,
                 ..
             } => {
                 self.env.push_scope();
+
+                // Define type parameters in scope
+                for tp in type_params {
+                    self.env.define(tp.clone(), Type::TypeParam(tp.clone()));
+                }
+
+                // Validate trait bounds reference existing traits
+                for bound in bounds {
+                    for trait_name in &bound.traits {
+                        if self.env.lookup_trait(trait_name).is_none() {
+                            self.errors.push(TypeError {
+                                message: format!("Unknown trait `{trait_name}` in bound for `{}`", bound.type_param),
+                                span: stmt.span,
+                                expected: None,
+                                found: None,
+                                hint: Some("Available built-in traits: Numeric, Comparable, Hashable, Displayable, Serializable, Default".to_string()),
+                            });
+                        }
+                    }
+                    // Verify the bound references a declared type param
+                    if !type_params.contains(&bound.type_param) {
+                        self.errors.push(TypeError {
+                            message: format!("Trait bound on undeclared type parameter `{}`", bound.type_param),
+                            span: stmt.span,
+                            expected: None,
+                            found: None,
+                            hint: Some(format!("Declare it in the type parameter list: `fn {}<{}, ...>(...)`", name, bound.type_param)),
+                        });
+                    }
+                }
 
                 // Bind parameters
                 for p in params {
                     let ty = p
                         .type_ann
                         .as_ref()
-                        .map(|t| convert_type_expr(t))
+                        .map(|t| convert_type_expr_with_params(t, type_params))
                         .unwrap_or(Type::Any);
                     self.env.define(p.name.clone(), ty);
 
@@ -229,7 +282,7 @@ impl<'a> TypeChecker<'a> {
                 let prev_return = self.current_fn_return.take();
                 self.current_fn_return = return_type
                     .as_ref()
-                    .map(|t| convert_type_expr(t));
+                    .map(|t| convert_type_expr_with_params(t, type_params));
 
                 // Check body
                 for s in body {
@@ -378,6 +431,76 @@ impl<'a> TypeChecker<'a> {
             | StmtKind::SinkDecl { .. }
             | StmtKind::Use { .. }
             | StmtKind::ModDecl { .. } => {}
+
+            StmtKind::TraitDef { name, type_params: _, methods, .. } => {
+                // Register the trait
+                let method_sigs: Vec<(String, Vec<Type>, Type)> = methods
+                    .iter()
+                    .map(|m| {
+                        let param_types: Vec<Type> = m.params.iter()
+                            .map(|p| p.type_ann.as_ref().map(|t| convert_type_expr(t)).unwrap_or(Type::Any))
+                            .collect();
+                        let ret = m.return_type.as_ref().map(|t| convert_type_expr(t)).unwrap_or(Type::Any);
+                        (m.name.clone(), param_types, ret)
+                    })
+                    .collect();
+                self.env.define_trait(
+                    name.clone(),
+                    TraitInfo {
+                        name: name.clone(),
+                        methods: method_sigs,
+                        supertrait: None,
+                    },
+                );
+            }
+
+            StmtKind::TraitImpl { trait_name, type_name, methods, .. } => {
+                // Validate the trait exists
+                if let Some(trait_info) = self.env.lookup_trait(trait_name).cloned() {
+                    // Check all required methods are provided
+                    let provided: Vec<String> = methods.iter().filter_map(|m| {
+                        if let StmtKind::FnDecl { name, .. } = &m.kind {
+                            Some(name.clone())
+                        } else {
+                            None
+                        }
+                    }).collect();
+
+                    for (required_method, _, _) in &trait_info.methods {
+                        if !provided.contains(required_method) {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "Missing method `{required_method}` in impl `{trait_name}` for `{type_name}`"
+                                ),
+                                span: stmt.span,
+                                expected: None,
+                                found: None,
+                                hint: Some(format!("Trait `{trait_name}` requires method `{required_method}`")),
+                            });
+                        }
+                    }
+
+                    // Register the trait impl
+                    self.env.register_trait_impl(
+                        trait_name.clone(),
+                        type_name.clone(),
+                        provided,
+                    );
+                } else {
+                    self.errors.push(TypeError {
+                        message: format!("Unknown trait `{trait_name}`"),
+                        span: stmt.span,
+                        expected: None,
+                        found: None,
+                        hint: None,
+                    });
+                }
+
+                // Check method bodies
+                for method in methods {
+                    self.check_stmt(method);
+                }
+            }
         }
     }
 }
@@ -538,5 +661,118 @@ mod tests {
         let ty = Type::Enum("Color".into());
         let missing = check_match_exhaustiveness(&ty, &["Red", "Green"], &env);
         assert_eq!(missing, vec!["Blue"]);
+    }
+
+    // ── Phase 12: Generics & Traits ──────────────────────────
+
+    #[test]
+    fn test_generic_fn_type_params() {
+        let result = parse_and_check("fn identity<T>(x: T) -> T { return x }");
+        assert!(!result.has_errors(), "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn test_generic_fn_no_errors_untyped() {
+        // Gradual: untyped generic code always passes
+        let result = parse_and_check("fn identity<T>(x) { return x }");
+        assert!(!result.has_errors(), "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn test_trait_def_registered() {
+        let result = parse_and_check("trait Display { fn show(self) -> string }");
+        assert!(!result.has_errors(), "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn test_trait_impl_validates_methods() {
+        let result = parse_and_check(
+            "trait Display { fn show(self) -> string }\nimpl Display for Point { fn show(self) -> string { \"point\" } }"
+        );
+        assert!(!result.has_errors(), "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn test_trait_impl_missing_method() {
+        let result = parse_and_check(
+            "trait Display { fn show(self) -> string }\nimpl Display for Point { fn other(self) { 1 } }"
+        );
+        assert!(result.has_errors());
+        assert!(result.errors[0].message.contains("Missing method"));
+    }
+
+    #[test]
+    fn test_unknown_trait_in_impl() {
+        let result = parse_and_check(
+            "impl FooTrait for Point { fn bar(self) { 1 } }"
+        );
+        assert!(result.has_errors());
+        assert!(result.errors[0].message.contains("Unknown trait"));
+    }
+
+    #[test]
+    fn test_unknown_trait_in_bound() {
+        let result = parse_and_check("fn foo<T: UnknownTrait>(x: T) { x }");
+        assert!(result.has_errors());
+        assert!(result.errors[0].message.contains("Unknown trait"));
+    }
+
+    #[test]
+    fn test_builtin_trait_bound_accepted() {
+        let result = parse_and_check("fn foo<T: Comparable>(x: T) { x }");
+        assert!(!result.has_errors(), "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn test_multiple_bounds() {
+        let result = parse_and_check("fn foo<T: Comparable + Hashable>(x: T) { x }");
+        assert!(!result.has_errors(), "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn test_where_clause_validation() {
+        let result = parse_and_check("fn foo<T>(x: T) where T: Comparable { x }");
+        assert!(!result.has_errors(), "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn test_undeclared_type_param_in_bound() {
+        let result = parse_and_check("fn foo<T>(x: T) where U: Comparable { x }");
+        assert!(result.has_errors());
+        assert!(result.errors[0].message.contains("undeclared type parameter"));
+    }
+
+    #[test]
+    fn test_builtin_traits_registered() {
+        let env = TypeEnv::new();
+        assert!(env.lookup_trait("Numeric").is_some());
+        assert!(env.lookup_trait("Comparable").is_some());
+        assert!(env.lookup_trait("Hashable").is_some());
+        assert!(env.lookup_trait("Displayable").is_some());
+        assert!(env.lookup_trait("Serializable").is_some());
+        assert!(env.lookup_trait("Default").is_some());
+    }
+
+    #[test]
+    fn test_type_satisfies_numeric() {
+        let env = TypeEnv::new();
+        assert!(env.type_satisfies_trait(&Type::Int, "Numeric"));
+        assert!(env.type_satisfies_trait(&Type::Float, "Numeric"));
+        assert!(!env.type_satisfies_trait(&Type::String, "Numeric"));
+    }
+
+    #[test]
+    fn test_type_satisfies_comparable() {
+        let env = TypeEnv::new();
+        assert!(env.type_satisfies_trait(&Type::Int, "Comparable"));
+        assert!(env.type_satisfies_trait(&Type::String, "Comparable"));
+        assert!(!env.type_satisfies_trait(&Type::Bool, "Comparable"));
+    }
+
+    #[test]
+    fn test_strict_mode_with_generics() {
+        // In strict mode, params still need annotations — type params count as annotations
+        let result = parse_and_check_strict("fn identity<T>(x: T) -> T { return x }");
+        assert!(!result.has_errors(), "errors: {:?}", result.errors);
     }
 }

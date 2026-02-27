@@ -49,6 +49,8 @@ pub enum Type {
     Task(Box<Type>),
     /// Channel carrying T
     Channel(Box<Type>),
+    /// Type parameter (generic): T, U, etc.
+    TypeParam(std::string::String),
     /// Inference variable (unresolved)
     Var(u32),
     /// Poison type — suppresses further errors
@@ -87,10 +89,19 @@ impl fmt::Display for Type {
             Type::Generator(t) => write!(f, "generator<{t}>"),
             Type::Task(t) => write!(f, "task<{t}>"),
             Type::Channel(t) => write!(f, "channel<{t}>"),
+            Type::TypeParam(name) => write!(f, "{name}"),
             Type::Var(id) => write!(f, "?T{id}"),
             Type::Error => write!(f, "<error>"),
         }
     }
+}
+
+/// Information about a trait definition.
+#[derive(Debug, Clone)]
+pub struct TraitInfo {
+    pub name: std::string::String,
+    pub methods: Vec<(std::string::String, Vec<Type>, Type)>, // (name, param_types, return_type)
+    pub supertrait: Option<std::string::String>,
 }
 
 /// Type environment — tracks variable types across scopes.
@@ -102,6 +113,10 @@ pub struct TypeEnv {
     structs: std::collections::HashMap<std::string::String, Vec<(std::string::String, Type)>>,
     /// Enum definitions: name -> variant list
     enums: std::collections::HashMap<std::string::String, Vec<(std::string::String, Vec<Type>)>>,
+    /// Trait definitions: name -> trait info
+    traits: std::collections::HashMap<std::string::String, TraitInfo>,
+    /// Trait implementations: (trait_name, type_name) -> method names
+    trait_impls: std::collections::HashMap<(std::string::String, std::string::String), Vec<std::string::String>>,
     /// Next inference variable ID
     next_var: u32,
 }
@@ -119,15 +134,59 @@ struct Scope {
 
 impl TypeEnv {
     pub fn new() -> Self {
-        TypeEnv {
+        let mut env = TypeEnv {
             scopes: vec![Scope {
                 vars: std::collections::HashMap::new(),
             }],
             functions: std::collections::HashMap::new(),
             structs: std::collections::HashMap::new(),
             enums: std::collections::HashMap::new(),
+            traits: std::collections::HashMap::new(),
+            trait_impls: std::collections::HashMap::new(),
             next_var: 0,
-        }
+        };
+        env.register_builtin_traits();
+        env
+    }
+
+    /// Register built-in trait hierarchy.
+    fn register_builtin_traits(&mut self) {
+        // Hashable — int, float, string, bool
+        self.traits.insert("Hashable".into(), TraitInfo {
+            name: "Hashable".into(),
+            methods: vec![],
+            supertrait: None,
+        });
+        // Comparable — int, float, string (implies Hashable)
+        self.traits.insert("Comparable".into(), TraitInfo {
+            name: "Comparable".into(),
+            methods: vec![],
+            supertrait: Some("Hashable".into()),
+        });
+        // Numeric — int, float (implies Comparable)
+        self.traits.insert("Numeric".into(), TraitInfo {
+            name: "Numeric".into(),
+            methods: vec![],
+            supertrait: Some("Comparable".into()),
+        });
+        // Displayable — all primitives
+        self.traits.insert("Displayable".into(), TraitInfo {
+            name: "Displayable".into(),
+            methods: vec![("to_string".into(), vec![], Type::String)],
+            supertrait: None,
+        });
+        // Serializable — all primitives, structs
+        self.traits.insert("Serializable".into(), TraitInfo {
+            name: "Serializable".into(),
+            methods: vec![],
+            supertrait: None,
+        });
+        // Default — all primitives, list, map, set
+        self.traits.insert("Default".into(), TraitInfo {
+            name: "Default".into(),
+            methods: vec![],
+            supertrait: None,
+        });
     }
 
     pub fn push_scope(&mut self) {
@@ -194,6 +253,80 @@ impl TypeEnv {
         self.next_var += 1;
         Type::Var(id)
     }
+
+    pub fn define_trait(&mut self, name: std::string::String, info: TraitInfo) {
+        self.traits.insert(name, info);
+    }
+
+    pub fn lookup_trait(&self, name: &str) -> Option<&TraitInfo> {
+        self.traits.get(name)
+    }
+
+    pub fn register_trait_impl(
+        &mut self,
+        trait_name: std::string::String,
+        type_name: std::string::String,
+        method_names: Vec<std::string::String>,
+    ) {
+        self.trait_impls.insert((trait_name, type_name), method_names);
+    }
+
+    pub fn lookup_trait_impl(
+        &self,
+        trait_name: &str,
+        type_name: &str,
+    ) -> Option<&Vec<std::string::String>> {
+        self.trait_impls
+            .get(&(trait_name.to_string(), type_name.to_string()))
+    }
+
+    /// Check if a type satisfies a trait bound (including built-in trait hierarchy).
+    pub fn type_satisfies_trait(&self, ty: &Type, trait_name: &str) -> bool {
+        // any always satisfies
+        if matches!(ty, Type::Any | Type::Error | Type::TypeParam(_)) {
+            return true;
+        }
+        // Check built-in trait implementations
+        match trait_name {
+            "Numeric" => matches!(ty, Type::Int | Type::Float),
+            "Comparable" => matches!(ty, Type::Int | Type::Float | Type::String)
+                || self.type_satisfies_trait(ty, "Numeric"),
+            "Hashable" => matches!(ty, Type::Int | Type::Float | Type::String | Type::Bool)
+                || self.type_satisfies_trait(ty, "Comparable"),
+            "Displayable" => matches!(
+                ty,
+                Type::Int | Type::Float | Type::String | Type::Bool | Type::None
+            ),
+            "Default" => matches!(
+                ty,
+                Type::Int
+                    | Type::Float
+                    | Type::String
+                    | Type::Bool
+                    | Type::None
+                    | Type::List(_)
+                    | Type::Map(_)
+                    | Type::Set(_)
+            ),
+            "Serializable" => matches!(
+                ty,
+                Type::Int
+                    | Type::Float
+                    | Type::String
+                    | Type::Bool
+                    | Type::None
+                    | Type::Struct(_)
+            ),
+            _ => {
+                // Check user-defined trait impls
+                let type_name = match ty {
+                    Type::Struct(n) | Type::Enum(n) => n.as_str(),
+                    _ => return false,
+                };
+                self.lookup_trait_impl(trait_name, type_name).is_some()
+            }
+        }
+    }
 }
 
 impl Default for TypeEnv {
@@ -211,6 +344,10 @@ pub fn is_compatible(expected: &Type, found: &Type) -> bool {
     }
     // Error poison type suppresses further errors
     if matches!(expected, Type::Error) || matches!(found, Type::Error) {
+        return true;
+    }
+    // Type parameters are compatible with anything (generics are type-erased)
+    if matches!(expected, Type::TypeParam(_)) || matches!(found, Type::TypeParam(_)) {
         return true;
     }
     // Same type

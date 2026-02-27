@@ -6239,4 +6239,99 @@ print(s.contains("b"))"#);
         vm.execute(&proto).unwrap();
         assert_eq!(vm.output, vec!["77"]);
     }
+
+    // ── Phase 12: Generics & Traits (VM) ──────────────────
+
+    #[test]
+    fn test_vm_generic_fn() {
+        let output = run_output("fn identity<T>(x: T) -> T { x }\nprint(identity(42))");
+        assert_eq!(output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_vm_generic_fn_string() {
+        let output = run_output("fn identity<T>(x: T) -> T { x }\nprint(identity(\"hello\"))");
+        assert_eq!(output, vec!["hello"]);
+    }
+
+    #[test]
+    fn test_vm_generic_struct() {
+        let output = run_output("struct Pair<A, B> { first: A, second: B }\nlet p = Pair { first: 1, second: \"hi\" }\nprint(p.first)\nprint(p.second)");
+        assert_eq!(output, vec!["1", "hi"]);
+    }
+
+    #[test]
+    fn test_vm_trait_def_noop() {
+        // Trait definitions should compile without error (no-op)
+        let output = run_output("trait Display { fn show(self) -> string }\nprint(\"ok\")");
+        assert_eq!(output, vec!["ok"]);
+    }
+
+    #[test]
+    fn test_vm_trait_impl_methods() {
+        let output = run_output(
+            "struct Point { x: int, y: int }\nimpl Display for Point { fn show(self) -> string { \"point\" } }\nlet p = Point { x: 1, y: 2 }\nprint(p.show())"
+        );
+        assert_eq!(output, vec!["point"]);
+    }
+
+    #[test]
+    fn test_vm_generic_enum() {
+        // Generic enum declaration works — type params are erased at runtime
+        let output = run_output("enum MyOpt<T> { Some(T), Nothing }\nlet x = MyOpt::Some(42)\nprint(type_of(x))");
+        assert_eq!(output, vec!["enum"]);
+    }
+
+    #[test]
+    fn test_vm_where_clause_runtime() {
+        // Where clause is compile-time only; function still works at runtime
+        let output = run_output("fn compare<T>(x: T) where T: Comparable { x }\nprint(compare(10))");
+        assert_eq!(output, vec!["10"]);
+    }
+
+    #[test]
+    fn test_vm_trait_impl_self_method() {
+        let output = run_output(
+            "struct Counter { value: int }\nimpl Incrementable for Counter { fn inc(self) { self.value + 1 } }\nlet c = Counter { value: 5 }\nprint(c.inc())"
+        );
+        assert_eq!(output, vec!["6"]);
+    }
+
+    // ── Phase 12: Integration tests ──────────────────────────
+
+    #[test]
+    fn test_vm_generic_fn_with_type_inference() {
+        // Generic function called with different types
+        let output = run_output("fn first<T>(xs: list<T>) -> T { xs[0] }\nprint(first([1, 2, 3]))\nprint(first([\"a\", \"b\"]))");
+        assert_eq!(output, vec!["1", "a"]);
+    }
+
+    #[test]
+    fn test_vm_generic_struct_with_methods() {
+        let output = run_output(
+            "struct Box<T> { val: T }\nimpl Box { fn get(self) { self.val } }\nlet b = Box { val: 42 }\nprint(b.get())"
+        );
+        assert_eq!(output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_vm_trait_def_impl_call() {
+        let output = run_output(
+            "trait Greetable { fn greet(self) -> string }\nstruct Person { name: string }\nimpl Greetable for Person { fn greet(self) -> string { self.name } }\nlet p = Person { name: \"Alice\" }\nprint(p.greet())"
+        );
+        assert_eq!(output, vec!["Alice"]);
+    }
+
+    #[test]
+    fn test_vm_multiple_generic_params() {
+        let output = run_output("fn pair<A, B>(a: A, b: B) { [a, b] }\nlet p = pair(1, \"two\")\nprint(len(p))");
+        assert_eq!(output, vec!["2"]);
+    }
+
+    #[test]
+    fn test_vm_backward_compat_non_generic() {
+        // Existing non-generic code must still work unchanged
+        let output = run_output("fn add(a, b) { a + b }\nstruct Point { x: int, y: int }\nimpl Point { fn sum(self) { self.x + self.y } }\nlet p = Point { x: 3, y: 4 }\nprint(add(1, 2))\nprint(p.sum())");
+        assert_eq!(output, vec!["3", "7"]);
+    }
 }

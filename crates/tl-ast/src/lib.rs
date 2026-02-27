@@ -33,6 +33,21 @@ pub enum UseItem {
     Aliased(Vec<String>, String),
 }
 
+/// A trait bound on a type parameter: `T: Comparable + Hashable`
+#[derive(Debug, Clone)]
+pub struct TraitBound {
+    pub type_param: String,
+    pub traits: Vec<String>,
+}
+
+/// A method signature within a trait definition
+#[derive(Debug, Clone)]
+pub struct TraitMethod {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub return_type: Option<TypeExpr>,
+}
+
 /// Statement variants
 #[derive(Debug, Clone)]
 pub enum StmtKind {
@@ -45,11 +60,13 @@ pub enum StmtKind {
         is_public: bool,
     },
 
-    /// `fn name(params) -> return_type { body }`
+    /// `fn name<T, U>(params) -> return_type where T: Bound { body }`
     FnDecl {
         name: String,
+        type_params: Vec<String>,
         params: Vec<Param>,
         return_type: Option<TypeExpr>,
+        bounds: Vec<TraitBound>,
         body: Vec<Stmt>,
         is_generator: bool,
         is_public: bool,
@@ -133,23 +150,26 @@ pub enum StmtKind {
         config: Vec<(String, Expr)>,
     },
 
-    /// `struct Name { field: type, ... }`
+    /// `struct Name<T, U> { field: type, ... }`
     StructDecl {
         name: String,
+        type_params: Vec<String>,
         fields: Vec<SchemaField>,
         is_public: bool,
     },
 
-    /// `enum Name { Variant, Variant(types), ... }`
+    /// `enum Name<T, E> { Variant, Variant(types), ... }`
     EnumDecl {
         name: String,
+        type_params: Vec<String>,
         variants: Vec<EnumVariant>,
         is_public: bool,
     },
 
-    /// `impl Type { fn methods... }`
+    /// `impl<T> Type { fn methods... }`
     ImplBlock {
         type_name: String,
+        type_params: Vec<String>,
         methods: Vec<Stmt>,
     },
 
@@ -185,6 +205,22 @@ pub enum StmtKind {
     ModDecl {
         name: String,
         is_public: bool,
+    },
+
+    /// `trait Display<T> { fn show(self) -> string }`
+    TraitDef {
+        name: String,
+        type_params: Vec<String>,
+        methods: Vec<TraitMethod>,
+        is_public: bool,
+    },
+
+    /// `impl Display for Point { fn show(self) -> string { ... } }`
+    TraitImpl {
+        trait_name: String,
+        type_name: String,
+        type_params: Vec<String>,
+        methods: Vec<Stmt>,
     },
 
     /// `break`

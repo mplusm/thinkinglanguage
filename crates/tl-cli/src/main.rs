@@ -41,7 +41,7 @@ impl TlHelper {
             "let", "fn", "if", "else", "while", "for", "in", "return", "true", "false", "none",
             "struct", "enum", "impl", "try", "catch", "throw", "import", "test", "break", "continue",
             "and", "or", "not", "mut", "await", "yield", "match", "schema", "pipeline", "stream",
-            "source", "sink", "use", "pub", "mod",
+            "source", "sink", "use", "pub", "mod", "trait", "where",
             // Builtin functions
             "print", "println", "len", "str", "int", "float", "abs", "min", "max", "range",
             "push", "type_of", "map", "filter", "reduce", "sum", "any", "all",

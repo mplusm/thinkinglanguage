@@ -344,7 +344,7 @@ impl Compiler {
                 self.current().emit_abx(Op::SetGlobal, reg, name_g, 0);
                 Ok(())
             }
-            StmtKind::ImplBlock { type_name, methods } => {
+            StmtKind::ImplBlock { type_name, methods, .. } => {
                 // Compile each method as a global function with mangled name Type::method
                 for method in methods {
                     if let StmtKind::FnDecl { name: mname, params, body, .. } = &method.kind {
@@ -426,6 +426,23 @@ impl Compiler {
             }
             StmtKind::ModDecl { .. } => {
                 // ModDecl is handled at load time, not compilation
+                Ok(())
+            }
+            StmtKind::TraitDef { .. } => {
+                // Trait definitions are type-checker only; no runtime code needed
+                Ok(())
+            }
+            StmtKind::TraitImpl { type_name, methods, .. } => {
+                // Compile as a regular impl block — trait impls are type-erased at runtime
+                for method in methods {
+                    if let StmtKind::FnDecl { name: mname, params, body, .. } = &method.kind {
+                        let mangled = format!("{type_name}::{mname}");
+                        let reg = self.add_local(mangled.clone());
+                        self.compile_function(mangled.clone(), params, body, false)?;
+                        let idx = self.current().add_constant(Constant::String(Arc::from(mangled.as_str())));
+                        self.current().emit_abx(Op::SetGlobal, reg, idx, 0);
+                    }
+                }
                 Ok(())
             }
             StmtKind::Break => {

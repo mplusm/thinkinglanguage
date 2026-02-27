@@ -128,6 +128,7 @@ impl Parser {
             Token::Struct => self.parse_struct_decl(),
             Token::Enum => self.parse_enum_decl(),
             Token::Impl => self.parse_impl(),
+            Token::Trait => self.parse_trait_def(),
             Token::Model => self.parse_train(),
             Token::Pipeline => self.parse_pipeline(),
             Token::Stream => self.parse_stream_decl(),
@@ -216,9 +217,17 @@ impl Parser {
                 stmt.span = Span::new(start, stmt.span.end);
                 Ok(stmt)
             }
+            Token::Trait => {
+                let mut stmt = self.parse_trait_def()?;
+                if let StmtKind::TraitDef { ref mut is_public, .. } = stmt.kind {
+                    *is_public = true;
+                }
+                stmt.span = Span::new(start, stmt.span.end);
+                Ok(stmt)
+            }
             _ => Err(TlError::Parser(ParserError {
                 message: format!(
-                    "`pub` can only be applied to fn, struct, enum, schema, let, use, or mod, found `{}`",
+                    "`pub` can only be applied to fn, struct, enum, schema, let, use, mod, or trait, found `{}`",
                     self.peek()
                 ),
                 span: self.peek_span(),
@@ -698,6 +707,10 @@ impl Parser {
         let start = self.peek_span().start;
         self.advance(); // consume 'fn'
         let name = self.expect_ident()?;
+
+        // Optional type parameters with inline bounds: <T: Comparable, U>
+        let (type_params, mut bounds) = self.parse_optional_type_params_with_bounds()?;
+
         self.expect(&Token::LParen)?;
         let params = self.parse_param_list()?;
         self.expect(&Token::RParen)?;
@@ -706,12 +719,20 @@ impl Parser {
         } else {
             None
         };
+
+        // Optional where clause: `where T: Comparable + Hashable`
+        if self.check(&Token::Where) {
+            self.advance(); // consume 'where'
+            let where_bounds = self.parse_where_clause()?;
+            bounds.extend(where_bounds);
+        }
+
         self.expect(&Token::LBrace)?;
         let body = self.parse_block_body()?;
         self.expect(&Token::RBrace)?;
         let is_generator = body_contains_yield(&body);
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::FnDecl { name, params, return_type, body, is_generator, is_public: false }, start, end))
+        Ok(make_stmt(StmtKind::FnDecl { name, type_params, params, return_type, bounds, body, is_generator, is_public: false }, start, end))
     }
 
     fn parse_if(&mut self) -> Result<Stmt, TlError> {
@@ -946,7 +967,7 @@ impl Parser {
                 Token::RBrace | Token::RParen | Token::Comma | Token::Semicolon |
                 Token::Let | Token::Fn | Token::If | Token::While | Token::For |
                 Token::Return | Token::Yield | Token::Struct | Token::Enum |
-                Token::Impl | Token::Import | Token::Try | Token::Throw
+                Token::Impl | Token::Trait | Token::Import | Token::Try | Token::Throw
             ) {
                 return Ok(Expr::Yield(None));
             }
@@ -1358,6 +1379,7 @@ impl Parser {
         let start = self.peek_span().start;
         self.advance(); // consume 'struct'
         let name = self.expect_ident()?;
+        let type_params = self.parse_optional_type_params()?;
         self.expect(&Token::LBrace)?;
         let mut fields = Vec::new();
         while !self.check(&Token::RBrace) && !self.is_at_end() {
@@ -1372,7 +1394,7 @@ impl Parser {
         }
         self.expect(&Token::RBrace)?;
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::StructDecl { name, fields, is_public: false }, start, end))
+        Ok(make_stmt(StmtKind::StructDecl { name, type_params, fields, is_public: false }, start, end))
     }
 
     /// Parse `enum Name { Variant, Variant(Type, Type), ... }`
@@ -1380,6 +1402,7 @@ impl Parser {
         let start = self.peek_span().start;
         self.advance(); // consume 'enum'
         let name = self.expect_ident()?;
+        let type_params = self.parse_optional_type_params()?;
         self.expect(&Token::LBrace)?;
         let mut variants = Vec::new();
         while !self.check(&Token::RBrace) && !self.is_at_end() {
@@ -1405,14 +1428,50 @@ impl Parser {
         }
         self.expect(&Token::RBrace)?;
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::EnumDecl { name, variants, is_public: false }, start, end))
+        Ok(make_stmt(StmtKind::EnumDecl { name, type_params, variants, is_public: false }, start, end))
     }
 
-    /// Parse `impl Type { fn methods... }`
+    /// Parse `impl Type { ... }` or `impl<T> Type { ... }` or `impl Trait for Type { ... }`
     fn parse_impl(&mut self) -> Result<Stmt, TlError> {
         let start = self.peek_span().start;
         self.advance(); // consume 'impl'
-        let type_name = self.expect_ident()?;
+
+        // Optional type params: impl<T>
+        let impl_type_params = self.parse_optional_type_params()?;
+
+        let first_name = self.expect_ident()?;
+
+        // Check if this is `impl Trait for Type { ... }`
+        if self.check(&Token::For) {
+            self.advance(); // consume 'for'
+            let type_name = self.expect_ident()?;
+            // Optional type params on the type: `for Type<T>`
+            let _type_args = self.parse_optional_type_params()?;
+
+            self.expect(&Token::LBrace)?;
+            let mut methods = Vec::new();
+            while !self.check(&Token::RBrace) && !self.is_at_end() {
+                if self.check(&Token::Fn) {
+                    methods.push(self.parse_fn_decl()?);
+                } else {
+                    return Err(TlError::Parser(ParserError {
+                        message: "Expected `fn` in impl block".to_string(),
+                        span: self.peek_span(),
+                        hint: None,
+                    }));
+                }
+            }
+            self.expect(&Token::RBrace)?;
+            let end = self.previous_span().end;
+            return Ok(make_stmt(StmtKind::TraitImpl {
+                trait_name: first_name,
+                type_name,
+                type_params: impl_type_params,
+                methods,
+            }, start, end));
+        }
+
+        // Regular impl block: `impl Type { ... }`
         self.expect(&Token::LBrace)?;
         let mut methods = Vec::new();
         while !self.check(&Token::RBrace) && !self.is_at_end() {
@@ -1428,7 +1487,112 @@ impl Parser {
         }
         self.expect(&Token::RBrace)?;
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::ImplBlock { type_name, methods }, start, end))
+        Ok(make_stmt(StmtKind::ImplBlock { type_name: first_name, type_params: impl_type_params, methods }, start, end))
+    }
+
+    /// Parse `trait Name { fn method(self) -> type; ... }`
+    fn parse_trait_def(&mut self) -> Result<Stmt, TlError> {
+        let start = self.peek_span().start;
+        self.advance(); // consume 'trait'
+        let name = self.expect_ident()?;
+
+        // Optional type parameters <T, U>
+        let type_params = self.parse_optional_type_params()?;
+
+        self.expect(&Token::LBrace)?;
+        let mut methods = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            if self.check(&Token::Fn) {
+                self.advance(); // consume 'fn'
+                let method_name = self.expect_ident()?;
+                self.expect(&Token::LParen)?;
+                let params = self.parse_param_list()?;
+                self.expect(&Token::RParen)?;
+                let return_type = if self.match_token(&Token::Arrow) {
+                    Some(self.parse_type()?)
+                } else {
+                    None
+                };
+                methods.push(TraitMethod {
+                    name: method_name,
+                    params,
+                    return_type,
+                });
+            } else {
+                return Err(TlError::Parser(ParserError {
+                    message: "Expected `fn` in trait definition".to_string(),
+                    span: self.peek_span(),
+                    hint: None,
+                }));
+            }
+        }
+        self.expect(&Token::RBrace)?;
+        let end = self.previous_span().end;
+        Ok(make_stmt(StmtKind::TraitDef { name, type_params, methods, is_public: false }, start, end))
+    }
+
+    /// Parse optional type parameters: `<T, U>` — returns empty vec if no `<`
+    fn parse_optional_type_params(&mut self) -> Result<Vec<String>, TlError> {
+        let (params, _bounds) = self.parse_optional_type_params_with_bounds()?;
+        Ok(params)
+    }
+
+    /// Parse optional type parameters with inline bounds: `<T: Comparable, U>`
+    /// Returns (type_param_names, trait_bounds)
+    fn parse_optional_type_params_with_bounds(&mut self) -> Result<(Vec<String>, Vec<TraitBound>), TlError> {
+        if !self.check(&Token::Lt) {
+            return Ok((vec![], vec![]));
+        }
+        self.advance(); // consume '<'
+        let mut params = Vec::new();
+        let mut bounds = Vec::new();
+        loop {
+            let name = self.expect_ident()?;
+            // Check for inline bounds: `T: Comparable + Hashable`
+            if self.match_token(&Token::Colon) {
+                let mut traits = Vec::new();
+                traits.push(self.expect_ident()?);
+                while self.match_token(&Token::Plus) {
+                    traits.push(self.expect_ident()?);
+                }
+                bounds.push(TraitBound {
+                    type_param: name.clone(),
+                    traits,
+                });
+            }
+            params.push(name);
+            if !self.match_token(&Token::Comma) {
+                break;
+            }
+        }
+        self.expect(&Token::Gt)?;
+        Ok((params, bounds))
+    }
+
+    /// Parse where clause: `T: Comparable + Hashable, U: Default`
+    fn parse_where_clause(&mut self) -> Result<Vec<TraitBound>, TlError> {
+        let mut bounds = Vec::new();
+        loop {
+            let type_param = self.expect_ident()?;
+            self.expect(&Token::Colon)?;
+            let mut traits = Vec::new();
+            traits.push(self.expect_ident()?);
+            while self.match_token(&Token::Plus) {
+                traits.push(self.expect_ident()?);
+            }
+            bounds.push(TraitBound {
+                type_param,
+                traits,
+            });
+            if !self.match_token(&Token::Comma) {
+                break;
+            }
+            // Stop if next token is `{` (body start)
+            if self.check(&Token::LBrace) {
+                break;
+            }
+        }
+        Ok(bounds)
     }
 
     /// Parse `try { ... } catch var { ... }`
@@ -1943,7 +2107,7 @@ mod tests {
     #[test]
     fn test_parse_impl_block() {
         let program = parse("impl Point { fn area(self) { self.x * self.y } }").unwrap();
-        if let StmtKind::ImplBlock { type_name, methods } = &program.statements[0].kind {
+        if let StmtKind::ImplBlock { type_name, methods, .. } = &program.statements[0].kind {
             assert_eq!(type_name, "Point");
             assert_eq!(methods.len(), 1);
             if let StmtKind::FnDecl { name, params, body, .. } = &methods[0].kind {
@@ -2243,6 +2407,169 @@ mod tests {
             assert!(!*is_public);
         } else {
             panic!("Expected FnDecl");
+        }
+    }
+
+    // ── Phase 12: Generics & Traits ──────────────────────────
+
+    #[test]
+    fn test_generic_fn() {
+        let program = parse("fn identity<T>(x: T) -> T { x }").unwrap();
+        if let StmtKind::FnDecl { name, type_params, params, return_type, .. } = &program.statements[0].kind {
+            assert_eq!(name, "identity");
+            assert_eq!(type_params, &vec!["T".to_string()]);
+            assert_eq!(params.len(), 1);
+            assert!(return_type.is_some());
+        } else {
+            panic!("Expected FnDecl");
+        }
+    }
+
+    #[test]
+    fn test_generic_struct() {
+        let program = parse("struct Pair<A, B> { first: A, second: B }").unwrap();
+        if let StmtKind::StructDecl { name, type_params, fields, .. } = &program.statements[0].kind {
+            assert_eq!(name, "Pair");
+            assert_eq!(type_params, &vec!["A".to_string(), "B".to_string()]);
+            assert_eq!(fields.len(), 2);
+        } else {
+            panic!("Expected StructDecl");
+        }
+    }
+
+    #[test]
+    fn test_generic_enum() {
+        let program = parse("enum MyOption<T> { Some(T), Nothing }").unwrap();
+        if let StmtKind::EnumDecl { name, type_params, variants, .. } = &program.statements[0].kind {
+            assert_eq!(name, "MyOption");
+            assert_eq!(type_params, &vec!["T".to_string()]);
+            assert_eq!(variants.len(), 2);
+            assert_eq!(variants[0].name, "Some");
+            assert_eq!(variants[1].name, "Nothing");
+        } else {
+            panic!("Expected EnumDecl");
+        }
+    }
+
+    #[test]
+    fn test_inline_trait_bound() {
+        let program = parse("fn foo<T: Comparable>(x: T) { x }").unwrap();
+        if let StmtKind::FnDecl { type_params, bounds, .. } = &program.statements[0].kind {
+            assert_eq!(type_params, &vec!["T".to_string()]);
+            assert_eq!(bounds.len(), 1);
+            assert_eq!(bounds[0].type_param, "T");
+            assert_eq!(bounds[0].traits, vec!["Comparable".to_string()]);
+        } else {
+            panic!("Expected FnDecl");
+        }
+    }
+
+    #[test]
+    fn test_where_clause() {
+        let program = parse("fn foo<T>(x: T) where T: Comparable + Hashable { x }").unwrap();
+        if let StmtKind::FnDecl { type_params, bounds, .. } = &program.statements[0].kind {
+            assert_eq!(type_params, &vec!["T".to_string()]);
+            assert_eq!(bounds.len(), 1);
+            assert_eq!(bounds[0].type_param, "T");
+            assert_eq!(bounds[0].traits, vec!["Comparable".to_string(), "Hashable".to_string()]);
+        } else {
+            panic!("Expected FnDecl");
+        }
+    }
+
+    #[test]
+    fn test_trait_def() {
+        let program = parse("trait Display { fn show(self) -> string }").unwrap();
+        if let StmtKind::TraitDef { name, type_params, methods, is_public } = &program.statements[0].kind {
+            assert_eq!(name, "Display");
+            assert!(type_params.is_empty());
+            assert_eq!(methods.len(), 1);
+            assert_eq!(methods[0].name, "show");
+            assert!(!*is_public);
+        } else {
+            panic!("Expected TraitDef");
+        }
+    }
+
+    #[test]
+    fn test_trait_impl() {
+        let program = parse("impl Display for Point { fn show(self) -> string { \"point\" } }").unwrap();
+        if let StmtKind::TraitImpl { trait_name, type_name, methods, .. } = &program.statements[0].kind {
+            assert_eq!(trait_name, "Display");
+            assert_eq!(type_name, "Point");
+            assert_eq!(methods.len(), 1);
+        } else {
+            panic!("Expected TraitImpl");
+        }
+    }
+
+    #[test]
+    fn test_generic_trait_impl() {
+        let program = parse("impl<T> Display for Box<T> { fn show(self) -> string { \"box\" } }").unwrap();
+        if let StmtKind::TraitImpl { trait_name, type_name, type_params, methods } = &program.statements[0].kind {
+            assert_eq!(trait_name, "Display");
+            assert_eq!(type_name, "Box");
+            assert_eq!(type_params, &vec!["T".to_string()]);
+            assert_eq!(methods.len(), 1);
+        } else {
+            panic!("Expected TraitImpl");
+        }
+    }
+
+    #[test]
+    fn test_pub_trait() {
+        let program = parse("pub trait Serializable { fn serialize(self) -> string }").unwrap();
+        if let StmtKind::TraitDef { name, is_public, .. } = &program.statements[0].kind {
+            assert_eq!(name, "Serializable");
+            assert!(*is_public);
+        } else {
+            panic!("Expected TraitDef");
+        }
+    }
+
+    #[test]
+    fn test_multiple_type_params() {
+        let program = parse("fn zip<A, B>(a: list<A>, b: list<B>) { a }").unwrap();
+        if let StmtKind::FnDecl { type_params, .. } = &program.statements[0].kind {
+            assert_eq!(type_params, &vec!["A".to_string(), "B".to_string()]);
+        } else {
+            panic!("Expected FnDecl");
+        }
+    }
+
+    #[test]
+    fn test_existing_code_no_type_params() {
+        // Existing code should still parse with empty type_params
+        let program = parse("fn add(a, b) { a + b }").unwrap();
+        if let StmtKind::FnDecl { type_params, bounds, .. } = &program.statements[0].kind {
+            assert!(type_params.is_empty());
+            assert!(bounds.is_empty());
+        } else {
+            panic!("Expected FnDecl");
+        }
+    }
+
+    #[test]
+    fn test_trait_with_multiple_methods() {
+        let program = parse("trait Container { fn len(self) -> int fn is_empty(self) -> bool }").unwrap();
+        if let StmtKind::TraitDef { name, methods, .. } = &program.statements[0].kind {
+            assert_eq!(name, "Container");
+            assert_eq!(methods.len(), 2);
+            assert_eq!(methods[0].name, "len");
+            assert_eq!(methods[1].name, "is_empty");
+        } else {
+            panic!("Expected TraitDef");
+        }
+    }
+
+    #[test]
+    fn test_generic_impl_block() {
+        let program = parse("impl<T> Box { fn get(self) -> T { self.val } }").unwrap();
+        if let StmtKind::ImplBlock { type_name, type_params, .. } = &program.statements[0].kind {
+            assert_eq!(type_name, "Box");
+            assert_eq!(type_params, &vec!["T".to_string()]);
+        } else {
+            panic!("Expected ImplBlock");
         }
     }
 }
