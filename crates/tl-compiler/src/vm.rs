@@ -19,7 +19,8 @@ fn runtime_err(msg: impl Into<String>) -> TlError {
     TlError::Runtime(RuntimeError {
         message: msg.into(),
         span: None,
-    })
+        stack_trace: vec![],
+        })
 }
 
 /// Convert serde_json::Value to VmValue
@@ -343,7 +344,38 @@ impl Vm {
             upvalues: Vec::new(),
         });
 
-        self.run()
+        self.run().map_err(|e| self.enrich_error(e))
+    }
+
+    /// Enrich a runtime error with line number and stack trace from the current call frames.
+    fn enrich_error(&self, err: TlError) -> TlError {
+        match err {
+            TlError::Runtime(mut re) => {
+                // Build stack trace from remaining frames
+                let mut trace = Vec::new();
+                for frame in self.frames.iter().rev() {
+                    let ip = if frame.ip > 0 { frame.ip - 1 } else { 0 };
+                    let line = if ip < frame.prototype.lines.len() {
+                        frame.prototype.lines[ip]
+                    } else {
+                        0
+                    };
+                    trace.push(tl_errors::StackFrame {
+                        function: frame.prototype.name.clone(),
+                        line,
+                    });
+                }
+                // Set span from the innermost frame's line if not already set
+                if re.span.is_none() && !trace.is_empty() && trace[0].line > 0 {
+                    // We only have line number, not byte offset, so we can't set a precise span.
+                    // But we can set a line-based marker that report_runtime_error can use.
+                    // For now, leave span as None and rely on the stack trace.
+                }
+                re.stack_trace = trace;
+                TlError::Runtime(re)
+            }
+            other => other,
+        }
     }
 
     /// Main dispatch loop. Runs the current (topmost) frame until Return.
@@ -4022,7 +4054,7 @@ impl Vm {
             AstExpr::Closure { params: _, body: _ } => {
                 use crate::compiler;
                 let wrapper = tl_ast::Program {
-                    statements: vec![tl_ast::Stmt::Expr(expr.clone())],
+                    statements: vec![tl_ast::Stmt { kind: tl_ast::StmtKind::Expr(expr.clone()), span: tl_errors::Span::new(0, 0) }],
                 };
                 let proto = compiler::compile(&wrapper)?;
                 let mut temp_vm = Vm::new();
@@ -4034,7 +4066,7 @@ impl Vm {
             _ => {
                 // For complex expressions, compile and evaluate
                 let wrapper = tl_ast::Program {
-                    statements: vec![tl_ast::Stmt::Expr(expr.clone())],
+                    statements: vec![tl_ast::Stmt { kind: tl_ast::StmtKind::Expr(expr.clone()), span: tl_errors::Span::new(0, 0) }],
                 };
                 use crate::compiler;
                 let proto = compiler::compile(&wrapper)?;

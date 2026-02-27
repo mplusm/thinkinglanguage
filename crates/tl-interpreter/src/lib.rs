@@ -619,18 +619,20 @@ impl Interpreter {
                     return Err(TlError::Runtime(RuntimeError {
                         message: format!("Unhandled throw: {val}"),
                         span: None,
-                    }))
+                        stack_trace: vec![],
+                        }))
                 }
                 Signal::Break | Signal::Continue => {
                     return Err(TlError::Runtime(RuntimeError {
                         message: "break/continue outside of loop".to_string(),
                         span: None,
-                    }))
+                        stack_trace: vec![],
+                        }))
                 }
                 Signal::Yield(_) => {} // yield outside generator is a no-op at top level
             }
             // Track last expression value for REPL
-            if let Stmt::Expr(_) = stmt {
+            if let StmtKind::Expr(_) = &stmt.kind {
                 last = self.last_expr_value.clone().unwrap_or(Value::None);
             }
         }
@@ -658,8 +660,8 @@ impl Default for Interpreter {
 
 impl Interpreter {
     fn exec_stmt(&mut self, stmt: &Stmt) -> Result<Signal, TlError> {
-        match stmt {
-            Stmt::Let {
+        match &stmt.kind {
+            StmtKind::Let {
                 name,
                 value,
                 ..
@@ -668,7 +670,7 @@ impl Interpreter {
                 self.env.set(name.clone(), val);
                 Ok(Signal::None)
             }
-            Stmt::FnDecl {
+            StmtKind::FnDecl {
                 name,
                 params,
                 body,
@@ -684,19 +686,19 @@ impl Interpreter {
                 self.env.set(name.clone(), func);
                 Ok(Signal::None)
             }
-            Stmt::Expr(expr) => {
+            StmtKind::Expr(expr) => {
                 let val = self.eval_expr(expr)?;
                 self.last_expr_value = Some(val);
                 Ok(Signal::None)
             }
-            Stmt::Return(expr) => {
+            StmtKind::Return(expr) => {
                 let val = match expr {
                     Some(e) => self.eval_expr(e)?,
                     None => Value::None,
                 };
                 Ok(Signal::Return(val))
             }
-            Stmt::If {
+            StmtKind::If {
                 condition,
                 then_body,
                 else_ifs,
@@ -717,7 +719,7 @@ impl Interpreter {
                 }
                 Ok(Signal::None)
             }
-            Stmt::While { condition, body } => {
+            StmtKind::While { condition, body } => {
                 loop {
                     let cond = self.eval_expr(condition)?;
                     if !cond.is_truthy() {
@@ -732,7 +734,7 @@ impl Interpreter {
                 }
                 Ok(Signal::None)
             }
-            Stmt::For { name, iter, body } => {
+            StmtKind::For { name, iter, body } => {
                 let iter_val = self.eval_expr(iter)?;
                 // Handle generator iteration
                 if let Value::Generator(ref g) = iter_val {
@@ -766,7 +768,8 @@ impl Interpreter {
                         return Err(TlError::Runtime(RuntimeError {
                             message: format!("Cannot iterate over {}", iter_val.type_name()),
                             span: None,
-                        }))
+                            stack_trace: vec![],
+                            }))
                     }
                 };
                 for item in items {
@@ -783,7 +786,7 @@ impl Interpreter {
                 }
                 Ok(Signal::None)
             }
-            Stmt::Schema { name, fields } => {
+            StmtKind::Schema { name, fields } => {
                 let arrow_fields: Vec<ArrowField> = fields
                     .iter()
                     .map(|f| {
@@ -798,22 +801,22 @@ impl Interpreter {
                 self.env.set(name.clone(), Value::Schema(schema));
                 Ok(Signal::None)
             }
-            Stmt::Train { name, algorithm, config } => {
+            StmtKind::Train { name, algorithm, config } => {
                 self.exec_train(name, algorithm, config)
             }
-            Stmt::Pipeline { name, extract, transform, load, schedule, timeout, retries, on_failure, on_success } => {
+            StmtKind::Pipeline { name, extract, transform, load, schedule, timeout, retries, on_failure, on_success } => {
                 self.exec_pipeline(name, extract, transform, load, schedule, timeout, retries, on_failure, on_success)
             }
-            Stmt::StreamDecl { name, source, transform, sink, window, watermark } => {
+            StmtKind::StreamDecl { name, source, transform, sink, window, watermark } => {
                 self.exec_stream_decl(name, source, transform, sink, window, watermark)
             }
-            Stmt::SourceDecl { name, connector_type, config } => {
+            StmtKind::SourceDecl { name, connector_type, config } => {
                 self.exec_source_decl(name, connector_type, config)
             }
-            Stmt::SinkDecl { name, connector_type, config } => {
+            StmtKind::SinkDecl { name, connector_type, config } => {
                 self.exec_sink_decl(name, connector_type, config)
             }
-            Stmt::StructDecl { name, fields } => {
+            StmtKind::StructDecl { name, fields } => {
                 let field_names: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
                 self.env.set(
                     name.clone(),
@@ -824,7 +827,7 @@ impl Interpreter {
                 );
                 Ok(Signal::None)
             }
-            Stmt::EnumDecl { name, variants } => {
+            StmtKind::EnumDecl { name, variants } => {
                 let variant_info: Vec<(String, usize)> = variants
                     .iter()
                     .map(|v| (v.name.clone(), v.fields.len()))
@@ -838,13 +841,13 @@ impl Interpreter {
                 );
                 Ok(Signal::None)
             }
-            Stmt::ImplBlock { type_name, methods } => {
+            StmtKind::ImplBlock { type_name, methods } => {
                 let mut method_map = self
                     .method_table
                     .remove(type_name)
                     .unwrap_or_default();
                 for method in methods {
-                    if let Stmt::FnDecl { name, params, body, is_generator, .. } = method {
+                    if let StmtKind::FnDecl { name, params, body, is_generator, .. } = &method.kind {
                         method_map.insert(
                             name.clone(),
                             Value::Function {
@@ -859,7 +862,7 @@ impl Interpreter {
                 self.method_table.insert(type_name.clone(), method_map);
                 Ok(Signal::None)
             }
-            Stmt::TryCatch { try_body, catch_var, catch_body } => {
+            StmtKind::TryCatch { try_body, catch_var, catch_body } => {
                 self.env.push_scope();
                 let mut result = Signal::None;
                 let mut caught = None;
@@ -911,14 +914,14 @@ impl Interpreter {
                 }
                 Ok(result)
             }
-            Stmt::Throw(expr) => {
+            StmtKind::Throw(expr) => {
                 let val = self.eval_expr(expr)?;
                 Ok(Signal::Throw(val))
             }
-            Stmt::Import { path, alias } => {
+            StmtKind::Import { path, alias } => {
                 self.exec_import(path, alias.as_deref())
             }
-            Stmt::Test { name, body } => {
+            StmtKind::Test { name, body } => {
                 if self.test_mode {
                     self.env.push_scope();
                     let mut failed = false;
@@ -951,8 +954,8 @@ impl Interpreter {
                 }
                 Ok(Signal::None)
             }
-            Stmt::Break => Ok(Signal::Break),
-            Stmt::Continue => Ok(Signal::Continue),
+            StmtKind::Break => Ok(Signal::Break),
+            StmtKind::Continue => Ok(Signal::Continue),
         }
     }
 
@@ -987,7 +990,8 @@ impl Interpreter {
                 TlError::Runtime(RuntimeError {
                     message: format!("Undefined variable: `{name}`"),
                     span: None,
-                })
+                    stack_trace: vec![],
+                    })
             }),
 
             Expr::BinOp { left, op, right } => {
@@ -1076,7 +1080,8 @@ impl Interpreter {
                             TlError::Runtime(RuntimeError {
                                 message: format!("Undefined function: `{name}`"),
                                 span: None,
-                            })
+                                stack_trace: vec![],
+                                })
                         })?;
                         self.call_function(&func, &[left_val])
                     }
@@ -3337,7 +3342,8 @@ impl Interpreter {
             return Err(TlError::Runtime(RuntimeError {
                 message: format!("Circular import detected: {resolved}"),
                 span: None,
-            }));
+                stack_trace: vec![],
+                }));
         }
 
         // Check cache
@@ -3834,6 +3840,7 @@ fn runtime_err(message: String) -> TlError {
     TlError::Runtime(RuntimeError {
         message,
         span: None,
+        stack_trace: vec![],
     })
 }
 
@@ -3841,6 +3848,7 @@ fn runtime_err_s(message: &str) -> TlError {
     TlError::Runtime(RuntimeError {
         message: message.to_string(),
         span: None,
+        stack_trace: vec![],
     })
 }
 
@@ -4144,25 +4152,25 @@ impl Interpreter {
         yield_tx: &mpsc::Sender<Result<Value, String>>,
         resume_rx: &mpsc::Receiver<()>,
     ) -> Result<GenSignal, TlError> {
-        match stmt {
-            Stmt::Expr(expr) => {
+        match &stmt.kind {
+            StmtKind::Expr(expr) => {
                 let val = self.eval_expr_gen(expr, yield_tx, resume_rx)?;
                 self.last_expr_value = Some(val);
                 Ok(GenSignal::None)
             }
-            Stmt::Let { name, value, .. } => {
+            StmtKind::Let { name, value, .. } => {
                 let val = self.eval_expr_gen(value, yield_tx, resume_rx)?;
                 self.env.set(name.clone(), val);
                 Ok(GenSignal::None)
             }
-            Stmt::Return(expr) => {
+            StmtKind::Return(expr) => {
                 let val = match expr {
                     Some(e) => self.eval_expr_gen(e, yield_tx, resume_rx)?,
                     None => Value::None,
                 };
                 Ok(GenSignal::Return(val))
             }
-            Stmt::If { condition, then_body, else_ifs, else_body } => {
+            StmtKind::If { condition, then_body, else_ifs, else_body } => {
                 let cond = self.eval_expr_gen(condition, yield_tx, resume_rx)?;
                 if cond.is_truthy() {
                     for s in then_body {
@@ -4193,7 +4201,7 @@ impl Interpreter {
                 }
                 Ok(GenSignal::None)
             }
-            Stmt::While { condition, body } => {
+            StmtKind::While { condition, body } => {
                 loop {
                     let cond = self.eval_expr_gen(condition, yield_tx, resume_rx)?;
                     if !cond.is_truthy() { break; }
@@ -4220,7 +4228,7 @@ impl Interpreter {
                 }
                 Ok(GenSignal::None)
             }
-            Stmt::For { name, iter, body } => {
+            StmtKind::For { name, iter, body } => {
                 let iter_val = self.eval_expr_gen(iter, yield_tx, resume_rx)?;
                 let items = match iter_val {
                     Value::List(items) => items,
@@ -4264,13 +4272,13 @@ impl Interpreter {
                 }
                 Ok(GenSignal::None)
             }
-            Stmt::Break => Ok(GenSignal::Break),
-            Stmt::Continue => Ok(GenSignal::Continue),
-            Stmt::Throw(expr) => {
+            StmtKind::Break => Ok(GenSignal::Break),
+            StmtKind::Continue => Ok(GenSignal::Continue),
+            StmtKind::Throw(expr) => {
                 let val = self.eval_expr_gen(expr, yield_tx, resume_rx)?;
                 Ok(GenSignal::Throw(val))
             }
-            Stmt::FnDecl { name, params, body, is_generator, .. } => {
+            StmtKind::FnDecl { name, params, body, is_generator, .. } => {
                 let func = Value::Function {
                     name: name.clone(),
                     params: params.clone(),
@@ -4281,8 +4289,8 @@ impl Interpreter {
                 Ok(GenSignal::None)
             }
             // For other statements, delegate to regular exec_stmt
-            other => {
-                let sig = self.exec_stmt(other)?;
+            _ => {
+                let sig = self.exec_stmt(stmt)?;
                 Ok(match sig {
                     Signal::None => GenSignal::None,
                     Signal::Return(v) => GenSignal::Return(v),

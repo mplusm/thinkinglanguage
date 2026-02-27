@@ -1,24 +1,160 @@
-// ThinkingLanguage — CLI Entry Point
+// ThinkingLanguage -- CLI Entry Point
 // Licensed under MIT OR Apache-2.0
 //
 // Commands:
-//   tl run <file.tl>   — Execute a .tl source file
-//   tl shell            — Start the interactive REPL
+//   tl run <file.tl>   -- Execute a .tl source file
+//   tl shell            -- Start the interactive REPL
 
 use clap::{Parser, Subcommand};
-use rustyline::DefaultEditor;
+use rustyline::completion::{Completer, Pair};
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::history::DefaultHistory;
+use rustyline::validate::Validator;
+use rustyline::{Config, Editor, Helper};
+use std::borrow::Cow;
 use std::fs;
 use std::process;
 
 use tl_errors::{report_parser_error, report_runtime_error, TlError};
 use tl_interpreter::Interpreter;
-use tl_compiler::{compile, Vm, VmValue};
+use tl_compiler::{compile, compile_with_source, Vm, VmValue};
 use tl_parser::parse;
 
 mod deploy;
 
+// ---------------------------------------------------------------------------
+// Tab-completion helper
+// ---------------------------------------------------------------------------
+
+struct TlHelper {
+    completions: Vec<String>,
+}
+
+impl TlHelper {
+    fn new() -> Self {
+        let mut completions: Vec<String> = [
+            // Keywords
+            "let", "fn", "if", "else", "while", "for", "in", "return", "true", "false", "none",
+            "struct", "enum", "impl", "try", "catch", "throw", "import", "test", "break", "continue",
+            "and", "or", "not", "mut", "await", "yield", "match", "schema", "pipeline", "stream",
+            "source", "sink",
+            // Builtin functions
+            "print", "println", "len", "str", "int", "float", "abs", "min", "max", "range",
+            "push", "type_of", "map", "filter", "reduce", "sum", "any", "all",
+            "read_csv", "read_parquet", "write_csv", "write_parquet", "collect", "show",
+            "describe", "head", "sqrt", "pow", "floor", "ceil", "round", "sin", "cos", "tan",
+            "log", "log2", "log10", "join", "assert", "assert_eq",
+            "json_parse", "json_stringify", "map_from", "read_file", "write_file", "append_file",
+            "file_exists", "list_dir", "env_get", "env_set", "regex_match", "regex_find",
+            "regex_replace", "now", "date_format", "date_parse", "zip", "enumerate", "bool",
+            "spawn", "sleep", "channel", "send", "recv", "try_recv", "await_all", "pmap", "timeout",
+            "next", "is_generator", "iter", "take", "skip", "gen_collect", "gen_map", "gen_filter",
+            "chain", "gen_zip", "gen_enumerate",
+        ].iter().map(|s| String::from(*s)).collect();
+        completions.sort();
+        TlHelper { completions }
+    }
+}
+
+impl Completer for TlHelper {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &rustyline::Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Pair>)> {
+        let start = line[..pos]
+            .rfind(|c: char| !c.is_alphanumeric() && c != '_')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let prefix = &line[start..pos];
+
+        if prefix.is_empty() {
+            return Ok((pos, vec![]));
+        }
+
+        let matches: Vec<Pair> = self
+            .completions
+            .iter()
+            .filter(|c| c.starts_with(prefix))
+            .map(|c| Pair {
+                display: c.clone(),
+                replacement: c[prefix.len()..].to_string(),
+            })
+            .collect();
+
+        Ok((start + prefix.len(), matches))
+    }
+}
+
+impl Hinter for TlHelper {
+    type Hint = String;
+}
+
+impl Highlighter for TlHelper {
+    fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
+        &'s self,
+        prompt: &'p str,
+        _default: bool,
+    ) -> Cow<'b, str> {
+        Cow::Borrowed(prompt)
+    }
+}
+
+impl Validator for TlHelper {}
+
+impl Helper for TlHelper {}
+
+// ---------------------------------------------------------------------------
+// Multi-line continuation detection
+// ---------------------------------------------------------------------------
+
+/// Check if input has unclosed delimiters (brackets, parens, braces).
+/// Returns true if more input is needed.
+fn needs_continuation(input: &str) -> bool {
+    let mut depth_brace = 0i32;
+    let mut depth_paren = 0i32;
+    let mut depth_bracket = 0i32;
+    let mut in_string = false;
+    let mut prev_char = '\0';
+
+    for ch in input.chars() {
+        if ch == '"' && prev_char != '\\' {
+            in_string = !in_string;
+        }
+        if !in_string {
+            match ch {
+                '{' => depth_brace += 1,
+                '}' => depth_brace -= 1,
+                '(' => depth_paren += 1,
+                ')' => depth_paren -= 1,
+                '[' => depth_bracket += 1,
+                ']' => depth_bracket -= 1,
+                _ => {}
+            }
+        }
+        prev_char = ch;
+    }
+
+    depth_brace > 0 || depth_paren > 0 || depth_bracket > 0
+}
+
+/// Compute the history file path (~/.tl_history).
+fn history_path() -> std::path::PathBuf {
+    std::env::var("HOME")
+        .map(|h| std::path::PathBuf::from(h).join(".tl_history"))
+        .unwrap_or_else(|_| std::path::PathBuf::from(".tl_history"))
+}
+
+// ---------------------------------------------------------------------------
+// CLI definition
+// ---------------------------------------------------------------------------
+
 #[derive(Parser)]
-#[command(name = "tl", version, about = "ThinkingLanguage — Data Engineering & AI")]
+#[command(name = "tl", version, about = "ThinkingLanguage -- Data Engineering & AI")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -33,6 +169,9 @@ enum Commands {
         /// Backend: "vm" (default) or "interp"
         #[arg(long, default_value = "vm")]
         backend: String,
+        /// Dump compiled bytecode instead of executing
+        #[arg(long)]
+        dump_bytecode: bool,
     },
     /// Start the interactive REPL
     Shell {
@@ -64,6 +203,11 @@ enum Commands {
         #[arg(long, default_value = "text")]
         format: String,
     },
+    /// Disassemble a .tl file to show bytecode
+    Disasm {
+        /// Path to the .tl file
+        file: String,
+    },
     /// Run tests in a .tl file
     Test {
         /// Path to the .tl file (or directory)
@@ -94,17 +238,18 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Run { file, backend }) => run_file(&file, &backend),
+        Some(Commands::Run { file, backend, dump_bytecode }) => run_file(&file, &backend, dump_bytecode),
         Some(Commands::Shell { backend }) => run_repl(&backend),
         Some(Commands::Models { action }) => run_models(action),
         Some(Commands::Deploy { file, target, output }) => run_deploy(&file, &target, &output),
         Some(Commands::Lineage { file, format }) => run_lineage(&file, &format),
+        Some(Commands::Disasm { file }) => run_disasm(&file),
         Some(Commands::Test { path, backend }) => run_tests(&path, &backend),
         None => run_repl("vm"), // Default to REPL with VM backend
     }
 }
 
-fn run_file(path: &str, backend: &str) {
+fn run_file(path: &str, backend: &str, dump_bytecode: bool) {
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -125,9 +270,21 @@ fn run_file(path: &str, backend: &str) {
         }
     };
 
+    if dump_bytecode {
+        let proto = match compile_with_source(&program, &source) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Compile error: {e}");
+                process::exit(1);
+            }
+        };
+        print!("{}", proto.disassemble());
+        return;
+    }
+
     match backend {
         "vm" => {
-            let proto = match compile(&program) {
+            let proto = match compile_with_source(&program, &source) {
                 Ok(p) => p,
                 Err(e) => {
                     eprintln!("Compile error: {e}");
@@ -160,17 +317,56 @@ fn run_file(path: &str, backend: &str) {
     }
 }
 
+fn run_disasm(path: &str) {
+    let source = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading file '{path}': {e}");
+            process::exit(1);
+        }
+    };
+
+    let program = match parse(&source) {
+        Ok(p) => p,
+        Err(TlError::Parser(ref e)) => {
+            report_parser_error(&source, path, e);
+            process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            process::exit(1);
+        }
+    };
+
+    let proto = match compile_with_source(&program, &source) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Compile error: {e}");
+            process::exit(1);
+        }
+    };
+
+    print!("{}", proto.disassemble());
+}
+
 fn run_repl(backend: &str) {
-    println!("ThinkingLanguage v0.1.0 — REPL (backend: {backend})");
+    println!("ThinkingLanguage v0.1.0 -- REPL (backend: {backend})");
     println!("Type expressions or statements. Press Ctrl+D to exit.\n");
 
-    let mut editor = match DefaultEditor::new() {
+    let config = Config::builder()
+        .auto_add_history(false)
+        .build();
+    let mut editor = match Editor::with_config(config) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("Failed to initialize REPL: {e}");
             process::exit(1);
         }
     };
+    editor.set_helper(Some(TlHelper::new()));
+
+    let hist = history_path();
+    let _ = editor.load_history(&hist);
 
     match backend {
         "vm" => run_repl_vm(&mut editor),
@@ -180,22 +376,36 @@ fn run_repl(backend: &str) {
             process::exit(1);
         }
     }
+
+    let _ = editor.save_history(&hist);
 }
 
-fn run_repl_vm(editor: &mut DefaultEditor) {
+fn run_repl_vm(editor: &mut Editor<TlHelper, DefaultHistory>) {
     let mut vm = Vm::new();
 
     loop {
         let readline = editor.readline("tl> ");
         match readline {
             Ok(line) => {
-                let line = line.trim();
-                if line.is_empty() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
                     continue;
                 }
-                let _ = editor.add_history_entry(line);
 
-                match parse(line) {
+                // Multi-line continuation: keep reading while delimiters are unclosed
+                let mut input = trimmed.to_string();
+                while needs_continuation(&input) {
+                    match editor.readline("...> ") {
+                        Ok(cont) => {
+                            input.push('\n');
+                            input.push_str(cont.trim());
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let _ = editor.add_history_entry(&input);
+
+                match parse(&input) {
                     Ok(program) => {
                         let proto = match compile(&program) {
                             Ok(p) => p,
@@ -211,13 +421,78 @@ fn run_repl_vm(editor: &mut DefaultEditor) {
                                 }
                             }
                             Err(TlError::Runtime(ref re)) => {
-                                report_runtime_error(line, "<repl>", re);
+                                report_runtime_error(&input, "<repl>", re);
                             }
                             Err(e) => eprintln!("{e}"),
                         }
                     }
                     Err(TlError::Parser(ref e)) => {
-                        report_parser_error(line, "<repl>", e);
+                        report_parser_error(&input, "<repl>", e);
+                    }
+                    Err(e) => eprintln!("{e}"),
+                }
+            }
+            Err(rustyline::error::ReadlineError::Interrupted) => {
+                println!("^C");
+            }
+            Err(rustyline::error::ReadlineError::Eof) => {
+                println!("Goodbye!");
+                break;
+            }
+            Err(e) => {
+                eprintln!("Error: {e}");
+                break;
+            }
+        }
+    }
+}
+
+fn run_repl_interp(editor: &mut Editor<TlHelper, DefaultHistory>) {
+    let mut interp = Interpreter::new();
+
+    loop {
+        let readline = editor.readline("tl> ");
+        match readline {
+            Ok(line) => {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+
+                // Multi-line continuation: keep reading while delimiters are unclosed
+                let mut input = trimmed.to_string();
+                while needs_continuation(&input) {
+                    match editor.readline("...> ") {
+                        Ok(cont) => {
+                            input.push('\n');
+                            input.push_str(cont.trim());
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let _ = editor.add_history_entry(&input);
+
+                match parse(&input) {
+                    Ok(program) => {
+                        for stmt in &program.statements {
+                            match interp.execute_stmt(stmt) {
+                                Ok(val) => {
+                                    // Only print non-None values for expression statements
+                                    if let tl_ast::StmtKind::Expr(_) = &stmt.kind {
+                                        if !matches!(val, tl_interpreter::Value::None) {
+                                            println!("{val}");
+                                        }
+                                    }
+                                }
+                                Err(TlError::Runtime(ref re)) => {
+                                    report_runtime_error(&input, "<repl>", re);
+                                }
+                                Err(e) => eprintln!("{e}"),
+                            }
+                        }
+                    }
+                    Err(TlError::Parser(ref e)) => {
+                        report_parser_error(&input, "<repl>", e);
                     }
                     Err(e) => eprintln!("{e}"),
                 }
@@ -308,7 +583,7 @@ fn run_lineage(file: &str, format: &str) {
     // Build lineage by scanning pipeline statements
     let mut tracker = tl_stream::LineageTracker::new();
     for (i, stmt) in program.statements.iter().enumerate() {
-        if let tl_ast::Stmt::Pipeline { name, .. } = stmt {
+        if let tl_ast::StmtKind::Pipeline { name, .. } = &stmt.kind {
             let extract_id = tracker.record(
                 &format!("{name}/extract"),
                 "Read source data",
@@ -395,7 +670,7 @@ fn run_tests(path: &str, backend: &str) {
 
         // Find test blocks
         for stmt in &program.statements {
-            if let tl_ast::Stmt::Test { name, body } = stmt {
+            if let tl_ast::StmtKind::Test { name, body } = &stmt.kind {
                 total += 1;
                 let test_program = tl_ast::Program { statements: body.clone() };
 
@@ -444,55 +719,43 @@ fn run_tests(path: &str, backend: &str) {
     }
 }
 
-fn run_repl_interp(editor: &mut DefaultEditor) {
-    let mut interp = Interpreter::new();
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
-    loop {
-        let readline = editor.readline("tl> ");
-        match readline {
-            Ok(line) => {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                let _ = editor.add_history_entry(line);
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-                match parse(line) {
-                    Ok(program) => {
-                        for stmt in &program.statements {
-                            match interp.execute_stmt(stmt) {
-                                Ok(val) => {
-                                    // Only print non-None values for expression statements
-                                    if let tl_ast::Stmt::Expr(_) = stmt {
-                                        if !matches!(val, tl_interpreter::Value::None) {
-                                            println!("{val}");
-                                        }
-                                    }
-                                }
-                                Err(TlError::Runtime(ref re)) => {
-                                    report_runtime_error(line, "<repl>", re);
-                                }
-                                Err(e) => eprintln!("{e}"),
-                            }
-                        }
-                    }
-                    Err(TlError::Parser(ref e)) => {
-                        report_parser_error(line, "<repl>", e);
-                    }
-                    Err(e) => eprintln!("{e}"),
-                }
-            }
-            Err(rustyline::error::ReadlineError::Interrupted) => {
-                println!("^C");
-            }
-            Err(rustyline::error::ReadlineError::Eof) => {
-                println!("Goodbye!");
-                break;
-            }
-            Err(e) => {
-                eprintln!("Error: {e}");
-                break;
-            }
-        }
+    #[test]
+    fn test_needs_continuation_balanced() {
+        assert!(!needs_continuation("let x = 42"));
+        assert!(!needs_continuation("fn add(a, b) { a + b }"));
+        assert!(!needs_continuation("let xs = [1, 2, 3]"));
+    }
+
+    #[test]
+    fn test_needs_continuation_unclosed() {
+        assert!(needs_continuation("fn add(a, b) {"));
+        assert!(needs_continuation("let x = [1, 2,"));
+        assert!(needs_continuation("print("));
+    }
+
+    #[test]
+    fn test_needs_continuation_strings() {
+        // Braces inside strings should not count
+        assert!(!needs_continuation(r#"let x = "{hello}""#));
+        assert!(!needs_continuation(r#"let x = "(test)""#));
+    }
+
+    #[test]
+    fn test_needs_continuation_nested() {
+        assert!(needs_continuation("fn foo() { if true {"));
+        assert!(!needs_continuation("fn foo() { if true { 1 } }"));
+    }
+
+    #[test]
+    fn test_needs_continuation_empty() {
+        assert!(!needs_continuation(""));
     }
 }

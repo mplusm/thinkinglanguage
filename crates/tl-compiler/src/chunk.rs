@@ -40,6 +40,292 @@ impl Prototype {
             is_generator: false,
         }
     }
+
+    /// Disassemble this prototype into a human-readable string.
+    pub fn disassemble(&self) -> String {
+        use crate::opcode::*;
+
+        let mut out = String::new();
+        let label = if self.name.is_empty() { "<script>" } else { &self.name };
+        out.push_str(&format!("=== {label} ===\n"));
+        out.push_str(&format!(
+            "  arity={} locals={} registers={}{}\n",
+            self.arity, self.num_locals, self.num_registers,
+            if self.is_generator { " [generator]" } else { "" }
+        ));
+
+        let mut offset = 0usize;
+        while offset < self.code.len() {
+            let inst_offset = offset; // save for display
+            let inst = self.code[offset];
+            let op = decode_op(inst);
+            let a = decode_a(inst);
+            let b = decode_b(inst);
+            let c = decode_c(inst);
+            let bx = decode_bx(inst);
+            let sbx = decode_sbx(inst);
+
+            // Line number
+            let line_num = if inst_offset < self.lines.len() {
+                let ln = self.lines[inst_offset];
+                if ln == 0 { "----".to_string() } else { format!("{ln:04}") }
+            } else {
+                "----".to_string()
+            };
+
+            let args = match op {
+                // ABx format: constant load
+                Op::LoadConst => {
+                    let val = self.format_constant(bx as usize);
+                    format!("R{a} = K{bx} ({val})")
+                }
+                // A-only: no args
+                Op::LoadNone => format!("R{a}"),
+                Op::LoadTrue => format!("R{a}"),
+                Op::LoadFalse => format!("R{a}"),
+
+                // AB: register copy
+                Op::Move => format!("R{a} = R{b}"),
+
+                // AB: locals
+                Op::GetLocal => format!("R{a} = L{b}"),
+                Op::SetLocal => format!("L{b} = R{a}"),
+
+                // ABx: globals (constant index for name)
+                Op::GetGlobal => {
+                    let name = self.format_constant(bx as usize);
+                    format!("R{a} = G[{name}]")
+                }
+                Op::SetGlobal => {
+                    let name = self.format_constant(bx as usize);
+                    format!("G[{name}] = R{a}")
+                }
+
+                // AB: upvalues
+                Op::GetUpvalue => format!("R{a} = U{b}"),
+                Op::SetUpvalue => format!("U{b} = R{a}"),
+
+                // ABC: arithmetic/comparison/logic
+                Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod | Op::Pow
+                | Op::Eq | Op::Neq | Op::Lt | Op::Gt | Op::Lte | Op::Gte
+                | Op::And | Op::Or | Op::Concat => {
+                    let sym = match op {
+                        Op::Add => "+", Op::Sub => "-", Op::Mul => "*", Op::Div => "/",
+                        Op::Mod => "%", Op::Pow => "**",
+                        Op::Eq => "==", Op::Neq => "!=", Op::Lt => "<", Op::Gt => ">",
+                        Op::Lte => "<=", Op::Gte => ">=",
+                        Op::And => "and", Op::Or => "or", Op::Concat => "..",
+                        _ => "?"
+                    };
+                    format!("R{a} = R{b} {sym} R{c}")
+                }
+
+                // AB: unary
+                Op::Neg => format!("R{a} = -R{b}"),
+                Op::Not => format!("R{a} = not R{b}"),
+
+                // ABx: jumps (signed offset)
+                Op::Jump => {
+                    let target = offset as i32 + 1 + sbx as i32;
+                    format!("-> {target:04}")
+                }
+                Op::JumpIfFalse => {
+                    let target = offset as i32 + 1 + sbx as i32;
+                    format!("R{a} ? -> {target:04}")
+                }
+                Op::JumpIfTrue => {
+                    let target = offset as i32 + 1 + sbx as i32;
+                    format!("R{a} ? -> {target:04}")
+                }
+
+                // ABC: call
+                Op::Call => {
+                    if c == 0 {
+                        format!("R{a} = call R{b}()")
+                    } else {
+                        format!("R{a} = call R{b}(R{}..R{})", b + 1, b + c)
+                    }
+                }
+
+                // A: return
+                Op::Return => format!("R{a}"),
+
+                // ABx: closure
+                Op::Closure => {
+                    let val = self.format_constant(bx as usize);
+                    format!("R{a} = closure K{bx} ({val})")
+                }
+
+                // ABC: data structures
+                Op::NewList => format!("R{a} = list(R{}..R{})", b, b + c),
+                Op::GetIndex => format!("R{a} = R{b}[R{c}]"),
+                Op::SetIndex => format!("R{b}[R{c}] = R{a}"),
+                Op::NewMap => format!("R{a} = map(R{b}, {c} pairs)"),
+
+                // ABC: table ops
+                Op::TablePipe => format!("R{a} = table_pipe(K{b}, R{c})"),
+
+                // ABC: builtin call (followed by extra word for arg count)
+                Op::CallBuiltin => {
+                    let builtin_id = b;
+                    let builtin_name = unsafe {
+                        let bid: BuiltinId = std::mem::transmute(builtin_id);
+                        bid.name()
+                    };
+                    // Next instruction has arg count in A field
+                    let argc = if offset + 1 < self.code.len() {
+                        decode_a(self.code[offset + 1])
+                    } else {
+                        0
+                    };
+                    offset += 1; // skip the extra word
+                    format!("R{a} = {builtin_name}(R{c}, argc={argc})")
+                }
+
+                // AB: iteration
+                Op::ForIter => {
+                    // Next instruction has jump offset in Bx
+                    let jump_word = if offset + 1 < self.code.len() {
+                        self.code[offset + 1]
+                    } else {
+                        0
+                    };
+                    let jump_sbx = decode_sbx(jump_word);
+                    let target = (offset + 2) as i32 + jump_sbx as i32;
+                    offset += 1;
+                    format!("R{b} = next(R{a}), done -> {target:04}")
+                }
+                Op::ForPrep => format!("R{a} = iter(R{b})"),
+
+                // ABC: pattern matching
+                Op::TestMatch => format!("R{c} = (R{a} matches R{b})"),
+
+                // AB: null coalesce
+                Op::NullCoalesce => format!("R{a} = R{a} ?? R{b}"),
+
+                // ABC: member access
+                Op::GetMember => {
+                    let field = self.format_constant(c as usize);
+                    format!("R{a} = R{b}.{field}")
+                }
+
+                // Interpolate: A=dest, B=template const, C=values start
+                Op::Interpolate => {
+                    let argc = if offset + 1 < self.code.len() {
+                        decode_a(self.code[offset + 1])
+                    } else {
+                        0
+                    };
+                    offset += 1;
+                    format!("R{a} = interpolate(K{b}, R{c}, argc={argc})")
+                }
+
+                // Special domain ops
+                Op::Train => format!("R{a} = train(K{b}, K{c})"),
+                Op::PipelineExec => format!("R{a} = pipeline(K{b}, K{c})"),
+                Op::StreamExec => format!("R{a} = stream(K{b}, R{c})"),
+                Op::ConnectorDecl => format!("R{a} = connector(K{b}, K{c})"),
+
+                // Phase 5: structs, enums, methods, exceptions, imports
+                Op::NewStruct => {
+                    let type_name = self.format_constant(b as usize);
+                    if c & 0x80 != 0 {
+                        format!("R{a} = struct_decl({type_name})")
+                    } else {
+                        format!("R{a} = new {type_name}({c} fields)")
+                    }
+                }
+                Op::SetMember => {
+                    let field = self.format_constant(b as usize);
+                    format!("R{a}.{field} = R{c}")
+                }
+                Op::NewEnum => {
+                    let variant = self.format_constant(b as usize);
+                    let argc = if offset + 1 < self.code.len() {
+                        decode_a(self.code[offset + 1])
+                    } else {
+                        0
+                    };
+                    offset += 1;
+                    format!("R{a} = enum {variant}(R{c}, argc={argc})")
+                }
+                Op::MatchEnum => {
+                    let variant = self.format_constant(b as usize);
+                    format!("R{c} = (R{a} is {variant})")
+                }
+                Op::MethodCall => {
+                    let method = self.format_constant(c as usize);
+                    let extra = if offset + 1 < self.code.len() {
+                        let w = self.code[offset + 1];
+                        let args_start = decode_a(w);
+                        let arg_count = decode_b(w);
+                        offset += 1;
+                        format!("(R{args_start}, argc={arg_count})")
+                    } else {
+                        String::new()
+                    };
+                    format!("R{a} = R{b}.{method}{extra}")
+                }
+                Op::Throw => format!("throw R{a}"),
+                Op::TryBegin => {
+                    let target = offset as i32 + 1 + sbx as i32;
+                    format!("catch -> {target:04}")
+                }
+                Op::TryEnd => "end_try".to_string(),
+                Op::Import => {
+                    let path = self.format_constant(bx as usize);
+                    format!("R{a} = import({path})")
+                }
+
+                // Phase 7: concurrency
+                Op::Await => format!("R{a} = await R{b}"),
+
+                // Phase 8: generators
+                Op::Yield => format!("yield R{a}"),
+            };
+
+            out.push_str(&format!(
+                "{line_num}  {inst_offset:04}    {:<16}{args}\n",
+                op.name()
+            ));
+
+            offset += 1;
+        }
+
+        // Disassemble child prototypes
+        for (i, constant) in self.constants.iter().enumerate() {
+            if let Constant::Prototype(child) = constant {
+                out.push_str(&format!("\n--- K{i} ---\n"));
+                out.push_str(&child.disassemble());
+            }
+        }
+
+        out
+    }
+
+    /// Format a constant value for display, truncating strings to 20 chars.
+    fn format_constant(&self, index: usize) -> String {
+        if index >= self.constants.len() {
+            return format!("K{index}?");
+        }
+        match &self.constants[index] {
+            Constant::Int(n) => format!("{n}"),
+            Constant::Float(f) => format!("{f}"),
+            Constant::String(s) => {
+                if s.len() > 20 {
+                    format!("\"{}...\"", &s[..20])
+                } else {
+                    format!("\"{s}\"")
+                }
+            }
+            Constant::Prototype(p) => {
+                let name = if p.name.is_empty() { "<anon>" } else { &p.name };
+                format!("fn {name}")
+            }
+            Constant::AstExpr(_) => "<ast_expr>".to_string(),
+            Constant::AstExprList(_) => "<ast_expr_list>".to_string(),
+        }
+    }
 }
 
 /// Constant pool entry.
@@ -414,4 +700,50 @@ impl BuiltinId {
 pub struct TableOpDescriptor {
     pub op_name: String,
     pub args: Vec<AstExpr>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compiler::compile_with_source;
+    use tl_parser::parse;
+
+    #[test]
+    fn test_disassemble_simple() {
+        let source = "let x = 42";
+        let program = parse(source).unwrap();
+        let proto = compile_with_source(&program, source).unwrap();
+        let output = proto.disassemble();
+        assert!(output.contains("LoadConst"), "expected LoadConst in:\n{output}");
+        assert!(output.contains("42"), "expected 42 in:\n{output}");
+    }
+
+    #[test]
+    fn test_disassemble_line_numbers() {
+        let source = "let x = 1\nlet y = 2\nlet z = x";
+        let program = parse(source).unwrap();
+        let proto = compile_with_source(&program, source).unwrap();
+        let output = proto.disassemble();
+        // Should have different line numbers for different statements
+        assert!(output.contains("0001"), "expected line 0001 in:\n{output}");
+        assert!(output.contains("0002"), "expected line 0002 in:\n{output}");
+    }
+
+    #[test]
+    fn test_disassemble_function() {
+        let source = "fn add(a, b) { a + b }";
+        let program = parse(source).unwrap();
+        let proto = compile_with_source(&program, source).unwrap();
+        let output = proto.disassemble();
+        assert!(output.contains("Closure"), "expected Closure in:\n{output}");
+    }
+
+    #[test]
+    fn test_disassemble_constants_inline() {
+        let source = "let s = \"hello world\"";
+        let program = parse(source).unwrap();
+        let proto = compile_with_source(&program, source).unwrap();
+        let output = proto.disassemble();
+        assert!(output.contains("hello world"), "expected 'hello world' in:\n{output}");
+    }
 }

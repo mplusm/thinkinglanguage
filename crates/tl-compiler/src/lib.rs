@@ -12,7 +12,7 @@ pub mod vm;
 pub mod jit;
 pub mod jit_runtime;
 
-pub use compiler::compile;
+pub use compiler::{compile, compile_with_source};
 pub use vm::Vm;
 pub use chunk::Prototype;
 pub use value::VmValue;

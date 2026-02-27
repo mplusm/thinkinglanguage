@@ -58,6 +58,14 @@ pub struct ParserError {
 pub struct RuntimeError {
     pub message: String,
     pub span: Option<Span>,
+    pub stack_trace: Vec<StackFrame>,
+}
+
+/// A frame in a stack trace.
+#[derive(Debug, Clone)]
+pub struct StackFrame {
+    pub function: String,
+    pub line: u32,
 }
 
 impl fmt::Display for TlError {
@@ -94,6 +102,7 @@ pub fn report_parser_error(source: &str, filename: &str, error: &ParserError) {
 
 /// Pretty-print a runtime error
 pub fn report_runtime_error(source: &str, filename: &str, error: &RuntimeError) {
+    // If we have a span, use ariadne for pretty source display
     if let Some(span) = &error.span {
         Report::build(ReportKind::Error, filename, span.start)
             .with_message(&error.message)
@@ -105,7 +114,42 @@ pub fn report_runtime_error(source: &str, filename: &str, error: &RuntimeError) 
             .finish()
             .eprint((filename, Source::from(source)))
             .unwrap();
+    } else if !error.stack_trace.is_empty() && error.stack_trace[0].line > 0 {
+        // No span but we have a line number from the stack trace — build a span from it
+        let line = error.stack_trace[0].line as usize;
+        let lines: Vec<&str> = source.lines().collect();
+        if line > 0 && line <= lines.len() {
+            let mut offset = 0;
+            for l in &lines[..line - 1] {
+                offset += l.len() + 1; // +1 for newline
+            }
+            let line_len = lines[line - 1].len().max(1);
+            let span = Span::new(offset, offset + line_len);
+            Report::build(ReportKind::Error, filename, span.start)
+                .with_message(&error.message)
+                .with_label(
+                    Label::new((filename, span.range()))
+                        .with_message(&error.message)
+                        .with_color(Color::Red),
+                )
+                .finish()
+                .eprint((filename, Source::from(source)))
+                .unwrap();
+        } else {
+            eprintln!("Runtime error (line {}): {}", line, error.message);
+        }
     } else {
         eprintln!("Runtime error: {}", error.message);
+    }
+    // Print stack trace if available (skip if only one frame at top-level)
+    if error.stack_trace.len() > 1 || (error.stack_trace.len() == 1 && error.stack_trace[0].function != "<main>") {
+        eprintln!("Stack trace:");
+        for frame in &error.stack_trace {
+            if frame.line > 0 {
+                eprintln!("  at {} (line {})", frame.function, frame.line);
+            } else {
+                eprintln!("  at {}", frame.function);
+            }
+        }
     }
 }

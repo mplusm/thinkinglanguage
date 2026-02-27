@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 use tl_ast::*;
-use tl_errors::{TlError, RuntimeError};
+use tl_errors::{TlError, RuntimeError, Span};
 
 use crate::chunk::*;
 use crate::opcode::*;
@@ -13,7 +13,8 @@ fn compile_err(msg: String) -> TlError {
     TlError::Runtime(RuntimeError {
         message: msg,
         span: None,
-    })
+        stack_trace: vec![],
+        })
 }
 
 /// A local variable in the current scope.
@@ -50,6 +51,8 @@ struct CompilerState {
     next_register: u8,
     loop_stack: Vec<LoopCtx>,
     has_yield: bool,
+    /// Current source line (1-based), set by the compiler before emitting instructions
+    current_line: u32,
 }
 
 impl CompilerState {
@@ -62,6 +65,7 @@ impl CompilerState {
             next_register: 0,
             loop_stack: Vec::new(),
             has_yield: false,
+            current_line: 0,
         }
     }
 
@@ -80,17 +84,17 @@ impl CompilerState {
         }
     }
 
-    fn emit(&mut self, inst: u32, line: u32) {
+    fn emit(&mut self, inst: u32) {
         self.proto.code.push(inst);
-        self.proto.lines.push(line);
+        self.proto.lines.push(self.current_line);
     }
 
-    fn emit_abc(&mut self, op: Op, a: u8, b: u8, c: u8, line: u32) {
-        self.emit(encode_abc(op, a, b, c), line);
+    fn emit_abc(&mut self, op: Op, a: u8, b: u8, c: u8, _line: u32) {
+        self.emit(encode_abc(op, a, b, c));
     }
 
-    fn emit_abx(&mut self, op: Op, a: u8, bx: u16, line: u32) {
-        self.emit(encode_abx(op, a, bx), line);
+    fn emit_abx(&mut self, op: Op, a: u8, bx: u16, _line: u32) {
+        self.emit(encode_abx(op, a, bx));
     }
 
     fn add_constant(&mut self, c: Constant) -> u16 {
@@ -120,11 +124,39 @@ impl CompilerState {
 /// The compiler: transforms AST into bytecode.
 pub struct Compiler {
     states: Vec<CompilerState>,
+    /// Byte offset of each line start (for converting byte offsets to line numbers)
+    line_offsets: Vec<usize>,
+    /// Current line number (1-based), updated at each statement boundary
+    current_line: u32,
 }
 
 impl Compiler {
     fn current(&mut self) -> &mut CompilerState {
         self.states.last_mut().unwrap()
+    }
+
+    /// Build a table of byte offsets for the start of each line.
+    fn build_line_offsets(source: &str) -> Vec<usize> {
+        let mut offsets = vec![0]; // line 1 starts at byte 0
+        for (i, ch) in source.as_bytes().iter().enumerate() {
+            if *ch == b'\n' {
+                offsets.push(i + 1);
+            }
+        }
+        offsets
+    }
+
+    /// Convert a byte offset to a 1-based line number using binary search.
+    fn line_of(&self, byte_offset: usize) -> u32 {
+        match self.line_offsets.binary_search(&byte_offset) {
+            Ok(idx) => idx as u32 + 1,
+            Err(idx) => idx as u32, // idx is the line (1-based) since line_offsets[0]=0
+        }
+    }
+
+    /// Get the current line number for emit calls.
+    fn line(&self) -> u32 {
+        self.current_line
     }
 
     fn begin_scope(&mut self) {
@@ -219,13 +251,17 @@ impl Compiler {
     }
 
     fn compile_stmt(&mut self, stmt: &Stmt) -> Result<(), TlError> {
-        match stmt {
-            Stmt::Let { name, value, .. } => {
+        // Update current line from statement's span
+        let line = self.line_of(stmt.span.start);
+        self.current_line = line;
+        self.current().current_line = line;
+        match &stmt.kind {
+            StmtKind::Let { name, value, .. } => {
                 let reg = self.add_local(name.clone());
                 self.compile_expr(value, reg)?;
                 Ok(())
             }
-            Stmt::FnDecl { name, params, body, .. } => {
+            StmtKind::FnDecl { name, params, body, .. } => {
                 let reg = self.add_local(name.clone());
                 self.compile_function(name.clone(), params, body, false)?;
                 // The closure instruction already targets `reg`
@@ -234,13 +270,13 @@ impl Compiler {
                 let _ = reg; // handled inside compile_function
                 Ok(())
             }
-            Stmt::Expr(expr) => {
+            StmtKind::Expr(expr) => {
                 let reg = self.current().alloc_register();
                 self.compile_expr(expr, reg)?;
                 self.current().free_register();
                 Ok(())
             }
-            Stmt::Return(expr) => {
+            StmtKind::Return(expr) => {
                 let reg = self.current().alloc_register();
                 match expr {
                     Some(e) => self.compile_expr(e, reg)?,
@@ -250,34 +286,34 @@ impl Compiler {
                 self.current().free_register();
                 Ok(())
             }
-            Stmt::If { condition, then_body, else_ifs, else_body } => {
+            StmtKind::If { condition, then_body, else_ifs, else_body } => {
                 self.compile_if(condition, then_body, else_ifs, else_body)
             }
-            Stmt::While { condition, body } => {
+            StmtKind::While { condition, body } => {
                 self.compile_while(condition, body)
             }
-            Stmt::For { name, iter, body } => {
+            StmtKind::For { name, iter, body } => {
                 self.compile_for(name, iter, body)
             }
-            Stmt::Schema { name, fields } => {
+            StmtKind::Schema { name, fields } => {
                 self.compile_schema(name, fields)
             }
-            Stmt::Train { name, algorithm, config } => {
+            StmtKind::Train { name, algorithm, config } => {
                 self.compile_train(name, algorithm, config)
             }
-            Stmt::Pipeline { name, extract, transform, load, schedule, timeout, retries, on_failure, on_success } => {
+            StmtKind::Pipeline { name, extract, transform, load, schedule, timeout, retries, on_failure, on_success } => {
                 self.compile_pipeline(name, extract, transform, load, schedule, timeout, retries, on_failure, on_success)
             }
-            Stmt::StreamDecl { name, source, transform: _, sink: _, window, watermark } => {
+            StmtKind::StreamDecl { name, source, transform: _, sink: _, window, watermark } => {
                 self.compile_stream_decl(name, source, window, watermark)
             }
-            Stmt::SourceDecl { name, connector_type, config } => {
+            StmtKind::SourceDecl { name, connector_type, config } => {
                 self.compile_connector_decl(name, connector_type, config)
             }
-            Stmt::SinkDecl { name, connector_type, config } => {
+            StmtKind::SinkDecl { name, connector_type, config } => {
                 self.compile_connector_decl(name, connector_type, config)
             }
-            Stmt::StructDecl { name, fields } => {
+            StmtKind::StructDecl { name, fields } => {
                 let reg = self.add_local(name.clone());
                 let field_names: Vec<Arc<str>> = fields.iter().map(|f| Arc::from(f.name.as_str())).collect();
                 let name_idx = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
@@ -289,7 +325,7 @@ impl Compiler {
                 self.current().emit_abc(Op::NewStruct, reg, name_idx as u8, (fields_idx as u8) | 0x80, 0);
                 Ok(())
             }
-            Stmt::EnumDecl { name, variants } => {
+            StmtKind::EnumDecl { name, variants } => {
                 let reg = self.add_local(name.clone());
                 let name_idx = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
                 // Store variant info
@@ -308,10 +344,10 @@ impl Compiler {
                 self.current().emit_abx(Op::SetGlobal, reg, name_g, 0);
                 Ok(())
             }
-            Stmt::ImplBlock { type_name, methods } => {
+            StmtKind::ImplBlock { type_name, methods } => {
                 // Compile each method as a global function with mangled name Type::method
                 for method in methods {
-                    if let Stmt::FnDecl { name: mname, params, body, .. } = method {
+                    if let StmtKind::FnDecl { name: mname, params, body, .. } = &method.kind {
                         let mangled = format!("{type_name}::{mname}");
                         // add_local creates the local binding that compile_function looks up
                         let reg = self.add_local(mangled.clone());
@@ -323,7 +359,7 @@ impl Compiler {
                 }
                 Ok(())
             }
-            Stmt::TryCatch { try_body, catch_var, catch_body } => {
+            StmtKind::TryCatch { try_body, catch_var, catch_body } => {
                 // Emit TryBegin with offset to catch handler
                 let try_begin_pos = self.current().current_pos();
                 self.current().emit_abx(Op::TryBegin, 0, 0, 0); // patch later
@@ -360,14 +396,14 @@ impl Compiler {
                 self.current().patch_jump(jump_over_pos);
                 Ok(())
             }
-            Stmt::Throw(expr) => {
+            StmtKind::Throw(expr) => {
                 let reg = self.current().alloc_register();
                 self.compile_expr(expr, reg)?;
                 self.current().emit_abc(Op::Throw, reg, 0, 0, 0);
                 self.current().free_register();
                 Ok(())
             }
-            Stmt::Import { path, alias } => {
+            StmtKind::Import { path, alias } => {
                 let reg = self.current().alloc_register();
                 let path_idx = self.current().add_constant(Constant::String(Arc::from(path.as_str())));
                 let alias_idx = if let Some(a) = alias {
@@ -381,11 +417,11 @@ impl Compiler {
                 self.current().free_register();
                 Ok(())
             }
-            Stmt::Test { .. } => {
+            StmtKind::Test { .. } => {
                 // Tests are only run in test mode; skip during normal compilation
                 Ok(())
             }
-            Stmt::Break => {
+            StmtKind::Break => {
                 let state = self.current();
                 let pos = state.current_pos();
                 state.emit_abx(Op::Jump, 0, 0, 0);
@@ -394,7 +430,7 @@ impl Compiler {
                 }
                 Ok(())
             }
-            Stmt::Continue => {
+            StmtKind::Continue => {
                 let state = self.current();
                 if let Some(loop_ctx) = state.loop_stack.last() {
                     let loop_start = loop_ctx.loop_start;
@@ -452,15 +488,19 @@ impl Compiler {
         let mut last_expr_reg: Option<u8> = None;
         for (i, stmt) in body.iter().enumerate() {
             let is_last = i == body.len() - 1;
-            match stmt {
-                Stmt::Expr(expr) if is_last => {
+            // Update line tracking
+            let line = self.line_of(stmt.span.start);
+            self.current_line = line;
+            self.current().current_line = line;
+            match &stmt.kind {
+                StmtKind::Expr(expr) if is_last => {
                     // Last statement is an expression — compile and keep register for return
                     let reg = self.current().alloc_register();
                     self.compile_expr(expr, reg)?;
                     last_expr_reg = Some(reg);
                     // Don't free — we'll return it
                 }
-                Stmt::If { condition, then_body, else_ifs, else_body } if is_last && else_body.is_some() => {
+                StmtKind::If { condition, then_body, else_ifs, else_body } if is_last && else_body.is_some() => {
                     // Last statement is if-else — compile as expression for implicit return
                     let dest = self.current().alloc_register();
                     self.compile_if_as_expr(condition, then_body, else_ifs, else_body, dest)?;
@@ -521,7 +561,7 @@ impl Compiler {
         dest: u8,
     ) -> Result<(), TlError> {
         // Create a synthetic function body that returns the expression
-        let body_stmt = vec![Stmt::Return(Some(body.clone()))];
+        let body_stmt = vec![Stmt { kind: StmtKind::Return(Some(body.clone())), span: Span::new(0, 0) }];
 
         // Push new compiler state
         let mut fn_state = CompilerState::new("<closure>".to_string());
@@ -710,11 +750,14 @@ impl Compiler {
     fn compile_body_with_result(&mut self, body: &[Stmt], dest: u8) -> Result<(), TlError> {
         for (i, stmt) in body.iter().enumerate() {
             let is_last = i == body.len() - 1;
-            match stmt {
-                Stmt::Expr(expr) if is_last => {
+            let line = self.line_of(stmt.span.start);
+            self.current_line = line;
+            self.current().current_line = line;
+            match &stmt.kind {
+                StmtKind::Expr(expr) if is_last => {
                     self.compile_expr(expr, dest)?;
                 }
-                Stmt::If { condition, then_body, else_ifs, else_body } if is_last && else_body.is_some() => {
+                StmtKind::If { condition, then_body, else_ifs, else_body } if is_last && else_body.is_some() => {
                     self.compile_if_as_expr(condition, then_body, else_ifs, else_body, dest)?;
                 }
                 _ => {
@@ -1720,9 +1763,18 @@ enum StringSegment {
 }
 
 /// Compile a TL program into a top-level Prototype.
+/// Pass source text to enable line number tracking in bytecode.
 pub fn compile(program: &Program) -> Result<Prototype, TlError> {
+    compile_with_source(program, "")
+}
+
+/// Compile a TL program with source text for line number tracking.
+pub fn compile_with_source(program: &Program, source: &str) -> Result<Prototype, TlError> {
+    let line_offsets = Compiler::build_line_offsets(source);
     let mut compiler = Compiler {
         states: vec![CompilerState::new("<main>".to_string())],
+        line_offsets,
+        current_line: 0,
     };
 
     let stmts = &program.statements;
@@ -1730,14 +1782,18 @@ pub fn compile(program: &Program) -> Result<Prototype, TlError> {
 
     for (i, stmt) in stmts.iter().enumerate() {
         let is_last = i == stmts.len() - 1;
-        match stmt {
-            Stmt::Expr(expr) if is_last => {
+        // Update line tracking for this statement
+        let line = compiler.line_of(stmt.span.start);
+        compiler.current_line = line;
+        compiler.current().current_line = line;
+        match &stmt.kind {
+            StmtKind::Expr(expr) if is_last => {
                 // Last statement is an expression — keep register for implicit return
                 let reg = compiler.current().alloc_register();
                 compiler.compile_expr(expr, reg)?;
                 last_expr_reg = Some(reg);
             }
-            Stmt::If { condition, then_body, else_ifs, else_body } if is_last && else_body.is_some() => {
+            StmtKind::If { condition, then_body, else_ifs, else_body } if is_last && else_body.is_some() => {
                 let dest = compiler.current().alloc_register();
                 compiler.compile_if_as_expr(condition, then_body, else_ifs, else_body, dest)?;
                 last_expr_reg = Some(dest);

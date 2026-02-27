@@ -5,15 +5,24 @@
 // Phase 0 subset: let bindings, functions, if/else, match/case,
 // pipe operator, basic types, print.
 
+use tl_errors::Span;
+
 /// A complete TL program is a list of statements
 #[derive(Debug, Clone)]
 pub struct Program {
     pub statements: Vec<Stmt>,
 }
 
-/// Statements
+/// A statement with source location information.
 #[derive(Debug, Clone)]
-pub enum Stmt {
+pub struct Stmt {
+    pub kind: StmtKind,
+    pub span: Span,
+}
+
+/// Statement variants
+#[derive(Debug, Clone)]
+pub enum StmtKind {
     /// `let x = expr` or `let mut x: type = expr`
     Let {
         name: String,

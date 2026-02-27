@@ -4195,6 +4195,9 @@ dependencies = [
 [[package]]
 name = "tl-ast"
 version = "0.1.0"
+dependencies = [
+ "tl-errors",
+]
 
 [[package]]
 name = "tl-benchmarks"
