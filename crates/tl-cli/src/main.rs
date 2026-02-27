@@ -41,7 +41,7 @@ impl TlHelper {
             "let", "fn", "if", "else", "while", "for", "in", "return", "true", "false", "none",
             "struct", "enum", "impl", "try", "catch", "throw", "import", "test", "break", "continue",
             "and", "or", "not", "mut", "await", "yield", "match", "schema", "pipeline", "stream",
-            "source", "sink", "use", "pub", "mod", "trait", "where",
+            "source", "sink", "use", "pub", "mod", "trait", "where", "check",
             // Builtin functions
             "print", "println", "len", "str", "int", "float", "abs", "min", "max", "range",
             "push", "type_of", "map", "filter", "reduce", "sum", "any", "all",
@@ -232,6 +232,14 @@ enum Commands {
         /// Project name
         name: String,
     },
+    /// Type-check a .tl file without executing it
+    Check {
+        /// Path to the .tl file
+        file: String,
+        /// Strict mode: require type annotations on function parameters
+        #[arg(long)]
+        strict: bool,
+    },
     /// Build and run the current project (requires tl.toml)
     Build {
         /// Backend: "vm" (default) or "interp"
@@ -319,6 +327,7 @@ fn main() {
         Some(Commands::Deploy { file, target, output }) => run_deploy(&file, &target, &output),
         Some(Commands::Lineage { file, format }) => run_lineage(&file, &format),
         Some(Commands::Disasm { file }) => run_disasm(&file),
+        Some(Commands::Check { file, strict }) => run_check(&file, strict),
         Some(Commands::Test { path, backend }) => run_tests(&path, &backend),
         Some(Commands::Init { name }) => run_init(&name),
         Some(Commands::Build { backend, dump_bytecode, no_check, strict }) => run_build(&backend, dump_bytecode, no_check, strict),
@@ -455,6 +464,63 @@ fn run_disasm(path: &str) {
     };
 
     print!("{}", proto.disassemble());
+}
+
+fn run_check(path: &str, strict: bool) {
+    let source = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading file '{path}': {e}");
+            process::exit(1);
+        }
+    };
+
+    let program = match parse(&source) {
+        Ok(p) => p,
+        Err(TlError::Parser(ref e)) => {
+            report_parser_error(&source, path, e);
+            process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            process::exit(1);
+        }
+    };
+
+    let config = CheckerConfig { strict };
+    let result = check_program(&program, &config);
+
+    for warning in &result.warnings {
+        report_type_warning(&source, path, &tl_errors::TypeError {
+            message: warning.message.clone(),
+            span: warning.span,
+            expected: warning.expected.clone(),
+            found: warning.found.clone(),
+            hint: warning.hint.clone(),
+        });
+    }
+
+    for error in &result.errors {
+        report_type_error(&source, path, &tl_errors::TypeError {
+            message: error.message.clone(),
+            span: error.span,
+            expected: error.expected.clone(),
+            found: error.found.clone(),
+            hint: error.hint.clone(),
+        });
+    }
+
+    let warning_count = result.warnings.len();
+    let error_count = result.errors.len();
+
+    if error_count > 0 {
+        eprintln!("{error_count} error(s), {warning_count} warning(s)");
+        process::exit(1);
+    } else if warning_count > 0 {
+        eprintln!("{warning_count} warning(s)");
+    } else {
+        eprintln!("No errors or warnings.");
+    }
 }
 
 fn run_repl(backend: &str) {
@@ -1065,5 +1131,57 @@ description = "A great project"
         let config = tl_types::checker::CheckerConfig::default();
         let result = tl_types::checker::check_program(&program, &config);
         assert!(!result.has_errors(), "Type checker should handle pub struct/enum");
+    }
+
+    // -- Phase 13 Step 5: tl check subcommand tests --
+
+    #[test]
+    fn test_check_valid_file_no_errors() {
+        let src = "let x: int = 42\nprint(x)";
+        let program = tl_parser::parse(src).unwrap();
+        let config = tl_types::checker::CheckerConfig::default();
+        let result = tl_types::checker::check_program(&program, &config);
+        assert!(!result.has_errors());
+        assert_eq!(result.warnings.len(), 0);
+    }
+
+    #[test]
+    fn test_check_strict_unannotated_params() {
+        let src = "fn add(a, b) { a + b }\nprint(add(1, 2))";
+        let program = tl_parser::parse(src).unwrap();
+        let config = tl_types::checker::CheckerConfig { strict: true };
+        let result = tl_types::checker::check_program(&program, &config);
+        assert!(result.has_errors(), "Strict mode should flag unannotated params");
+    }
+
+    #[test]
+    fn test_check_non_strict_unannotated_ok() {
+        let src = "fn add(a, b) { a + b }\nprint(add(1, 2))";
+        let program = tl_parser::parse(src).unwrap();
+        let config = tl_types::checker::CheckerConfig::default();
+        let result = tl_types::checker::check_program(&program, &config);
+        assert!(!result.has_errors(), "Non-strict mode should allow unannotated params");
+    }
+
+    #[test]
+    fn test_check_unused_variable_warning() {
+        let src = "let x = 42";
+        let program = tl_parser::parse(src).unwrap();
+        let config = tl_types::checker::CheckerConfig::default();
+        let result = tl_types::checker::check_program(&program, &config);
+        assert!(!result.has_errors());
+        assert!(result.warnings.len() > 0, "Unused variable should produce warning");
+        assert!(result.warnings.iter().any(|w| w.message.contains("Unused variable")));
+    }
+
+    #[test]
+    fn test_check_unreachable_code_warning() {
+        let src = "fn foo() {\n  return 1\n  print(2)\n}\nprint(foo())";
+        let program = tl_parser::parse(src).unwrap();
+        let config = tl_types::checker::CheckerConfig::default();
+        let result = tl_types::checker::check_program(&program, &config);
+        assert!(!result.has_errors());
+        assert!(result.warnings.iter().any(|w| w.message.contains("Unreachable")),
+            "Should warn about unreachable code after return");
     }
 }

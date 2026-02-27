@@ -5,6 +5,7 @@
 
 use tl_ast::{BinOp, Expr, UnaryOp};
 
+use crate::convert::convert_type_expr;
 use crate::{Type, TypeEnv};
 
 /// Infer the type of an expression given the current type environment.
@@ -26,8 +27,14 @@ pub fn infer_expr(expr: &Expr, env: &TypeEnv) -> Type {
         // Unary operations
         Expr::UnaryOp { op, expr } => infer_unaryop(op, expr, env),
 
-        // Function call
-        Expr::Call { function, .. } => {
+        // Function call — including method calls (Call { function: Member { .. }, .. })
+        Expr::Call { function, args } => {
+            // Method call: obj.method(args)
+            if let Expr::Member { object, field } = function.as_ref() {
+                let obj_ty = infer_expr(object, env);
+                return infer_method_call(&obj_ty, field, args, env);
+            }
+
             if let Expr::Ident(name) = function.as_ref() {
                 // Check known builtins
                 match name.as_str() {
@@ -40,6 +47,53 @@ pub fn infer_expr(expr: &Expr, env: &TypeEnv) -> Type {
                     "float" => Type::Float,
                     "str" | "type_of" => Type::String,
                     "bool" => Type::Bool,
+                    // Phase 13: more builtin return types
+                    "range" => Type::List(Box::new(Type::Int)),
+                    "print" | "println" | "push" | "append" | "write_file" | "append_file" => {
+                        Type::Unit
+                    }
+                    "split" => Type::List(Box::new(Type::String)),
+                    "json_parse" => Type::Any,
+                    "json_stringify" | "read_file" => Type::String,
+                    "channel" => Type::Channel(Box::new(Type::Any)),
+                    "spawn" => Type::Task(Box::new(Type::Any)),
+                    "map" => {
+                        // map(list, fn) -> list
+                        if !args.is_empty() {
+                            let arg_ty = infer_expr(&args[0], env);
+                            match arg_ty {
+                                Type::List(_) => arg_ty,
+                                _ => Type::List(Box::new(Type::Any)),
+                            }
+                        } else {
+                            Type::List(Box::new(Type::Any))
+                        }
+                    }
+                    "filter" => {
+                        if !args.is_empty() {
+                            let arg_ty = infer_expr(&args[0], env);
+                            match arg_ty {
+                                Type::List(_) => arg_ty,
+                                _ => Type::List(Box::new(Type::Any)),
+                            }
+                        } else {
+                            Type::List(Box::new(Type::Any))
+                        }
+                    }
+                    "now" => Type::String,
+                    "date_format" | "date_parse" => Type::String,
+                    "regex_match" => Type::Bool,
+                    "regex_find" => Type::List(Box::new(Type::String)),
+                    "sleep" => Type::Unit,
+                    "env_get" => Type::String,
+                    "env_set" => Type::Unit,
+                    "send" | "recv" | "try_recv" => Type::Any,
+                    "await_all" => Type::List(Box::new(Type::Any)),
+                    "collect" | "gen_collect" => Type::List(Box::new(Type::Any)),
+                    "iter" => Type::Generator(Box::new(Type::Any)),
+                    "next" => Type::Any,
+                    "is_generator" | "file_exists" => Type::Bool,
+                    "assert" | "assert_eq" => Type::Unit,
                     _ => {
                         if let Some(sig) = env.lookup_fn(name) {
                             sig.ret.clone()
@@ -49,7 +103,12 @@ pub fn infer_expr(expr: &Expr, env: &TypeEnv) -> Type {
                     }
                 }
             } else {
-                Type::Any
+                // Calling a closure or other expression
+                let fn_ty = infer_expr(function, env);
+                match fn_ty {
+                    Type::Function { ret, .. } => *ret,
+                    _ => Type::Any,
+                }
             }
         }
 
@@ -63,23 +122,20 @@ pub fn infer_expr(expr: &Expr, env: &TypeEnv) -> Type {
             }
         }
 
-        // Map literal
-        Expr::Map(_) => Type::Map(Box::new(Type::Any)),
-
-        // Member access
-        Expr::Member { object, .. } => {
-            let obj_ty = infer_expr(object, env);
-            match &obj_ty {
-                Type::Struct(name) => {
-                    // Could look up field type from env
-                    if env.lookup_struct(name).is_some() {
-                        Type::Any // field type lookup deferred to checker
-                    } else {
-                        Type::Any
-                    }
-                }
-                _ => Type::Any,
+        // Map literal — infer value type from first entry
+        Expr::Map(entries) => {
+            if entries.is_empty() {
+                Type::Map(Box::new(Type::Any))
+            } else {
+                let val_ty = infer_expr(&entries[0].1, env);
+                Type::Map(Box::new(val_ty))
             }
+        }
+
+        // Member access — look up struct field types and known type methods
+        Expr::Member { object, field } => {
+            let obj_ty = infer_expr(object, env);
+            infer_member_access(&obj_ty, field, env)
         }
 
         // Index access
@@ -92,10 +148,18 @@ pub fn infer_expr(expr: &Expr, env: &TypeEnv) -> Type {
             }
         }
 
-        // Closure
-        Expr::Closure { .. } => Type::Function {
-            params: vec![Type::Any],
-            ret: Box::new(Type::Any),
+        // Closure — infer param types from annotations and return type from body
+        Expr::Closure { params, body, .. } => Type::Function {
+            params: params
+                .iter()
+                .map(|p| {
+                    p.type_ann
+                        .as_ref()
+                        .map(|t| convert_type_expr(t))
+                        .unwrap_or(Type::Any)
+                })
+                .collect(),
+            ret: Box::new(infer_expr(body, env)),
         },
 
         // Null coalesce: option<T> ?? T -> T
@@ -166,6 +230,116 @@ pub fn infer_expr(expr: &Expr, env: &TypeEnv) -> Type {
     }
 }
 
+/// Infer the type of a member access (obj.field).
+fn infer_member_access(obj_ty: &Type, field: &str, env: &TypeEnv) -> Type {
+    match obj_ty {
+        Type::Struct(name) => {
+            if let Some(fields) = env.lookup_struct(name) {
+                fields
+                    .iter()
+                    .find(|(f, _)| f == field)
+                    .map(|(_, ty)| ty.clone())
+                    .unwrap_or(Type::Any)
+            } else {
+                Type::Any
+            }
+        }
+        Type::String => match field {
+            "len" | "length" => Type::Int,
+            "chars" => Type::List(Box::new(Type::String)),
+            "split" => Type::Function {
+                params: vec![Type::String],
+                ret: Box::new(Type::List(Box::new(Type::String))),
+            },
+            "trim" | "upper" | "lower" | "reverse" | "repeat" | "substring" | "pad_left"
+            | "pad_right" => Type::String,
+            "contains" | "starts_with" | "ends_with" => Type::Bool,
+            "index_of" => Type::Int,
+            _ => Type::Any,
+        },
+        Type::List(inner) => match field {
+            "len" | "length" => Type::Int,
+            "contains" => Type::Bool,
+            "index_of" => Type::Int,
+            "sort" | "reverse" | "slice" | "flat_map" => Type::List(inner.clone()),
+            "first" | "last" => *inner.clone(),
+            _ => Type::Any,
+        },
+        Type::Map(_) => match field {
+            "len" => Type::Int,
+            "keys" => Type::List(Box::new(Type::String)),
+            "values" => Type::List(Box::new(Type::Any)),
+            "contains_key" => Type::Bool,
+            _ => Type::Any,
+        },
+        Type::Set(inner) => match field {
+            "len" => Type::Int,
+            "contains" => Type::Bool,
+            "union" | "intersection" | "difference" => Type::Set(inner.clone()),
+            _ => Type::Any,
+        },
+        _ => Type::Any,
+    }
+}
+
+/// Infer the return type of a method call (obj.method(args)).
+fn infer_method_call(obj_ty: &Type, method: &str, _args: &[Expr], env: &TypeEnv) -> Type {
+    match obj_ty {
+        Type::String => match method {
+            "len" | "length" | "index_of" => Type::Int,
+            "split" => Type::List(Box::new(Type::String)),
+            "chars" => Type::List(Box::new(Type::String)),
+            "trim" | "upper" | "lower" | "reverse" | "repeat" | "replace" | "substring"
+            | "pad_left" | "pad_right" => Type::String,
+            "contains" | "starts_with" | "ends_with" => Type::Bool,
+            _ => Type::Any,
+        },
+        Type::List(inner) => match method {
+            "len" | "length" | "index_of" => Type::Int,
+            "contains" => Type::Bool,
+            "push" | "append" => Type::Unit,
+            "map" | "filter" | "sort" | "reverse" | "slice" | "flat_map" => {
+                Type::List(inner.clone())
+            }
+            "sum" => *inner.clone(),
+            "collect" => Type::List(inner.clone()),
+            "join" => Type::String,
+            "first" | "last" => *inner.clone(),
+            _ => Type::Any,
+        },
+        Type::Map(_val_ty) => match method {
+            "len" => Type::Int,
+            "keys" => Type::List(Box::new(Type::String)),
+            "values" => Type::List(Box::new(Type::Any)),
+            "contains_key" => Type::Bool,
+            "remove" => Type::Unit,
+            _ => Type::Any,
+        },
+        Type::Set(inner) => match method {
+            "len" => Type::Int,
+            "contains" => Type::Bool,
+            "add" | "remove" => Type::Unit,
+            "union" | "intersection" | "difference" => Type::Set(inner.clone()),
+            _ => Type::Any,
+        },
+        Type::Generator(inner) => match method {
+            "next" => *inner.clone(),
+            "collect" => Type::List(inner.clone()),
+            _ => Type::Any,
+        },
+        Type::Struct(name) => {
+            // Look up method in impl blocks via the function registry
+            let mangled = format!("{name}::{method}");
+            if let Some(sig) = env.lookup_fn(&mangled) {
+                sig.ret.clone()
+            } else {
+                Type::Any
+            }
+        }
+        _ => Type::Any,
+    }
+}
+
 fn infer_binop(left: &Expr, op: &BinOp, right: &Expr, env: &TypeEnv) -> Type {
     let left_ty = infer_expr(left, env);
     let right_ty = infer_expr(right, env);
@@ -210,6 +384,7 @@ fn infer_unaryop(op: &UnaryOp, expr: &Expr, env: &TypeEnv) -> Type {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::FnSig;
 
     #[test]
     fn test_infer_literals() {
@@ -284,5 +459,244 @@ mod tests {
             default: Box::new(Expr::Int(0)),
         };
         assert_eq!(infer_expr(&expr, &env), Type::Int);
+    }
+
+    // ── Phase 13: Enhanced Inference Tests ──────────────────────
+
+    #[test]
+    fn test_infer_struct_field_access() {
+        let mut env = TypeEnv::new();
+        env.define_struct(
+            "Point".into(),
+            vec![("x".into(), Type::Int), ("y".into(), Type::Float)],
+        );
+        env.define("p".into(), Type::Struct("Point".into()));
+
+        let expr = Expr::Member {
+            object: Box::new(Expr::Ident("p".into())),
+            field: "x".into(),
+        };
+        assert_eq!(infer_expr(&expr, &env), Type::Int);
+
+        let expr = Expr::Member {
+            object: Box::new(Expr::Ident("p".into())),
+            field: "y".into(),
+        };
+        assert_eq!(infer_expr(&expr, &env), Type::Float);
+    }
+
+    #[test]
+    fn test_infer_nested_member_access() {
+        let mut env = TypeEnv::new();
+        env.define_struct("Inner".into(), vec![("val".into(), Type::Int)]);
+        env.define_struct(
+            "Outer".into(),
+            vec![("inner".into(), Type::Struct("Inner".into()))],
+        );
+        env.define("o".into(), Type::Struct("Outer".into()));
+
+        // o.inner should be Struct("Inner")
+        let inner_access = Expr::Member {
+            object: Box::new(Expr::Ident("o".into())),
+            field: "inner".into(),
+        };
+        assert_eq!(
+            infer_expr(&inner_access, &env),
+            Type::Struct("Inner".into())
+        );
+
+        // o.inner.val should be Int
+        let nested = Expr::Member {
+            object: Box::new(inner_access),
+            field: "val".into(),
+        };
+        assert_eq!(infer_expr(&nested, &env), Type::Int);
+    }
+
+    #[test]
+    fn test_infer_list_method_call() {
+        let mut env = TypeEnv::new();
+        env.define("xs".into(), Type::List(Box::new(Type::Int)));
+
+        // xs.len() -> int
+        let expr = Expr::Call {
+            function: Box::new(Expr::Member {
+                object: Box::new(Expr::Ident("xs".into())),
+                field: "len".into(),
+            }),
+            args: vec![],
+        };
+        assert_eq!(infer_expr(&expr, &env), Type::Int);
+
+        // xs.contains(1) -> bool
+        let expr = Expr::Call {
+            function: Box::new(Expr::Member {
+                object: Box::new(Expr::Ident("xs".into())),
+                field: "contains".into(),
+            }),
+            args: vec![Expr::Int(1)],
+        };
+        assert_eq!(infer_expr(&expr, &env), Type::Bool);
+    }
+
+    #[test]
+    fn test_infer_string_method_call() {
+        let mut env = TypeEnv::new();
+        env.define("s".into(), Type::String);
+
+        // s.split(",") -> list<string>
+        let expr = Expr::Call {
+            function: Box::new(Expr::Member {
+                object: Box::new(Expr::Ident("s".into())),
+                field: "split".into(),
+            }),
+            args: vec![Expr::String(",".into())],
+        };
+        assert_eq!(
+            infer_expr(&expr, &env),
+            Type::List(Box::new(Type::String))
+        );
+
+        // s.len() -> int
+        let expr = Expr::Call {
+            function: Box::new(Expr::Member {
+                object: Box::new(Expr::Ident("s".into())),
+                field: "len".into(),
+            }),
+            args: vec![],
+        };
+        assert_eq!(infer_expr(&expr, &env), Type::Int);
+    }
+
+    #[test]
+    fn test_infer_closure_with_annotations() {
+        let env = TypeEnv::new();
+        let expr = Expr::Closure {
+            params: vec![tl_ast::Param {
+                name: "x".into(),
+                type_ann: Some(tl_ast::TypeExpr::Named("int".into())),
+            }],
+            body: Box::new(Expr::BinOp {
+                left: Box::new(Expr::Ident("x".into())),
+                op: BinOp::Mul,
+                right: Box::new(Expr::Int(2)),
+            }),
+        };
+        let ty = infer_expr(&expr, &env);
+        match ty {
+            Type::Function { params, .. } => {
+                assert_eq!(params, vec![Type::Int]);
+            }
+            other => panic!("Expected function type, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_infer_closure_without_annotations() {
+        let env = TypeEnv::new();
+        let expr = Expr::Closure {
+            params: vec![tl_ast::Param {
+                name: "x".into(),
+                type_ann: None,
+            }],
+            body: Box::new(Expr::Int(42)),
+        };
+        let ty = infer_expr(&expr, &env);
+        match ty {
+            Type::Function { params, ret } => {
+                assert_eq!(params, vec![Type::Any]);
+                assert_eq!(*ret, Type::Int);
+            }
+            other => panic!("Expected function type, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_infer_map_literal() {
+        let env = TypeEnv::new();
+
+        // Non-empty map: infer value type from first entry
+        let expr = Expr::Map(vec![
+            (Expr::String("a".into()), Expr::Int(1)),
+            (Expr::String("b".into()), Expr::Int(2)),
+        ]);
+        assert_eq!(infer_expr(&expr, &env), Type::Map(Box::new(Type::Int)));
+
+        // Empty map
+        let empty = Expr::Map(vec![]);
+        assert_eq!(infer_expr(&empty, &env), Type::Map(Box::new(Type::Any)));
+    }
+
+    #[test]
+    fn test_infer_builtin_return_types() {
+        let env = TypeEnv::new();
+
+        // range -> list<int>
+        let expr = Expr::Call {
+            function: Box::new(Expr::Ident("range".into())),
+            args: vec![Expr::Int(0), Expr::Int(10)],
+        };
+        assert_eq!(
+            infer_expr(&expr, &env),
+            Type::List(Box::new(Type::Int))
+        );
+
+        // split -> list<string>
+        let expr = Expr::Call {
+            function: Box::new(Expr::Ident("split".into())),
+            args: vec![Expr::String("a,b".into()), Expr::String(",".into())],
+        };
+        assert_eq!(
+            infer_expr(&expr, &env),
+            Type::List(Box::new(Type::String))
+        );
+
+        // channel -> channel<any>
+        let expr = Expr::Call {
+            function: Box::new(Expr::Ident("channel".into())),
+            args: vec![],
+        };
+        assert_eq!(
+            infer_expr(&expr, &env),
+            Type::Channel(Box::new(Type::Any))
+        );
+
+        // spawn -> task<any>
+        let expr = Expr::Call {
+            function: Box::new(Expr::Ident("spawn".into())),
+            args: vec![],
+        };
+        assert_eq!(infer_expr(&expr, &env), Type::Task(Box::new(Type::Any)));
+    }
+
+    #[test]
+    fn test_infer_unknown_member_returns_any() {
+        let mut env = TypeEnv::new();
+        env.define("p".into(), Type::Struct("Point".into()));
+
+        // Unknown struct (not registered) — returns Any
+        let expr = Expr::Member {
+            object: Box::new(Expr::Ident("p".into())),
+            field: "z".into(),
+        };
+        assert_eq!(infer_expr(&expr, &env), Type::Any);
+    }
+
+    #[test]
+    fn test_infer_user_defined_fn_return_type() {
+        let mut env = TypeEnv::new();
+        env.define_fn(
+            "my_fn".into(),
+            FnSig {
+                params: vec![("x".into(), Type::Int)],
+                ret: Type::String,
+            },
+        );
+
+        let expr = Expr::Call {
+            function: Box::new(Expr::Ident("my_fn".into())),
+            args: vec![Expr::Int(42)],
+        };
+        assert_eq!(infer_expr(&expr, &env), Type::String);
     }
 }

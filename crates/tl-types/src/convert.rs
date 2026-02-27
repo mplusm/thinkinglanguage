@@ -50,6 +50,7 @@ fn convert_named(name: &str) -> Type {
     }
 }
 
+#[allow(dead_code)]
 fn convert_generic(name: &str, args: &[TypeExpr]) -> Type {
     convert_generic_with_params(name, args, &[])
 }

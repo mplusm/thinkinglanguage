@@ -189,6 +189,10 @@ impl TypeEnv {
         });
     }
 
+    pub fn scope_depth(&self) -> u32 {
+        self.scopes.len() as u32 - 1
+    }
+
     pub fn push_scope(&mut self) {
         self.scopes.push(Scope {
             vars: std::collections::HashMap::new(),

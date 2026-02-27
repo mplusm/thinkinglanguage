@@ -8,6 +8,15 @@ use tl_errors::{TlError, RuntimeError, Span};
 use crate::chunk::*;
 use crate::opcode::*;
 
+/// Result of constant folding at compile time.
+#[derive(Debug, Clone)]
+enum FoldedConst {
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    String(String),
+}
+
 /// Compile error helper
 fn compile_err(msg: String) -> TlError {
     TlError::Runtime(RuntimeError {
@@ -53,6 +62,8 @@ struct CompilerState {
     has_yield: bool,
     /// Current source line (1-based), set by the compiler before emitting instructions
     current_line: u32,
+    /// Dead code flag: set after compiling Return/Break/Continue in the current block
+    dead_code: bool,
 }
 
 impl CompilerState {
@@ -66,6 +77,7 @@ impl CompilerState {
             loop_stack: Vec::new(),
             has_yield: false,
             current_line: 0,
+            dead_code: false,
         }
     }
 
@@ -251,6 +263,11 @@ impl Compiler {
     }
 
     fn compile_stmt(&mut self, stmt: &Stmt) -> Result<(), TlError> {
+        // Dead code elimination: skip statements after return/break/continue
+        if self.current().dead_code {
+            return Ok(());
+        }
+
         // Update current line from statement's span
         let line = self.line_of(stmt.span.start);
         self.current_line = line;
@@ -284,6 +301,7 @@ impl Compiler {
                 }
                 self.current().emit_abc(Op::Return, reg, 0, 0, 0);
                 self.current().free_register();
+                self.current().dead_code = true;
                 Ok(())
             }
             StmtKind::If { condition, then_body, else_ifs, else_body } => {
@@ -365,7 +383,9 @@ impl Compiler {
                 self.current().emit_abx(Op::TryBegin, 0, 0, 0); // patch later
 
                 // Compile try body
+                let saved_dead_code = self.current().dead_code;
                 self.begin_scope();
+                self.current().dead_code = false;
                 for stmt in try_body {
                     self.compile_stmt(stmt)?;
                 }
@@ -383,6 +403,7 @@ impl Compiler {
 
                 // Catch body: error value will be in a designated register
                 self.begin_scope();
+                self.current().dead_code = false;
                 let catch_reg = self.add_local(catch_var.clone());
                 // The VM will place the error value in catch_reg when it jumps here
                 // We mark it with a LoadNone that the VM will overwrite
@@ -394,6 +415,9 @@ impl Compiler {
 
                 // Patch jump over catch
                 self.current().patch_jump(jump_over_pos);
+
+                // Restore dead_code (try/catch doesn't make surrounding code dead)
+                self.current().dead_code = saved_dead_code;
                 Ok(())
             }
             StmtKind::Throw(expr) => {
@@ -452,6 +476,7 @@ impl Compiler {
                 if let Some(loop_ctx) = state.loop_stack.last_mut() {
                     loop_ctx.break_jumps.push(pos);
                 }
+                self.current().dead_code = true;
                 Ok(())
             }
             StmtKind::Continue => {
@@ -462,6 +487,7 @@ impl Compiler {
                     let offset = (loop_start as i32 - current as i32 - 1) as i16;
                     state.emit_abx(Op::Jump, 0, offset as u16, 0);
                 }
+                self.current().dead_code = true;
                 Ok(())
             }
         }
@@ -511,6 +537,10 @@ impl Compiler {
         // Track the last expression's register for implicit return
         let mut last_expr_reg: Option<u8> = None;
         for (i, stmt) in body.iter().enumerate() {
+            // Dead code elimination in function body
+            if self.current().dead_code {
+                break;
+            }
             let is_last = i == body.len() - 1;
             // Update line tracking
             let line = self.line_of(stmt.span.start);
@@ -648,6 +678,7 @@ impl Compiler {
         else_ifs: &[(Expr, Vec<Stmt>)],
         else_body: &Option<Vec<Stmt>>,
     ) -> Result<(), TlError> {
+        let saved_dead_code = self.current().dead_code;
         let cond_reg = self.current().alloc_register();
         self.compile_expr(condition, cond_reg)?;
 
@@ -658,9 +689,11 @@ impl Compiler {
 
         // Then body
         self.begin_scope();
+        self.current().dead_code = false;
         for stmt in then_body {
             self.compile_stmt(stmt)?;
         }
+        let then_dead = self.current().dead_code;
         self.end_scope();
 
         // Jump over else
@@ -672,6 +705,9 @@ impl Compiler {
         // Patch the false jump to here
         self.current().patch_jump(jump_false_pos);
 
+        // Track whether all branches terminate
+        let mut all_branches_dead = then_dead;
+
         // Else-ifs
         for (ei_cond, ei_body) in else_ifs {
             let cond_reg = self.current().alloc_register();
@@ -681,9 +717,11 @@ impl Compiler {
             self.current().free_register();
 
             self.begin_scope();
+            self.current().dead_code = false;
             for stmt in ei_body {
                 self.compile_stmt(stmt)?;
             }
+            all_branches_dead = all_branches_dead && self.current().dead_code;
             self.end_scope();
 
             let je_pos = self.current().current_pos();
@@ -696,16 +734,24 @@ impl Compiler {
         // Else body
         if let Some(body) = else_body {
             self.begin_scope();
+            self.current().dead_code = false;
             for stmt in body {
                 self.compile_stmt(stmt)?;
             }
+            all_branches_dead = all_branches_dead && self.current().dead_code;
             self.end_scope();
+        } else {
+            // No else branch means not all paths terminate
+            all_branches_dead = false;
         }
 
         // Patch all end jumps
         for pos in end_jumps {
             self.current().patch_jump(pos);
         }
+
+        // Dead code after if: only if ALL branches (including else) terminate
+        self.current().dead_code = saved_dead_code || all_branches_dead;
 
         Ok(())
     }
@@ -807,6 +853,9 @@ impl Compiler {
         self.current().free_register();
 
         self.begin_scope();
+        // Reset dead_code for loop body (continue brings flow back)
+        let saved_dead_code = self.current().dead_code;
+        self.current().dead_code = false;
         for stmt in body {
             self.compile_stmt(stmt)?;
         }
@@ -825,6 +874,9 @@ impl Compiler {
         for pos in loop_ctx.break_jumps {
             self.current().patch_jump(pos);
         }
+
+        // Restore dead_code state (loop doesn't make surrounding code dead)
+        self.current().dead_code = saved_dead_code;
 
         Ok(())
     }
@@ -854,6 +906,8 @@ impl Compiler {
         self.current().emit_abx(Op::Jump, 0, 0, 0); // placeholder, patched
 
         // Body
+        let saved_dead_code = self.current().dead_code;
+        self.current().dead_code = false;
         for stmt in body {
             self.compile_stmt(stmt)?;
         }
@@ -877,6 +931,9 @@ impl Compiler {
         // Free iterator and list registers
         self.current().free_register(); // iter_reg
         self.current().free_register(); // list_reg
+
+        // Restore dead_code state
+        self.current().dead_code = saved_dead_code;
 
         Ok(())
     }
@@ -1103,7 +1160,163 @@ impl Compiler {
         Ok(())
     }
 
+    // ── Constant Folding ─────────────────────────────────────
+
+    /// Try to evaluate a constant expression at compile time.
+    /// Returns None if the expression contains non-constant parts.
+    fn try_fold_const(expr: &Expr) -> Option<FoldedConst> {
+        match expr {
+            Expr::Int(n) => Some(FoldedConst::Int(*n)),
+            Expr::Float(f) => Some(FoldedConst::Float(*f)),
+            Expr::Bool(b) => Some(FoldedConst::Bool(*b)),
+            // Only fold simple strings (no interpolation markers, no escape sequences).
+            // Strings with escapes need processing via compile_string_interpolation.
+            Expr::String(s) if !s.contains('{') && !s.contains('\\') => {
+                Some(FoldedConst::String(s.clone()))
+            }
+            Expr::String(_) => None,
+
+            Expr::UnaryOp { op: UnaryOp::Neg, expr } => {
+                match Self::try_fold_const(expr)? {
+                    FoldedConst::Int(n) => Some(FoldedConst::Int(-n)),
+                    FoldedConst::Float(f) => Some(FoldedConst::Float(-f)),
+                    _ => None,
+                }
+            }
+            Expr::UnaryOp { op: UnaryOp::Not, expr } => {
+                match Self::try_fold_const(expr)? {
+                    FoldedConst::Bool(b) => Some(FoldedConst::Bool(!b)),
+                    _ => None,
+                }
+            }
+
+            Expr::BinOp { left, op, right } => {
+                let l = Self::try_fold_const(left)?;
+                let r = Self::try_fold_const(right)?;
+                Self::fold_binop(&l, op, &r)
+            }
+
+            // Anything else (variables, calls, member access, etc.) cannot be folded
+            _ => None,
+        }
+    }
+
+    /// Fold a binary operation on two constants.
+    fn fold_binop(left: &FoldedConst, op: &BinOp, right: &FoldedConst) -> Option<FoldedConst> {
+        match (left, right) {
+            // Int op Int
+            (FoldedConst::Int(a), FoldedConst::Int(b)) => match op {
+                BinOp::Add => Some(FoldedConst::Int(a.checked_add(*b)?)),
+                BinOp::Sub => Some(FoldedConst::Int(a.checked_sub(*b)?)),
+                BinOp::Mul => Some(FoldedConst::Int(a.checked_mul(*b)?)),
+                BinOp::Div => {
+                    if *b == 0 { return None; } // defer to runtime error
+                    Some(FoldedConst::Int(a / b))
+                }
+                BinOp::Mod => {
+                    if *b == 0 { return None; }
+                    Some(FoldedConst::Int(a % b))
+                }
+                BinOp::Pow => {
+                    if *b >= 0 {
+                        Some(FoldedConst::Int(a.pow(*b as u32)))
+                    } else {
+                        Some(FoldedConst::Float((*a as f64).powf(*b as f64)))
+                    }
+                }
+                BinOp::Eq => Some(FoldedConst::Bool(a == b)),
+                BinOp::Neq => Some(FoldedConst::Bool(a != b)),
+                BinOp::Lt => Some(FoldedConst::Bool(a < b)),
+                BinOp::Gt => Some(FoldedConst::Bool(a > b)),
+                BinOp::Lte => Some(FoldedConst::Bool(a <= b)),
+                BinOp::Gte => Some(FoldedConst::Bool(a >= b)),
+                BinOp::And | BinOp::Or => None,
+            },
+
+            // Float op Float
+            (FoldedConst::Float(a), FoldedConst::Float(b)) => match op {
+                BinOp::Add => Some(FoldedConst::Float(a + b)),
+                BinOp::Sub => Some(FoldedConst::Float(a - b)),
+                BinOp::Mul => Some(FoldedConst::Float(a * b)),
+                BinOp::Div => {
+                    if *b == 0.0 { return None; }
+                    Some(FoldedConst::Float(a / b))
+                }
+                BinOp::Mod => {
+                    if *b == 0.0 { return None; }
+                    Some(FoldedConst::Float(a % b))
+                }
+                BinOp::Pow => Some(FoldedConst::Float(a.powf(*b))),
+                BinOp::Eq => Some(FoldedConst::Bool(a == b)),
+                BinOp::Neq => Some(FoldedConst::Bool(a != b)),
+                BinOp::Lt => Some(FoldedConst::Bool(a < b)),
+                BinOp::Gt => Some(FoldedConst::Bool(a > b)),
+                BinOp::Lte => Some(FoldedConst::Bool(a <= b)),
+                BinOp::Gte => Some(FoldedConst::Bool(a >= b)),
+                BinOp::And | BinOp::Or => None,
+            },
+
+            // Int op Float / Float op Int — promote to float
+            (FoldedConst::Int(a), FoldedConst::Float(b)) => {
+                let a = *a as f64;
+                Self::fold_binop(&FoldedConst::Float(a), op, &FoldedConst::Float(*b))
+            }
+            (FoldedConst::Float(a), FoldedConst::Int(b)) => {
+                let b = *b as f64;
+                Self::fold_binop(&FoldedConst::Float(*a), op, &FoldedConst::Float(b))
+            }
+
+            // String + String — concatenation
+            (FoldedConst::String(a), FoldedConst::String(b)) if matches!(op, BinOp::Add) => {
+                Some(FoldedConst::String(format!("{a}{b}")))
+            }
+            (FoldedConst::String(a), FoldedConst::String(b)) => match op {
+                BinOp::Eq => Some(FoldedConst::Bool(a == b)),
+                BinOp::Neq => Some(FoldedConst::Bool(a != b)),
+                _ => None,
+            },
+
+            // Bool op Bool
+            (FoldedConst::Bool(a), FoldedConst::Bool(b)) => match op {
+                BinOp::And => Some(FoldedConst::Bool(*a && *b)),
+                BinOp::Or => Some(FoldedConst::Bool(*a || *b)),
+                BinOp::Eq => Some(FoldedConst::Bool(a == b)),
+                BinOp::Neq => Some(FoldedConst::Bool(a != b)),
+                _ => None,
+            },
+
+            _ => None,
+        }
+    }
+
+    // ── End Constant Folding ────────────────────────────────
+
     fn compile_expr(&mut self, expr: &Expr, dest: u8) -> Result<(), TlError> {
+        // Constant folding: try to evaluate the expression at compile time
+        if let Some(folded) = Self::try_fold_const(expr) {
+            match folded {
+                FoldedConst::Int(n) => {
+                    let idx = self.current().add_constant(Constant::Int(n));
+                    self.current().emit_abx(Op::LoadConst, dest, idx, 0);
+                }
+                FoldedConst::Float(f) => {
+                    let idx = self.current().add_constant(Constant::Float(f));
+                    self.current().emit_abx(Op::LoadConst, dest, idx, 0);
+                }
+                FoldedConst::Bool(true) => {
+                    self.current().emit_abx(Op::LoadTrue, dest, 0, 0);
+                }
+                FoldedConst::Bool(false) => {
+                    self.current().emit_abx(Op::LoadFalse, dest, 0, 0);
+                }
+                FoldedConst::String(s) => {
+                    let idx = self.current().add_constant(Constant::String(Arc::from(s.as_str())));
+                    self.current().emit_abx(Op::LoadConst, dest, idx, 0);
+                }
+            }
+            return Ok(());
+        }
+
         match expr {
             Expr::Int(n) => {
                 let idx = self.current().add_constant(Constant::Int(*n));
@@ -1919,9 +2132,12 @@ mod tests {
 
     #[test]
     fn test_compile_add() {
+        // With constant folding, 1 + 2 now folds to 3
         let program = parse("1 + 2").unwrap();
         let proto = compile(&program).unwrap();
-        assert!(proto.code.len() >= 3); // LoadConst, LoadConst, Add, ...
+        assert!(!proto.code.is_empty());
+        // Should fold to constant 3
+        assert!(proto.constants.iter().any(|c| matches!(c, Constant::Int(3))));
     }
 
     #[test]
@@ -1943,5 +2159,225 @@ mod tests {
             decode_op(inst) == Op::Closure
         });
         assert!(has_closure);
+    }
+
+    // ── Phase 13: Constant Folding Tests ──────────────────────
+
+    #[test]
+    fn test_fold_int_addition() {
+        // 2 + 3 should fold to 5 at compile time
+        let program = parse("2 + 3").unwrap();
+        let proto = compile(&program).unwrap();
+        assert!(proto.constants.iter().any(|c| matches!(c, Constant::Int(5))));
+        // Should NOT have an Add instruction
+        let has_add = proto.code.iter().any(|&inst| decode_op(inst) == Op::Add);
+        assert!(!has_add, "Folded expression should not have Add instruction");
+    }
+
+    #[test]
+    fn test_fold_float_multiplication() {
+        let program = parse("2.0 * 3.0").unwrap();
+        let proto = compile(&program).unwrap();
+        assert!(proto.constants.iter().any(|c| matches!(c, Constant::Float(f) if (*f - 6.0).abs() < f64::EPSILON)));
+    }
+
+    #[test]
+    fn test_fold_string_concatenation() {
+        let program = parse("\"hello\" + \" world\"").unwrap();
+        let proto = compile(&program).unwrap();
+        assert!(proto.constants.iter().any(|c| matches!(c, Constant::String(s) if s.as_ref() == "hello world")));
+    }
+
+    #[test]
+    fn test_fold_negation() {
+        let program = parse("-42").unwrap();
+        let proto = compile(&program).unwrap();
+        assert!(proto.constants.iter().any(|c| matches!(c, Constant::Int(-42))));
+    }
+
+    #[test]
+    fn test_fold_not() {
+        let program = parse("not true").unwrap();
+        let proto = compile(&program).unwrap();
+        // Should emit LoadFalse
+        let has_load_false = proto.code.iter().any(|&inst| decode_op(inst) == Op::LoadFalse);
+        assert!(has_load_false, "'not true' should fold to false");
+    }
+
+    #[test]
+    fn test_fold_nested_arithmetic() {
+        // 2 + 3 * 4 should fold to 14
+        let program = parse("2 + 3 * 4").unwrap();
+        let proto = compile(&program).unwrap();
+        assert!(proto.constants.iter().any(|c| matches!(c, Constant::Int(14))));
+    }
+
+    #[test]
+    fn test_no_fold_division_by_zero() {
+        // 10 / 0 should NOT fold (defer to runtime error)
+        let program = parse("10 / 0").unwrap();
+        let proto = compile(&program).unwrap();
+        // Should still have a Div instruction
+        let has_div = proto.code.iter().any(|&inst| decode_op(inst) == Op::Div);
+        assert!(has_div, "Division by zero should not be folded");
+    }
+
+    #[test]
+    fn test_no_fold_variable_reference() {
+        // x + 1 should NOT fold (contains variable)
+        let program = parse("let x = 5\nx + 1").unwrap();
+        let proto = compile(&program).unwrap();
+        let has_add = proto.code.iter().any(|&inst| decode_op(inst) == Op::Add);
+        assert!(has_add, "Expression with variables should not be folded");
+    }
+
+    #[test]
+    fn test_no_fold_interpolated_string() {
+        // String with { should not fold (interpolation)
+        let program = parse("let x = 5\n\"{x} hello\"").unwrap();
+        let proto = compile(&program).unwrap();
+        // Should have string concatenation (Concat or multiple LoadConst + Add)
+        // The key point is it doesn't try to fold the interpolated string
+        assert!(!proto.code.is_empty());
+    }
+
+    #[test]
+    fn test_fold_transparent_to_runtime() {
+        // Folded expressions should produce the same result as unfolded
+        // This is verified by running both in the VM
+        use crate::Vm;
+        let program = parse("2 + 3 * 4").unwrap();
+        let proto = compile(&program).unwrap();
+        let mut vm = Vm::new();
+        let result = vm.execute(&proto).unwrap();
+        assert_eq!(result.to_string(), "14");
+    }
+
+    // ── Phase 13: Dead Code Elimination Tests ─────────────────
+
+    #[test]
+    fn test_dce_after_return() {
+        // Code after return should not be compiled
+        let program = parse("fn f() {\n  return 1\n  print(\"dead\")\n}").unwrap();
+        let proto = compile(&program).unwrap();
+        // Find the function prototype
+        let fn_proto = proto.constants.iter().find_map(|c| {
+            if let Constant::Prototype(p) = c { Some(p.clone()) } else { None }
+        }).expect("should have function prototype");
+        // The function should NOT have a CallBuiltin (print) after the Return
+        let return_pos = fn_proto.code.iter().position(|&inst| decode_op(inst) == Op::Return);
+        assert!(return_pos.is_some(), "Should have a Return instruction");
+        // No CallBuiltin after Return
+        let after_return: Vec<_> = fn_proto.code[return_pos.unwrap()+1..].iter()
+            .filter(|&&inst| decode_op(inst) == Op::CallBuiltin)
+            .collect();
+        assert!(after_return.is_empty(), "Should not have CallBuiltin after Return");
+    }
+
+    #[test]
+    fn test_dce_after_break() {
+        // Code after break in loop should not be compiled
+        let program = parse("fn f() {\n  while true {\n    break\n    print(\"dead\")\n  }\n}").unwrap();
+        let proto = compile(&program).unwrap();
+        let fn_proto = proto.constants.iter().find_map(|c| {
+            if let Constant::Prototype(p) = c { Some(p.clone()) } else { None }
+        }).expect("should have function prototype");
+        // Count CallBuiltin instructions — should be 0 (dead code eliminated)
+        let call_builtins: Vec<_> = fn_proto.code.iter()
+            .filter(|&&inst| decode_op(inst) == Op::CallBuiltin)
+            .collect();
+        assert!(call_builtins.is_empty(), "Should not have CallBuiltin after break");
+    }
+
+    #[test]
+    fn test_dce_after_continue() {
+        // Code after continue in loop should not be compiled
+        let program = parse("fn f() {\n  while true {\n    continue\n    print(\"dead\")\n  }\n}").unwrap();
+        let proto = compile(&program).unwrap();
+        let fn_proto = proto.constants.iter().find_map(|c| {
+            if let Constant::Prototype(p) = c { Some(p.clone()) } else { None }
+        }).expect("should have function prototype");
+        let call_builtins: Vec<_> = fn_proto.code.iter()
+            .filter(|&&inst| decode_op(inst) == Op::CallBuiltin)
+            .collect();
+        assert!(call_builtins.is_empty(), "Should not have CallBuiltin after continue");
+    }
+
+    #[test]
+    fn test_dce_if_both_branches_return() {
+        // If both branches return, code after if is dead
+        let program = parse("fn f(x) {\n  if x {\n    return 1\n  } else {\n    return 2\n  }\n  print(\"dead\")\n}").unwrap();
+        let proto = compile(&program).unwrap();
+        let fn_proto = proto.constants.iter().find_map(|c| {
+            if let Constant::Prototype(p) = c { Some(p.clone()) } else { None }
+        }).expect("should have function prototype");
+        let call_builtins: Vec<_> = fn_proto.code.iter()
+            .filter(|&&inst| decode_op(inst) == Op::CallBuiltin)
+            .collect();
+        assert!(call_builtins.is_empty(), "Should not have CallBuiltin after if where both branches return");
+    }
+
+    #[test]
+    fn test_dce_if_one_branch_returns() {
+        // If only one branch returns, code after if is NOT dead
+        let program = parse("fn f(x) {\n  if x {\n    return 1\n  }\n  print(\"alive\")\n  return 0\n}").unwrap();
+        let proto = compile(&program).unwrap();
+        let fn_proto = proto.constants.iter().find_map(|c| {
+            if let Constant::Prototype(p) = c { Some(p.clone()) } else { None }
+        }).expect("should have function prototype");
+        let call_builtins: Vec<_> = fn_proto.code.iter()
+            .filter(|&&inst| decode_op(inst) == Op::CallBuiltin)
+            .collect();
+        assert!(!call_builtins.is_empty(), "Should have CallBuiltin after if where only one branch returns");
+    }
+
+    #[test]
+    fn test_dce_nested_function() {
+        // Dead code in inner function doesn't affect outer
+        let program = parse("fn outer() {\n  fn inner() {\n    return 1\n    print(\"dead\")\n  }\n  print(\"alive\")\n}").unwrap();
+        let proto = compile(&program).unwrap();
+        // The outer function should have CallBuiltin (print("alive"))
+        let outer_fn = proto.constants.iter().find_map(|c| {
+            if let Constant::Prototype(p) = c {
+                if p.name == "outer" { Some(p.clone()) } else { None }
+            } else { None }
+        }).expect("should have outer function");
+        let call_builtins: Vec<_> = outer_fn.code.iter()
+            .filter(|&&inst| decode_op(inst) == Op::CallBuiltin)
+            .collect();
+        assert!(!call_builtins.is_empty(), "Outer function should have CallBuiltin");
+    }
+
+    #[test]
+    fn test_dce_try_catch_independent() {
+        // Return in try doesn't make catch dead
+        let program = parse("fn f() {\n  try {\n    return 1\n  } catch e {\n    print(e)\n  }\n}").unwrap();
+        let proto = compile(&program).unwrap();
+        let fn_proto = proto.constants.iter().find_map(|c| {
+            if let Constant::Prototype(p) = c { Some(p.clone()) } else { None }
+        }).expect("should have function prototype");
+        // Catch block should still have its instructions compiled
+        let call_builtins: Vec<_> = fn_proto.code.iter()
+            .filter(|&&inst| decode_op(inst) == Op::CallBuiltin)
+            .collect();
+        assert!(!call_builtins.is_empty(), "Catch block should not be eliminated by try body return");
+    }
+
+    #[test]
+    fn test_dce_existing_tests_unaffected() {
+        // Verify existing programs still compile and run correctly
+        use crate::Vm;
+        let tests = [
+            ("let x = 42\nx", "42"),
+            ("fn add(a, b) { a + b }\nadd(1, 2)", "3"),
+            ("if true { 1 } else { 2 }", "1"),
+        ];
+        for (src, expected) in tests {
+            let program = parse(src).unwrap();
+            let proto = compile(&program).unwrap();
+            let mut vm = Vm::new();
+            let result = vm.execute(&proto).unwrap();
+            assert_eq!(result.to_string(), expected, "Failed for: {src}");
+        }
     }
 }
