@@ -25,6 +25,7 @@ use tl_parser::parse;
 use tl_types::checker::{CheckerConfig, check_program};
 
 mod deploy;
+mod package;
 
 // ---------------------------------------------------------------------------
 // Tab-completion helper
@@ -42,6 +43,7 @@ impl TlHelper {
             "struct", "enum", "impl", "try", "catch", "throw", "import", "test", "break", "continue",
             "and", "or", "not", "mut", "await", "yield", "match", "schema", "pipeline", "stream",
             "source", "sink", "use", "pub", "mod", "trait", "where", "check", "lsp", "fmt", "lint",
+            "add", "remove", "install", "update", "publish", "search",
             // Builtin functions
             "print", "println", "len", "str", "int", "float", "abs", "min", "max", "range",
             "push", "type_of", "map", "filter", "reduce", "sum", "any", "all",
@@ -277,6 +279,42 @@ enum Commands {
         #[arg(long)]
         strict: bool,
     },
+    /// Add a dependency to the project
+    Add {
+        /// Package name
+        name: String,
+        /// Version requirement (e.g. "1.0", "^2.0")
+        #[arg(long)]
+        version: Option<String>,
+        /// Git repository URL
+        #[arg(long)]
+        git: Option<String>,
+        /// Git branch (used with --git)
+        #[arg(long)]
+        branch: Option<String>,
+        /// Local path to the package
+        #[arg(long)]
+        path: Option<String>,
+    },
+    /// Remove a dependency from the project
+    Remove {
+        /// Package name
+        name: String,
+    },
+    /// Install all dependencies from tl.toml
+    Install,
+    /// Update dependencies (all or a specific package)
+    Update {
+        /// Package name (updates all if omitted)
+        name: Option<String>,
+    },
+    /// Publish a package to the registry (not yet available)
+    Publish,
+    /// Search for packages in the registry (not yet available)
+    Search {
+        /// Search query
+        query: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -300,11 +338,13 @@ enum ModelsAction {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct TlManifest {
     project: ProjectConfig,
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct ProjectConfig {
     name: String,
     version: String,
@@ -330,7 +370,8 @@ fn find_manifest(start: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Parse a tl.toml file into a TlManifest.
+/// Parse a tl.toml file into a TlManifest (legacy, used by tests).
+#[allow(dead_code)]
 fn parse_manifest(path: &Path) -> Result<TlManifest, String> {
     let content = fs::read_to_string(path)
         .map_err(|e| format!("Cannot read '{}': {e}", path.display()))?;
@@ -356,11 +397,31 @@ fn main() {
         Some(Commands::Fmt { path, check }) => run_fmt(&path, check),
         Some(Commands::Lint { path, strict }) => run_lint(&path, strict),
         Some(Commands::Build { backend, dump_bytecode, no_check, strict }) => run_build(&backend, dump_bytecode, no_check, strict),
+        Some(Commands::Add { name, version, git, branch, path }) => {
+            package::cmd_add(&name, version.as_deref(), git.as_deref(), branch.as_deref(), path.as_deref());
+        }
+        Some(Commands::Remove { name }) => package::cmd_remove(&name),
+        Some(Commands::Install) => package::cmd_install(),
+        Some(Commands::Update { name }) => package::cmd_update(name.as_deref()),
+        Some(Commands::Publish) => package::cmd_publish(),
+        Some(Commands::Search { query }) => package::cmd_search(&query),
         None => run_repl("vm"), // Default to REPL with VM backend
     }
 }
 
 fn run_file(path: &str, backend: &str, dump_bytecode: bool, no_check: bool, strict: bool) {
+    run_file_with_packages(path, backend, dump_bytecode, no_check, strict, None, None);
+}
+
+fn run_file_with_packages(
+    path: &str,
+    backend: &str,
+    dump_bytecode: bool,
+    no_check: bool,
+    strict: bool,
+    package_roots: Option<std::collections::HashMap<String, PathBuf>>,
+    project_root: Option<PathBuf>,
+) {
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -433,6 +494,12 @@ fn run_file(path: &str, backend: &str, dump_bytecode: bool, no_check: bool, stri
             };
             let mut vm = Vm::new();
             vm.file_path = Some(path.to_string());
+            if let Some(ref roots) = package_roots {
+                vm.package_roots = roots.clone();
+            }
+            if let Some(ref root) = project_root {
+                vm.project_root = Some(root.clone());
+            }
             if let Err(e) = vm.execute(&proto) {
                 match &e {
                     TlError::Runtime(re) => report_runtime_error(&source, path, re),
@@ -444,6 +511,12 @@ fn run_file(path: &str, backend: &str, dump_bytecode: bool, no_check: bool, stri
         "interp" => {
             let mut interp = Interpreter::new();
             interp.file_path = Some(path.to_string());
+            if let Some(ref roots) = package_roots {
+                interp.package_roots = roots.clone();
+            }
+            if let Some(ref root) = project_root {
+                interp.project_root = Some(root.clone());
+            }
             if let Err(e) = interp.execute(&program) {
                 match &e {
                     TlError::Runtime(re) => report_runtime_error(&source, path, re),
@@ -979,6 +1052,8 @@ fn run_init(name: &str) {
         r#"[project]
 name = "{name}"
 version = "0.1.0"
+
+[dependencies]
 "#
     );
     if let Err(e) = fs::write(project_dir.join("tl.toml"), manifest) {
@@ -1111,7 +1186,8 @@ fn run_build(backend: &str, dump_bytecode: bool, no_check: bool, strict: bool) {
         }
     };
 
-    let manifest = match parse_manifest(&manifest_path) {
+    // Parse manifest using tl_package::Manifest for full dependency support
+    let manifest = match tl_package::Manifest::load(&manifest_path) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("{e}");
@@ -1128,9 +1204,45 @@ fn run_build(backend: &str, dump_bytecode: bool, no_check: bool, strict: bool) {
         process::exit(1);
     }
 
+    // Resolve and install dependencies
+    let package_roots = if !manifest.dependencies.is_empty() {
+        let cache = match tl_package::PackageCache::default_location() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Warning: {e}");
+                tl_package::PackageCache::new(project_root.join(".tl_cache"))
+            }
+        };
+
+        match tl_package::resolve_and_install(project_root, &manifest, &cache) {
+            Ok(lock) => {
+                if !lock.packages.is_empty() {
+                    for pkg in &lock.packages {
+                        eprintln!("  {} v{}", pkg.name, pkg.version);
+                    }
+                }
+                Some(tl_package::resolver::build_package_roots(project_root, &cache))
+            }
+            Err(e) => {
+                eprintln!("Warning: dependency resolution failed: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let entry_str = entry.to_string_lossy().to_string();
     println!("Building {} v{}", manifest.project.name, manifest.project.version);
-    run_file(&entry_str, backend, dump_bytecode, no_check, strict);
+    run_file_with_packages(
+        &entry_str,
+        backend,
+        dump_bytecode,
+        no_check,
+        strict,
+        package_roots,
+        Some(project_root.to_path_buf()),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1305,5 +1417,74 @@ description = "A great project"
         assert!(!result.has_errors());
         assert!(result.warnings.iter().any(|w| w.message.contains("Unreachable")),
             "Should warn about unreachable code after return");
+    }
+
+    // -- Phase 16: Package manager tests --
+
+    #[test]
+    fn test_init_includes_dependencies() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_name = "test_pkg_init";
+        let project_dir = dir.path().join(project_name);
+
+        // Manually create the init structure (like run_init does)
+        let src_dir = project_dir.join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        let manifest = format!(
+            "[project]\nname = \"{project_name}\"\nversion = \"0.1.0\"\n\n[dependencies]\n"
+        );
+        fs::write(project_dir.join("tl.toml"), &manifest).unwrap();
+        fs::write(src_dir.join("main.tl"), format!("print(\"Hello from {project_name}!\")\n")).unwrap();
+
+        // Verify the manifest has [dependencies] section
+        let content = fs::read_to_string(project_dir.join("tl.toml")).unwrap();
+        assert!(content.contains("[dependencies]"), "tl init should include [dependencies] section");
+
+        // Verify it parses correctly with tl_package::Manifest
+        let m = tl_package::Manifest::from_toml(&content).unwrap();
+        assert_eq!(m.project.name, project_name);
+        assert!(m.dependencies.is_empty());
+    }
+
+    #[test]
+    fn test_manifest_backward_compat() {
+        // Old-style manifest without [dependencies] should still work
+        let toml = r#"
+[project]
+name = "legacy"
+version = "0.1.0"
+"#;
+        let m = tl_package::Manifest::from_toml(toml).unwrap();
+        assert_eq!(m.project.name, "legacy");
+        assert!(m.dependencies.is_empty());
+    }
+
+    #[test]
+    fn test_manifest_with_deps() {
+        let toml = r#"
+[project]
+name = "myapp"
+version = "0.1.0"
+
+[dependencies]
+mylib = { path = "../mylib" }
+remote = { git = "https://github.com/user/remote.git", branch = "main" }
+"#;
+        let m = tl_package::Manifest::from_toml(toml).unwrap();
+        assert_eq!(m.dependencies.len(), 2);
+        assert!(m.dependencies.contains_key("mylib"));
+        assert!(m.dependencies.contains_key("remote"));
+    }
+
+    #[test]
+    fn test_tab_completion_includes_package_commands() {
+        let helper = TlHelper::new();
+        // Check that package management keywords are in completions
+        assert!(helper.completions.contains(&"add".to_string()));
+        assert!(helper.completions.contains(&"remove".to_string()));
+        assert!(helper.completions.contains(&"install".to_string()));
+        assert!(helper.completions.contains(&"update".to_string()));
+        assert!(helper.completions.contains(&"publish".to_string()));
+        assert!(helper.completions.contains(&"search".to_string()));
     }
 }

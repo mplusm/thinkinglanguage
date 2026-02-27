@@ -20,9 +20,11 @@ tl-types = { path = "../tl-types" }
 tl-ai = { path = "../tl-ai" }
 tl-stream = { path = "../tl-stream" }
 tl-lsp = { path = "../tl-lsp" }
+tl-package = { path = "../tl-package" }
 clap.workspace = true
 rustyline.workspace = true
 toml = "0.8"
+toml_edit = "0.22"
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]

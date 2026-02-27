@@ -1,0 +1,17 @@
+[package]
+name = "tl-package"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Package manager for ThinkingLanguage"
+
+[dependencies]
+semver = { version = "1", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+toml_edit = "0.22"
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

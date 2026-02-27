@@ -35,6 +35,71 @@ fn vm_values_equal(a: &VmValue, b: &VmValue) -> bool {
     }
 }
 
+/// Resolve a file path within a package directory for package imports.
+/// `pkg_root` is the package root (containing tl.toml).
+/// `remaining` are the path segments after the package name.
+/// Entry point convention: src/lib.tl > src/mod.tl > src/main.tl > mod.tl > lib.tl
+fn resolve_package_file(pkg_root: &std::path::Path, remaining: &[&str]) -> Option<String> {
+    if remaining.is_empty() {
+        // Import the package itself — find entry point
+        let src = pkg_root.join("src");
+        for entry in &["lib.tl", "mod.tl", "main.tl"] {
+            let p = src.join(entry);
+            if p.exists() {
+                return Some(p.to_string_lossy().to_string());
+            }
+        }
+        for entry in &["mod.tl", "lib.tl"] {
+            let p = pkg_root.join(entry);
+            if p.exists() {
+                return Some(p.to_string_lossy().to_string());
+            }
+        }
+        return None;
+    }
+
+    // Try src/<remaining>.tl, then src/<remaining>/mod.tl
+    let rel = remaining.join("/");
+    let src = pkg_root.join("src");
+
+    let file_path = src.join(format!("{rel}.tl"));
+    if file_path.exists() {
+        return Some(file_path.to_string_lossy().to_string());
+    }
+
+    let dir_path = src.join(&rel).join("mod.tl");
+    if dir_path.exists() {
+        return Some(dir_path.to_string_lossy().to_string());
+    }
+
+    // Also try without src/ prefix
+    let file_path = pkg_root.join(format!("{rel}.tl"));
+    if file_path.exists() {
+        return Some(file_path.to_string_lossy().to_string());
+    }
+
+    let dir_path = pkg_root.join(&rel).join("mod.tl");
+    if dir_path.exists() {
+        return Some(dir_path.to_string_lossy().to_string());
+    }
+
+    // Parent fallback for item-within-module
+    if remaining.len() > 1 {
+        let parent = &remaining[..remaining.len() - 1];
+        let parent_rel = parent.join("/");
+        let parent_file = src.join(format!("{parent_rel}.tl"));
+        if parent_file.exists() {
+            return Some(parent_file.to_string_lossy().to_string());
+        }
+        let parent_file = pkg_root.join(format!("{parent_rel}.tl"));
+        if parent_file.exists() {
+            return Some(parent_file.to_string_lossy().to_string());
+        }
+    }
+
+    None
+}
+
 /// Convert serde_json::Value to VmValue
 fn vm_json_to_value(v: &serde_json::Value) -> VmValue {
     match v {
@@ -321,6 +386,10 @@ pub struct Vm {
     importing_files: std::collections::HashSet<String>,
     /// Tracks which globals are public (for module export filtering)
     pub public_items: std::collections::HashSet<String>,
+    /// Package roots: package_name → source directory
+    pub package_roots: HashMap<String, std::path::PathBuf>,
+    /// Project root (where tl.toml lives)
+    pub project_root: Option<std::path::PathBuf>,
 }
 
 impl Vm {
@@ -338,6 +407,8 @@ impl Vm {
             module_cache: HashMap::new(),
             importing_files: std::collections::HashSet::new(),
             public_items: std::collections::HashSet::new(),
+            package_roots: HashMap::new(),
+            project_root: None,
         }
     }
 
@@ -4280,6 +4351,8 @@ impl Vm {
         import_vm.globals = self.globals.clone();
         import_vm.importing_files = self.importing_files.clone();
         import_vm.module_cache = self.module_cache.clone();
+        import_vm.package_roots = self.package_roots.clone();
+        import_vm.project_root = self.project_root.clone();
         import_vm.execute(&proto)?;
 
         self.importing_files.remove(&resolved);
@@ -4428,6 +4501,20 @@ impl Vm {
             let parent_dir = base_dir.join(&parent_path).join("mod.tl");
             if parent_dir.exists() {
                 return Ok(parent_dir.to_string_lossy().to_string());
+            }
+        }
+
+        // Package import fallback: first segment as package name
+        // Convert underscores to hyphens (TL identifiers use _, package names use -)
+        let pkg_name_underscore = segments[0];
+        let pkg_name_hyphen = pkg_name_underscore.replace('_', "-");
+        let pkg_root = self.package_roots.get(pkg_name_underscore)
+            .or_else(|| self.package_roots.get(&pkg_name_hyphen));
+
+        if let Some(root) = pkg_root {
+            let remaining = &segments[1..];
+            if let Some(path) = resolve_package_file(root, remaining) {
+                return Ok(path);
             }
         }
 
@@ -6749,5 +6836,201 @@ print(s.contains("b"))"#);
         // Existing non-generic code must still work unchanged
         let output = run_output("fn add(a, b) { a + b }\nstruct Point { x: int, y: int }\nimpl Point { fn sum(self) { self.x + self.y } }\nlet p = Point { x: 3, y: 4 }\nprint(add(1, 2))\nprint(p.sum())");
         assert_eq!(output, vec!["3", "7"]);
+    }
+
+    // ── Phase 16: Package import resolution tests ──
+
+    #[test]
+    fn test_vm_package_import_resolves() {
+        // Create a test package on disk
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg_dir = tmp.path().join("mylib");
+        std::fs::create_dir_all(pkg_dir.join("src")).unwrap();
+        std::fs::write(pkg_dir.join("src/lib.tl"), "pub fn greet() { print(\"hello from pkg\") }").unwrap();
+        std::fs::write(pkg_dir.join("tl.toml"), "[project]\nname = \"mylib\"\nversion = \"1.0.0\"\n").unwrap();
+
+        // use X imports all exports wildcard-style; call greet() directly
+        let main_file = tmp.path().join("main.tl");
+        std::fs::write(&main_file, "use mylib\ngreet()").unwrap();
+
+        let source = std::fs::read_to_string(&main_file).unwrap();
+        let program = tl_parser::parse(&source).unwrap();
+        let proto = crate::compiler::compile(&program).unwrap();
+
+        let mut vm = Vm::new();
+        vm.file_path = Some(main_file.to_string_lossy().to_string());
+        vm.package_roots.insert("mylib".into(), pkg_dir);
+        vm.execute(&proto).unwrap();
+
+        assert_eq!(vm.output, vec!["hello from pkg"]);
+    }
+
+    #[test]
+    fn test_vm_package_nested_import() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg_dir = tmp.path().join("utils");
+        std::fs::create_dir_all(pkg_dir.join("src")).unwrap();
+        std::fs::write(pkg_dir.join("src/math.tl"), "pub fn double(x) { x * 2 }").unwrap();
+        std::fs::write(pkg_dir.join("tl.toml"), "[project]\nname = \"utils\"\nversion = \"1.0.0\"\n").unwrap();
+
+        // use utils.math wildcard-imports math.tl contents
+        let main_file = tmp.path().join("main.tl");
+        std::fs::write(&main_file, "use utils.math\nprint(double(21))").unwrap();
+
+        let source = std::fs::read_to_string(&main_file).unwrap();
+        let program = tl_parser::parse(&source).unwrap();
+        let proto = crate::compiler::compile(&program).unwrap();
+
+        let mut vm = Vm::new();
+        vm.file_path = Some(main_file.to_string_lossy().to_string());
+        vm.package_roots.insert("utils".into(), pkg_dir);
+        vm.execute(&proto).unwrap();
+
+        assert_eq!(vm.output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_vm_package_aliased_import() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg_dir = tmp.path().join("utils");
+        std::fs::create_dir_all(pkg_dir.join("src")).unwrap();
+        std::fs::write(pkg_dir.join("src/math.tl"), "pub fn double(x) { x * 2 }").unwrap();
+        std::fs::write(pkg_dir.join("tl.toml"), "[project]\nname = \"utils\"\nversion = \"1.0.0\"\n").unwrap();
+
+        // use X as Y creates a namespaced module object
+        let main_file = tmp.path().join("main.tl");
+        std::fs::write(&main_file, "use utils.math as m\nprint(m.double(21))").unwrap();
+
+        let source = std::fs::read_to_string(&main_file).unwrap();
+        let program = tl_parser::parse(&source).unwrap();
+        let proto = crate::compiler::compile(&program).unwrap();
+
+        let mut vm = Vm::new();
+        vm.file_path = Some(main_file.to_string_lossy().to_string());
+        vm.package_roots.insert("utils".into(), pkg_dir);
+        vm.execute(&proto).unwrap();
+
+        assert_eq!(vm.output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_vm_package_underscore_to_hyphen() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg_dir = tmp.path().join("my-pkg");
+        std::fs::create_dir_all(pkg_dir.join("src")).unwrap();
+        std::fs::write(pkg_dir.join("src/lib.tl"), "pub fn val() { print(99) }").unwrap();
+        std::fs::write(pkg_dir.join("tl.toml"), "[project]\nname = \"my-pkg\"\nversion = \"1.0.0\"\n").unwrap();
+
+        // TL identifiers use underscores, package names use hyphens
+        let main_file = tmp.path().join("main.tl");
+        std::fs::write(&main_file, "use my_pkg\nval()").unwrap();
+
+        let source = std::fs::read_to_string(&main_file).unwrap();
+        let program = tl_parser::parse(&source).unwrap();
+        let proto = crate::compiler::compile(&program).unwrap();
+
+        let mut vm = Vm::new();
+        vm.file_path = Some(main_file.to_string_lossy().to_string());
+        vm.package_roots.insert("my-pkg".into(), pkg_dir);
+        vm.execute(&proto).unwrap();
+
+        assert_eq!(vm.output, vec!["99"]);
+    }
+
+    #[test]
+    fn test_vm_local_module_priority_over_package() {
+        // Local modules should take priority over packages
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Create a local module
+        std::fs::write(tmp.path().join("mymod.tl"), "pub fn val() { print(\"local\") }").unwrap();
+
+        // Create a package with the same name
+        let pkg_dir = tmp.path().join("pkg_mymod");
+        std::fs::create_dir_all(pkg_dir.join("src")).unwrap();
+        std::fs::write(pkg_dir.join("src/lib.tl"), "pub fn val() { print(\"package\") }").unwrap();
+
+        // use mymod → wildcard imports, val() available directly
+        let main_file = tmp.path().join("main.tl");
+        std::fs::write(&main_file, "use mymod\nval()").unwrap();
+
+        let source = std::fs::read_to_string(&main_file).unwrap();
+        let program = tl_parser::parse(&source).unwrap();
+        let proto = crate::compiler::compile(&program).unwrap();
+
+        let mut vm = Vm::new();
+        vm.file_path = Some(main_file.to_string_lossy().to_string());
+        vm.package_roots.insert("mymod".into(), pkg_dir);
+        vm.execute(&proto).unwrap();
+
+        // Local module should win
+        assert_eq!(vm.output, vec!["local"]);
+    }
+
+    #[test]
+    fn test_vm_package_missing_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main_file = tmp.path().join("main.tl");
+        std::fs::write(&main_file, "use nonexistent\nnonexistent.foo()").unwrap();
+
+        let source = std::fs::read_to_string(&main_file).unwrap();
+        let program = tl_parser::parse(&source).unwrap();
+        let proto = crate::compiler::compile(&program).unwrap();
+
+        let mut vm = Vm::new();
+        vm.file_path = Some(main_file.to_string_lossy().to_string());
+        let result = vm.execute(&proto);
+
+        assert!(result.is_err());
+        let err = format!("{:?}", result.unwrap_err());
+        assert!(err.contains("Module not found"));
+    }
+
+    #[test]
+    fn test_resolve_package_file_entry_points() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Test src/lib.tl entry point
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/lib.tl"), "").unwrap();
+        let result = resolve_package_file(tmp.path(), &[]);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("lib.tl"));
+
+        // Test nested module in src/
+        std::fs::write(tmp.path().join("src/math.tl"), "").unwrap();
+        let result = resolve_package_file(tmp.path(), &["math"]);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("math.tl"));
+    }
+
+    #[test]
+    fn test_vm_package_propagates_to_sub_imports() {
+        // Package roots should be available in sub-VM during imports
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Create a package
+        let pkg_dir = tmp.path().join("helpers");
+        std::fs::create_dir_all(pkg_dir.join("src")).unwrap();
+        std::fs::write(pkg_dir.join("src/lib.tl"), "pub fn help() { print(\"helped\") }").unwrap();
+        std::fs::write(pkg_dir.join("tl.toml"), "[project]\nname = \"helpers\"\nversion = \"1.0.0\"\n").unwrap();
+
+        // Create a local module that imports from the package (wildcard then calls directly)
+        std::fs::write(tmp.path().join("bridge.tl"), "use helpers\npub fn run() { help() }").unwrap();
+
+        // use bridge wildcard-imports run(), then call it
+        let main_file = tmp.path().join("main.tl");
+        std::fs::write(&main_file, "use bridge\nrun()").unwrap();
+
+        let source = std::fs::read_to_string(&main_file).unwrap();
+        let program = tl_parser::parse(&source).unwrap();
+        let proto = crate::compiler::compile(&program).unwrap();
+
+        let mut vm = Vm::new();
+        vm.file_path = Some(main_file.to_string_lossy().to_string());
+        vm.package_roots.insert("helpers".into(), pkg_dir);
+        vm.execute(&proto).unwrap();
+
+        assert_eq!(vm.output, vec!["helped"]);
     }
 }

@@ -4442,6 +4442,10 @@ name = "semver"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d767eb0aabc880b29956c35734170f26ed551a859dbd361d140cdbeca61ab1e2"
+dependencies = [
+ "serde",
+ "serde_core",
+]
 
 [[package]]
 name = "seq-macro"
@@ -5009,10 +5013,12 @@ dependencies = [
  "tl-interpreter",
  "tl-lexer",
  "tl-lsp",
+ "tl-package",
  "tl-parser",
  "tl-stream",
  "tl-types",
  "toml",
+ "toml_edit 0.22.27",
 ]
 
 [[package]]
@@ -5035,6 +5041,7 @@ dependencies = [
  "tl-data",
  "tl-errors",
  "tl-lexer",
+ "tl-package",
  "tl-parser",
  "tl-stream",
 ]
@@ -5079,6 +5086,7 @@ dependencies = [
  "tl-ast",
  "tl-data",
  "tl-errors",
+ "tl-package",
  "tl-parser",
  "tl-stream",
 ]
@@ -5105,6 +5113,18 @@ dependencies = [
  "tl-lexer",
  "tl-parser",
  "tl-types",
+]
+
+[[package]]
+name = "tl-package"
+version = "0.1.0"
+dependencies = [
+ "semver",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml",
+ "toml_edit 0.22.27",
 ]
 
 [[package]]

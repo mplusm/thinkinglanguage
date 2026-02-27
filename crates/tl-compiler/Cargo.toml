@@ -13,6 +13,7 @@ tl-ai = { path = "../tl-ai" }
 tl-stream = { path = "../tl-stream" }
 tl-parser = { path = "../tl-parser" }
 tl-lexer = { path = "../tl-lexer" }
+tl-package = { path = "../tl-package" }
 cranelift-codegen = "0.116"
 cranelift-frontend = "0.116"
 cranelift-jit = "0.116"

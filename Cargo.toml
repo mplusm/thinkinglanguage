@@ -12,6 +12,7 @@ members = [
     "crates/tl-ai",
     "crates/tl-stream",
     "crates/tl-lsp",
+    "crates/tl-package",
     "benchmarks",
 ]
 resolver = "2"

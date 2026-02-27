@@ -202,6 +202,76 @@ impl ModuleResolver {
     fn canonicalize(&self, path: &Path) -> PathBuf {
         path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
     }
+
+    /// Resolve a module path against package roots.
+    /// Returns a ResolvedModule if the first segment matches a package name.
+    pub fn resolve_package_path(
+        &self,
+        segments: &[String],
+        package_roots: &HashMap<String, PathBuf>,
+    ) -> Option<ResolvedModule> {
+        if segments.is_empty() {
+            return None;
+        }
+
+        let pkg_name = &segments[0];
+        let pkg_name_hyphen = pkg_name.replace('_', "-");
+        let pkg_root = package_roots.get(pkg_name.as_str())
+            .or_else(|| package_roots.get(&pkg_name_hyphen))?;
+
+        let remaining = &segments[1..];
+
+        if remaining.is_empty() {
+            // Import the package entry point
+            let src = pkg_root.join("src");
+            for entry in &["lib.tl", "mod.tl", "main.tl"] {
+                let p = src.join(entry);
+                if p.exists() {
+                    return Some(ResolvedModule { file_path: p, item_name: None });
+                }
+            }
+            for entry in &["mod.tl", "lib.tl"] {
+                let p = pkg_root.join(entry);
+                if p.exists() {
+                    return Some(ResolvedModule { file_path: p, item_name: None });
+                }
+            }
+            return None;
+        }
+
+        let rel: PathBuf = remaining.iter().collect();
+        let src = pkg_root.join("src");
+
+        // Try src/<rel>.tl
+        let file_path = src.join(&rel).with_extension("tl");
+        if file_path.exists() {
+            return Some(ResolvedModule { file_path, item_name: None });
+        }
+
+        // Try src/<rel>/mod.tl
+        let dir_path = src.join(&rel).join("mod.tl");
+        if dir_path.exists() {
+            return Some(ResolvedModule { file_path: dir_path, item_name: None });
+        }
+
+        // Try <root>/<rel>.tl
+        let file_path = pkg_root.join(&rel).with_extension("tl");
+        if file_path.exists() {
+            return Some(ResolvedModule { file_path, item_name: None });
+        }
+
+        // Parent fallback for item within module
+        if remaining.len() > 1 {
+            let parent: PathBuf = remaining[..remaining.len() - 1].iter().collect();
+            let item = remaining.last().unwrap().clone();
+            let parent_file = src.join(&parent).with_extension("tl");
+            if parent_file.exists() {
+                return Some(ResolvedModule { file_path: parent_file, item_name: Some(item) });
+            }
+        }
+
+        None
+    }
 }
 
 fn module_err(message: String) -> TlError {

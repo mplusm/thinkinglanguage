@@ -630,6 +630,10 @@ pub struct Interpreter {
     pub file_path: Option<String>,
     /// Whether we are in test mode (run test blocks)
     pub test_mode: bool,
+    /// Package roots: package_name → source directory
+    pub package_roots: HashMap<String, std::path::PathBuf>,
+    /// Project root (where tl.toml lives)
+    pub project_root: Option<std::path::PathBuf>,
 }
 
 impl Interpreter {
@@ -644,6 +648,8 @@ impl Interpreter {
             importing_files: std::collections::HashSet::new(),
             file_path: None,
             test_mode: false,
+            package_roots: HashMap::new(),
+            project_root: None,
         }
     }
 
@@ -4091,6 +4097,33 @@ impl Interpreter {
             return Ok(dir_path.to_string_lossy().to_string());
         }
 
+        // If multi-segment, try parent as file module
+        if segments.len() > 1 {
+            let parent = &segments[..segments.len() - 1];
+            let parent_path = parent.join("/");
+            let parent_file = base_dir.join(format!("{parent_path}.tl"));
+            if parent_file.exists() {
+                return Ok(parent_file.to_string_lossy().to_string());
+            }
+            let parent_dir = base_dir.join(&parent_path).join("mod.tl");
+            if parent_dir.exists() {
+                return Ok(parent_dir.to_string_lossy().to_string());
+            }
+        }
+
+        // Package import fallback: first segment as package name
+        let pkg_name = &segments[0];
+        let pkg_name_hyphen = pkg_name.replace('_', "-");
+        let pkg_root = self.package_roots.get(pkg_name.as_str())
+            .or_else(|| self.package_roots.get(&pkg_name_hyphen));
+
+        if let Some(root) = pkg_root {
+            let remaining: Vec<&str> = segments[1..].iter().map(|s| s.as_str()).collect();
+            if let Some(path) = resolve_package_file_interp(root, &remaining) {
+                return Ok(path);
+            }
+        }
+
         Err(TlError::Runtime(tl_errors::RuntimeError {
             message: format!("Module not found: {}", segments.join(".")),
             span: None,
@@ -4143,6 +4176,8 @@ impl Interpreter {
         let mut sub_interp = Interpreter::new();
         sub_interp.file_path = Some(resolved.clone());
         sub_interp.importing_files = self.importing_files.clone();
+        sub_interp.package_roots = self.package_roots.clone();
+        sub_interp.project_root = self.project_root.clone();
         sub_interp.execute(&program)?;
         self.importing_files.remove(&resolved);
 
@@ -4721,6 +4756,64 @@ fn runtime_err_s(message: &str) -> TlError {
         span: None,
         stack_trace: vec![],
     })
+}
+
+/// Resolve a file path within a package directory for package imports.
+fn resolve_package_file_interp(pkg_root: &std::path::Path, remaining: &[&str]) -> Option<String> {
+    if remaining.is_empty() {
+        let src = pkg_root.join("src");
+        for entry in &["lib.tl", "mod.tl", "main.tl"] {
+            let p = src.join(entry);
+            if p.exists() {
+                return Some(p.to_string_lossy().to_string());
+            }
+        }
+        for entry in &["mod.tl", "lib.tl"] {
+            let p = pkg_root.join(entry);
+            if p.exists() {
+                return Some(p.to_string_lossy().to_string());
+            }
+        }
+        return None;
+    }
+
+    let rel = remaining.join("/");
+    let src = pkg_root.join("src");
+
+    let file_path = src.join(format!("{rel}.tl"));
+    if file_path.exists() {
+        return Some(file_path.to_string_lossy().to_string());
+    }
+
+    let dir_path = src.join(&rel).join("mod.tl");
+    if dir_path.exists() {
+        return Some(dir_path.to_string_lossy().to_string());
+    }
+
+    let file_path = pkg_root.join(format!("{rel}.tl"));
+    if file_path.exists() {
+        return Some(file_path.to_string_lossy().to_string());
+    }
+
+    let dir_path = pkg_root.join(&rel).join("mod.tl");
+    if dir_path.exists() {
+        return Some(dir_path.to_string_lossy().to_string());
+    }
+
+    if remaining.len() > 1 {
+        let parent = &remaining[..remaining.len() - 1];
+        let parent_rel = parent.join("/");
+        let parent_file = src.join(format!("{parent_rel}.tl"));
+        if parent_file.exists() {
+            return Some(parent_file.to_string_lossy().to_string());
+        }
+        let parent_file = pkg_root.join(format!("{parent_rel}.tl"));
+        if parent_file.exists() {
+            return Some(parent_file.to_string_lossy().to_string());
+        }
+    }
+
+    None
 }
 
 /// Convert serde_json::Value to interpreter Value
@@ -7164,5 +7257,73 @@ print(s.contains("b"))"#);
     fn test_interp_backward_compat_non_generic() {
         let output = run_output("fn add(a, b) { a + b }\nstruct Point { x: int, y: int }\nimpl Point { fn sum(self) { self.x + self.y } }\nlet p = Point { x: 3, y: 4 }\nprint(add(1, 2))\nprint(p.sum())");
         assert_eq!(output, vec!["3", "7"]);
+    }
+
+    // ── Phase 16: Package import resolution tests ──
+
+    #[test]
+    fn test_interp_package_import() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg_dir = tmp.path().join("mylib");
+        std::fs::create_dir_all(pkg_dir.join("src")).unwrap();
+        std::fs::write(pkg_dir.join("src/lib.tl"), "pub fn greet() { print(\"hello from pkg\") }").unwrap();
+        std::fs::write(pkg_dir.join("tl.toml"), "[project]\nname = \"mylib\"\nversion = \"1.0.0\"\n").unwrap();
+
+        let main_file = tmp.path().join("main.tl");
+        std::fs::write(&main_file, "use mylib\ngreet()").unwrap();
+
+        let source = std::fs::read_to_string(&main_file).unwrap();
+        let program = tl_parser::parse(&source).unwrap();
+
+        let mut interp = Interpreter::new();
+        interp.file_path = Some(main_file.to_string_lossy().to_string());
+        interp.package_roots.insert("mylib".into(), pkg_dir);
+        interp.execute(&program).unwrap();
+
+        assert_eq!(interp.output, vec!["hello from pkg"]);
+    }
+
+    #[test]
+    fn test_interp_package_nested() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg_dir = tmp.path().join("utils");
+        std::fs::create_dir_all(pkg_dir.join("src")).unwrap();
+        std::fs::write(pkg_dir.join("src/math.tl"), "pub fn triple(x) { x * 3 }").unwrap();
+        std::fs::write(pkg_dir.join("tl.toml"), "[project]\nname = \"utils\"\nversion = \"1.0.0\"\n").unwrap();
+
+        let main_file = tmp.path().join("main.tl");
+        std::fs::write(&main_file, "use utils.math\nprint(triple(10))").unwrap();
+
+        let source = std::fs::read_to_string(&main_file).unwrap();
+        let program = tl_parser::parse(&source).unwrap();
+
+        let mut interp = Interpreter::new();
+        interp.file_path = Some(main_file.to_string_lossy().to_string());
+        interp.package_roots.insert("utils".into(), pkg_dir);
+        interp.execute(&program).unwrap();
+
+        assert_eq!(interp.output, vec!["30"]);
+    }
+
+    #[test]
+    fn test_interp_package_underscore_to_hyphen() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg_dir = tmp.path().join("my-lib");
+        std::fs::create_dir_all(pkg_dir.join("src")).unwrap();
+        std::fs::write(pkg_dir.join("src/lib.tl"), "pub fn val() { print(77) }").unwrap();
+        std::fs::write(pkg_dir.join("tl.toml"), "[project]\nname = \"my-lib\"\nversion = \"1.0.0\"\n").unwrap();
+
+        let main_file = tmp.path().join("main.tl");
+        std::fs::write(&main_file, "use my_lib\nval()").unwrap();
+
+        let source = std::fs::read_to_string(&main_file).unwrap();
+        let program = tl_parser::parse(&source).unwrap();
+
+        let mut interp = Interpreter::new();
+        interp.file_path = Some(main_file.to_string_lossy().to_string());
+        interp.package_roots.insert("my-lib".into(), pkg_dir);
+        interp.execute(&program).unwrap();
+
+        assert_eq!(interp.output, vec!["77"]);
     }
 }

@@ -1861,6 +1861,33 @@ Deliverables:
   ✅ UserDefinedConnector — user-defined custom connectors
 ```
 
+### Phase 16: Package Manager & Registry ✅
+
+**Goal:** Package management for dependency sharing and reuse
+
+```
+Deliverables:
+  ✅ New crate: tl-package (manifest, version, lockfile, cache, fetch, resolver)
+  ✅ tl.toml [dependencies] — Simple, Detailed (git/path/version) specs
+  ✅ tl.lock — Lock file for reproducible builds
+  ✅ Package cache — ~/.tl/packages/<name>/<version>/
+  ✅ Git dependency fetcher (git clone --depth 1)
+  ✅ Path dependency fetcher (symlink to local)
+  ✅ Registry stub — helpful error messages pointing to git/path
+  ✅ Module resolver integration — `use pkg_name.module` resolves packages
+  ✅ Underscore-to-hyphen name mapping (TL identifiers → package names)
+  ✅ CLI: tl add, tl remove, tl install, tl update
+  ✅ CLI: tl publish, tl search (stubs with helpful messages)
+  ✅ Build integration — tl build auto-installs deps, wires package_roots
+  ✅ tl init generates [dependencies] section
+  ✅ Tab completion: add, remove, install, update, publish, search
+  ✅ Package roots propagated through sub-VM/interpreter imports
+
+New crate: tl-package (manifest.rs, version.rs, lockfile.rs, cache.rs, fetch.rs, resolver.rs)
+New file: crates/tl-cli/src/package.rs
+Tests: 780 existing + 48 new = 828 passed, 1 ignored
+```
+
 ### Future: Advanced Compiler (Deferred)
 
 **Goal:** Production-grade compilation and memory management
