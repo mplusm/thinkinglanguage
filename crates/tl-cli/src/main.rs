@@ -67,6 +67,14 @@ impl TlHelper {
             // Phase 21: Schema Evolution
             "schema_register", "schema_get", "schema_latest", "schema_history",
             "schema_check", "schema_diff", "schema_versions", "schema_fields", "migrate",
+            // Phase 22: Advanced Types
+            "decimal",
+            // Phase 23: Security & Access Control
+            "secret_get", "secret_set", "secret_delete", "secret_list",
+            "check_permission", "mask_email", "mask_phone", "mask_cc", "redact", "hash",
+            // Phase 24: Async/Await
+            "async_read_file", "async_write_file", "async_http_get", "async_http_post",
+            "async_sleep", "select", "async_map", "async_filter", "race_all",
         ].iter().map(|s| String::from(*s)).collect();
         completions.sort();
         TlHelper { completions }
@@ -194,6 +202,12 @@ enum Commands {
         /// Strict mode: require type annotations on function parameters
         #[arg(long)]
         strict: bool,
+        /// Enable sandbox mode (restrict file write, network access)
+        #[arg(long)]
+        sandbox: bool,
+        /// Allow specific connector types in sandbox mode (can be repeated)
+        #[arg(long = "allow-connector")]
+        allow_connectors: Vec<String>,
     },
     /// Start the interactive REPL
     Shell {
@@ -452,7 +466,7 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Run { file, backend, dump_bytecode, no_check, strict }) => run_file(&file, &backend, dump_bytecode, no_check, strict),
+        Some(Commands::Run { file, backend, dump_bytecode, no_check, strict, sandbox, allow_connectors }) => run_file(&file, &backend, dump_bytecode, no_check, strict, sandbox, &allow_connectors),
         Some(Commands::Shell { backend }) => run_repl(&backend),
         Some(Commands::Models { action }) => run_models(action),
         Some(Commands::Deploy { file, target, output }) => run_deploy(&file, &target, &output),
@@ -479,8 +493,8 @@ fn main() {
     }
 }
 
-fn run_file(path: &str, backend: &str, dump_bytecode: bool, no_check: bool, strict: bool) {
-    run_file_with_packages(path, backend, dump_bytecode, no_check, strict, None, None);
+fn run_file(path: &str, backend: &str, dump_bytecode: bool, no_check: bool, strict: bool, sandbox: bool, allow_connectors: &[String]) {
+    run_file_with_packages(path, backend, dump_bytecode, no_check, strict, None, None, sandbox, allow_connectors);
 }
 
 fn run_file_with_packages(
@@ -491,6 +505,8 @@ fn run_file_with_packages(
     strict: bool,
     package_roots: Option<std::collections::HashMap<String, PathBuf>>,
     project_root: Option<PathBuf>,
+    sandbox: bool,
+    allow_connectors: &[String],
 ) {
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
@@ -564,6 +580,14 @@ fn run_file_with_packages(
             };
             let mut vm = Vm::new();
             vm.file_path = Some(path.to_string());
+            if sandbox {
+                use tl_compiler::security::SecurityPolicy;
+                let mut policy = SecurityPolicy::sandbox();
+                for conn in allow_connectors {
+                    policy.allowed_connectors.insert(conn.clone());
+                }
+                vm.security_policy = Some(policy);
+            }
             if let Some(ref roots) = package_roots {
                 vm.package_roots = roots.clone();
             }
@@ -581,6 +605,14 @@ fn run_file_with_packages(
         "interp" => {
             let mut interp = Interpreter::new();
             interp.file_path = Some(path.to_string());
+            if sandbox {
+                use tl_compiler::security::SecurityPolicy;
+                let mut policy = SecurityPolicy::sandbox();
+                for conn in allow_connectors {
+                    policy.allowed_connectors.insert(conn.clone());
+                }
+                interp.security_policy = Some(policy);
+            }
             if let Some(ref roots) = package_roots {
                 interp.package_roots = roots.clone();
             }
@@ -1433,6 +1465,8 @@ fn run_build(backend: &str, dump_bytecode: bool, no_check: bool, strict: bool) {
         strict,
         package_roots,
         Some(project_root.to_path_buf()),
+        false,
+        &[],
     );
 }
 

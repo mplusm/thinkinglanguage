@@ -60,6 +60,10 @@ pub enum VmValue {
     Generator(Arc<Mutex<VmGenerator>>),
     /// A set (unique values)
     Set(Vec<VmValue>),
+    /// Fixed-point decimal value
+    Decimal(rust_decimal::Decimal),
+    /// A secret value (display-redacted)
+    Secret(Arc<str>),
     /// An opaque Python object (feature-gated)
     #[cfg(feature = "python")]
     PyObject(Arc<crate::python::PyObjectWrapper>),
@@ -277,6 +281,7 @@ impl VmValue {
             VmValue::Map(pairs) => !pairs.is_empty(),
             VmValue::Set(items) => !items.is_empty(),
             VmValue::None => false,
+            VmValue::Decimal(d) => !d.is_zero(),
             #[cfg(feature = "python")]
             VmValue::PyObject(_) => true,
             _ => true,
@@ -311,6 +316,8 @@ impl VmValue {
             VmValue::Task(_) => "task",
             VmValue::Channel(_) => "channel",
             VmValue::Generator(_) => "generator",
+            VmValue::Decimal(_) => "decimal",
+            VmValue::Secret(_) => "secret",
             #[cfg(feature = "python")]
             VmValue::PyObject(_) => "pyobject",
         }
@@ -376,6 +383,8 @@ impl fmt::Debug for VmValue {
                 }
                 write!(f, "}}")
             }
+            VmValue::Decimal(d) => write!(f, "Decimal({d})"),
+            VmValue::Secret(_) => write!(f, "Secret(***)"),
             #[cfg(feature = "python")]
             VmValue::PyObject(w) => write!(f, "PyObject({w:?})"),
         }
@@ -461,6 +470,8 @@ impl fmt::Display for VmValue {
                 }
                 write!(f, "}}")
             }
+            VmValue::Decimal(d) => write!(f, "{d}"),
+            VmValue::Secret(_) => write!(f, "***"),
             #[cfg(feature = "python")]
             VmValue::PyObject(w) => write!(f, "{w}"),
         }

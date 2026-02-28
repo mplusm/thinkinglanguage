@@ -26,6 +26,10 @@ fn convert_type_expr_impl(texpr: &TypeExpr, type_params: &[String], env: Option<
             if type_params.contains(name) {
                 Type::TypeParam(name.clone())
             } else if let Some(env) = env {
+                // Check for recursive alias
+                if env.is_resolving_alias(name) {
+                    return Type::Error; // Break cycle
+                }
                 if let Some((alias_params, alias_value)) = env.lookup_type_alias(name) {
                     if alias_params.is_empty() {
                         return convert_type_expr_impl(alias_value, type_params, Some(env));
@@ -68,7 +72,10 @@ fn convert_named(name: &str) -> Type {
         "none" => Type::None,
         "any" => Type::Any,
         "unit" | "void" => Type::Unit,
-        "table" => Type::Table(None),
+        "table" => Type::Table { name: None, columns: None },
+        "tensor" => Type::Tensor,
+        "pipeline" => Type::Pipeline,
+        "decimal" => Type::Decimal,
         other => {
             // Could be a struct or enum name — treated as struct by default.
             // The checker resolves which it actually is.
@@ -101,11 +108,14 @@ fn convert_generic_impl(name: &str, args: &[TypeExpr], type_params: &[String], e
         }
         "task" if args.len() == 1 => Type::Task(Box::new(convert_type_expr_impl(&args[0], type_params, env))),
         "channel" if args.len() == 1 => Type::Channel(Box::new(convert_type_expr_impl(&args[0], type_params, env))),
+        "stream" if args.len() == 1 => {
+            Type::Stream(Box::new(convert_type_expr_impl(&args[0], type_params, env)))
+        }
         "table" if args.len() == 1 => {
             if let TypeExpr::Named(schema) = &args[0] {
-                Type::Table(Some(schema.clone()))
+                Type::Table { name: Some(schema.clone()), columns: None }
             } else {
-                Type::Table(None)
+                Type::Table { name: None, columns: None }
             }
         }
         _ => {

@@ -1425,6 +1425,10 @@ impl Compiler {
                 let idx = self.current().add_constant(Constant::Float(*f));
                 self.current().emit_abx(Op::LoadConst, dest, idx, 0);
             }
+            Expr::Decimal(s) => {
+                let idx = self.current().add_constant(Constant::Decimal(Arc::from(s.as_str())));
+                self.current().emit_abx(Op::LoadConst, dest, idx, 0);
+            }
             Expr::String(s) => {
                 self.compile_string_interpolation(s, dest)?;
             }

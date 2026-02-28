@@ -3376,6 +3376,152 @@ TL draws inspiration from the best ideas in existing languages and tools:
 
 ---
 
+## Phase 22: Advanced Type System
+
+### Decimal Type
+
+Fixed-point decimal for financial and precise arithmetic. Uses the `d` suffix:
+
+```tl
+let price = 9.99d
+let tax = 0.07d
+let total = price + (price * tax)   // 10.6893d — no floating-point error
+
+let x = decimal("123.456")         // Construct from string
+let y = decimal(42)                 // Construct from int
+```
+
+**Promotion rules:**
+- `Decimal + Int → Decimal`
+- `Decimal + Float → Float` (lossy promotion)
+- `Decimal + Decimal → Decimal`
+
+### New Type Variants
+
+| Type | Description |
+|------|-------------|
+| `tensor` | Tensor values (ndarray-backed) |
+| `stream<T>` | Typed stream carrying elements of type T |
+| `pipeline` | Opaque pipeline type |
+| `decimal` | Fixed-point decimal |
+
+### Typed Tables
+
+Tables can carry column schema information:
+
+```tl
+// Type system tracks column types from schema definitions
+schema Users { id: int64, name: string }
+```
+
+### Hindley-Milner Inference
+
+Unification-based type inference with occurs check:
+
+```tl
+// The type checker can now unify type variables
+// and detect recursive type aliases
+type Bad = list<Bad>  // Error: recursive type alias
+```
+
+---
+
+## Phase 23: Security & Access Control
+
+### Secret Vault
+
+Secure credential management with redacted display:
+
+```tl
+secret_set("db_password", "s3cret!")
+let pwd = secret_get("db_password")
+print(pwd)  // Output: ***
+
+// Environment variable fallback: TL_SECRET_<KEY>
+let api_key = secret_get("api_key")  // checks vault, then $TL_SECRET_API_KEY
+
+secret_delete("db_password")
+let keys = secret_list()
+```
+
+### Data Masking
+
+```tl
+mask_email("user@example.com")    // "u***@example.com"
+mask_phone("555-123-4567")        // "***-***-4567"
+mask_cc("4111111111111111")       // "****-****-****-1111"
+
+redact("sensitive", "full")       // "***"
+redact("sensitive", "partial")    // "s***e"
+redact("sensitive", "hash")       // SHA-256 hex
+
+hash("data", "sha256")           // 64-char hex
+hash("data", "sha512")           // 128-char hex
+hash("data", "md5")              // 32-char hex
+```
+
+### Sandbox Mode
+
+```bash
+tl run --sandbox script.tl
+tl run --sandbox --allow-connector postgres script.tl
+```
+
+```tl
+check_permission("network")      // false in sandbox
+check_permission("file_read")    // true in sandbox
+check_permission("file_write")   // false in sandbox
+```
+
+### @sensitive Annotations
+
+```tl
+/// @sensitive
+schema Credentials {
+    password: string
+    api_key: string
+}
+```
+
+---
+
+## Phase 24: Async/Await & Runtime
+
+### Async Functions
+
+```tl
+async fn fetch_data(url) {
+    let response = await async_http_get(url)
+    return response
+}
+```
+
+### Async I/O Builtins
+
+All async builtins require the `async` feature flag:
+
+```tl
+let content = await async_read_file("data.csv")
+await async_write_file("out.txt", content)
+let resp = await async_http_get("https://api.example.com")
+await async_sleep(1000)  // milliseconds
+```
+
+### Async Combinators
+
+```tl
+select(task1, task2)       // First to complete
+race_all(tasks)            // First to complete from list
+async_map(list, fn)        // Concurrent map
+async_filter(list, pred)   // Concurrent filter
+```
+
+### Type Checker
+
+The type checker warns if `await` is used outside of an `async fn`.
+
+---
+
 **End of Specification**
 
 *ThinkingLanguage is a project of ThinkingDBx Private Limited.*

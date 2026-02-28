@@ -68,6 +68,7 @@ pub fn check_program(program: &Program, config: &CheckerConfig) -> CheckResult {
         used_vars: HashSet::new(),
         imported_names: Vec::new(),
         used_imports: HashSet::new(),
+        in_async_fn: false,
     };
 
     // First pass: register all top-level functions and types
@@ -105,6 +106,8 @@ struct TypeChecker<'a> {
     imported_names: Vec<(String, Span)>,
     /// Import names that have been referenced
     used_imports: HashSet<String>,
+    /// Whether the current function is async (for await checking)
+    in_async_fn: bool,
 }
 
 /// Check if a name follows snake_case convention.
@@ -383,7 +386,19 @@ impl<'a> TypeChecker<'a> {
                     self.mark_used_in_expr(&arm.body);
                 }
             }
-            Expr::Await(inner) | Expr::Try(inner) => self.mark_used_in_expr(inner),
+            Expr::Await(inner) => {
+                self.mark_used_in_expr(inner);
+                if !self.in_async_fn {
+                    self.warnings.push(TypeError {
+                        message: "await used outside of async function".to_string(),
+                        span: Span::new(0, 0),
+                        expected: None,
+                        found: None,
+                        hint: Some("Use `async fn` to declare an async function".to_string()),
+                    });
+                }
+            }
+            Expr::Try(inner) => self.mark_used_in_expr(inner),
             Expr::Yield(Some(inner)) => self.mark_used_in_expr(inner),
             Expr::NamedArg { value, .. } => self.mark_used_in_expr(value),
             _ => {}
@@ -602,6 +617,14 @@ impl<'a> TypeChecker<'a> {
                     .as_ref()
                     .map(|t| convert_type_expr_with_params(t, type_params));
 
+                // Track async state (Phase 24)
+                let prev_async = self.in_async_fn;
+                if let StmtKind::FnDecl { is_async, .. } = &stmt.kind {
+                    if *is_async {
+                        self.in_async_fn = true;
+                    }
+                }
+
                 // Check body with unreachable code detection
                 self.check_body(body);
 
@@ -609,6 +632,7 @@ impl<'a> TypeChecker<'a> {
                 self.check_unused_vars();
 
                 self.current_fn_return = prev_return;
+                self.in_async_fn = prev_async;
                 self.env.pop_scope();
 
                 // Restore outer unused-var state
@@ -1745,5 +1769,55 @@ mod tests {
         let result = check_program(&program, &config);
         let has_mismatch = result.warnings.iter().any(|w| w.message.contains("return type mismatch"));
         assert!(has_mismatch, "Expected return type mismatch warning, got: {:?}", result.warnings);
+    }
+
+    // ── Phase 22-24 Checker Tests ──────────────────────────────────
+
+    #[test]
+    fn test_checker_decimal_type_annotation() {
+        let src = "let _x: decimal = 1.0d";
+        let program = tl_parser::parse(src).unwrap();
+        let config = CheckerConfig::default();
+        let result = check_program(&program, &config);
+        assert!(!result.has_errors(), "Decimal type annotation should be valid: {:?}", result.errors);
+    }
+
+    #[test]
+    fn test_checker_async_fn_parses() {
+        let src = "async fn _fetch() { return 42 }";
+        let program = tl_parser::parse(src).unwrap();
+        let config = CheckerConfig::default();
+        let result = check_program(&program, &config);
+        assert!(!result.has_errors(), "async fn should type-check without errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn test_checker_await_outside_async_warns() {
+        let src = r#"
+fn _sync_fn() {
+    let _t = spawn(() => 42)
+    let _x = await _t
+}
+"#;
+        let program = tl_parser::parse(src).unwrap();
+        let config = CheckerConfig::default();
+        let result = check_program(&program, &config);
+        let has_await_warn = result.warnings.iter().any(|w| w.message.contains("await") && w.message.contains("async"));
+        assert!(has_await_warn, "Expected await-outside-async warning, got: {:?}", result.warnings);
+    }
+
+    #[test]
+    fn test_checker_await_inside_async_no_warn() {
+        let src = r#"
+async fn _async_fn() {
+    let _t = spawn(() => 42)
+    let _x = await _t
+}
+"#;
+        let program = tl_parser::parse(src).unwrap();
+        let config = CheckerConfig::default();
+        let result = check_program(&program, &config);
+        let has_await_warn = result.warnings.iter().any(|w| w.message.contains("await") && w.message.contains("async"));
+        assert!(!has_await_warn, "Should not warn about await inside async fn, but got: {:?}", result.warnings);
     }
 }

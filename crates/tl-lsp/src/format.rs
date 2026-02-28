@@ -133,9 +133,10 @@ impl Formatter {
                 self.output.push_str(&self.format_expr(value));
                 self.output.push('\n');
             }
-            StmtKind::FnDecl { name, type_params, params, return_type, bounds, body, is_generator: _, is_public } => {
+            StmtKind::FnDecl { name, type_params, params, return_type, bounds, body, is_generator: _, is_public, is_async } => {
                 self.push_indent();
                 if *is_public { self.output.push_str("pub "); }
+                if *is_async { self.output.push_str("async "); }
                 self.output.push_str("fn ");
                 self.output.push_str(name);
                 if !type_params.is_empty() {
@@ -635,6 +636,7 @@ impl Formatter {
             Expr::String(s) => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
             Expr::Bool(b) => b.to_string(),
             Expr::None => "none".to_string(),
+            Expr::Decimal(s) => format!("{s}d"),
             Expr::Ident(name) => name.clone(),
             Expr::BinOp { left, op, right } => {
                 format!("{} {} {}", self.format_expr(left), op, self.format_expr(right))

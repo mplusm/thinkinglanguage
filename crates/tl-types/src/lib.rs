@@ -8,6 +8,7 @@ pub mod checker;
 pub mod convert;
 pub mod infer;
 
+use std::collections::HashMap;
 use std::fmt;
 
 /// Internal type representation used by the type checker.
@@ -24,6 +25,8 @@ pub enum Type {
     String,
     Bool,
     None,
+    /// Fixed-point decimal for financial data
+    Decimal,
     /// Composite types
     List(Box<Type>),
     Map(Box<Type>),
@@ -41,14 +44,23 @@ pub enum Type {
     Struct(std::string::String),
     /// Named enum type
     Enum(std::string::String),
-    /// Table (optional schema name)
-    Table(Option<std::string::String>),
+    /// Table with optional schema name and typed columns
+    Table {
+        name: Option<std::string::String>,
+        columns: Option<Vec<(std::string::String, Type)>>,
+    },
     /// Generator yielding T
     Generator(Box<Type>),
     /// Task returning T
     Task(Box<Type>),
     /// Channel carrying T
     Channel(Box<Type>),
+    /// Tensor type (shape is runtime-only)
+    Tensor,
+    /// Typed stream carrying elements of type T
+    Stream(Box<Type>),
+    /// Opaque pipeline type
+    Pipeline,
     /// Type parameter (generic): T, U, etc.
     TypeParam(std::string::String),
     /// Inference variable (unresolved)
@@ -69,6 +81,7 @@ impl fmt::Display for Type {
             Type::String => write!(f, "string"),
             Type::Bool => write!(f, "bool"),
             Type::None => write!(f, "none"),
+            Type::Decimal => write!(f, "decimal"),
             Type::List(t) => write!(f, "list<{t}>"),
             Type::Map(t) => write!(f, "map<{t}>"),
             Type::Set(t) => write!(f, "set<{t}>"),
@@ -86,11 +99,14 @@ impl fmt::Display for Type {
             }
             Type::Struct(name) => write!(f, "{name}"),
             Type::Enum(name) => write!(f, "{name}"),
-            Type::Table(Some(name)) => write!(f, "table<{name}>"),
-            Type::Table(None) => write!(f, "table"),
+            Type::Table { name: Some(name), .. } => write!(f, "table<{name}>"),
+            Type::Table { name: None, .. } => write!(f, "table"),
             Type::Generator(t) => write!(f, "generator<{t}>"),
             Type::Task(t) => write!(f, "task<{t}>"),
             Type::Channel(t) => write!(f, "channel<{t}>"),
+            Type::Tensor => write!(f, "tensor"),
+            Type::Stream(t) => write!(f, "stream<{t}>"),
+            Type::Pipeline => write!(f, "pipeline"),
             Type::TypeParam(name) => write!(f, "{name}"),
             Type::Var(id) => write!(f, "?T{id}"),
             Type::PyObject => write!(f, "pyobject"),
@@ -122,6 +138,10 @@ pub struct TypeEnv {
     trait_impls: std::collections::HashMap<(std::string::String, std::string::String), Vec<std::string::String>>,
     /// Type aliases: name -> (type_params, TypeExpr)
     type_aliases: std::collections::HashMap<std::string::String, (Vec<std::string::String>, tl_ast::TypeExpr)>,
+    /// Sensitive field annotations: type_name -> [(field_name, annotation)]
+    sensitive_fields: std::collections::HashMap<std::string::String, Vec<(std::string::String, std::string::String)>>,
+    /// Currently resolving aliases (cycle detection)
+    resolving_aliases: std::collections::HashSet<std::string::String>,
     /// Next inference variable ID
     next_var: u32,
 }
@@ -149,6 +169,8 @@ impl TypeEnv {
             traits: std::collections::HashMap::new(),
             trait_impls: std::collections::HashMap::new(),
             type_aliases: std::collections::HashMap::new(),
+            sensitive_fields: std::collections::HashMap::new(),
+            resolving_aliases: std::collections::HashSet::new(),
             next_var: 0,
         };
         env.register_builtin_traits();
@@ -285,6 +307,42 @@ impl TypeEnv {
         self.type_aliases.get(name)
     }
 
+    /// Check if an alias is currently being resolved (cycle detection).
+    pub fn is_resolving_alias(&self, name: &str) -> bool {
+        self.resolving_aliases.contains(name)
+    }
+
+    /// Mark an alias as being resolved.
+    pub fn start_resolving_alias(&mut self, name: std::string::String) {
+        self.resolving_aliases.insert(name);
+    }
+
+    /// Unmark an alias after resolution.
+    pub fn stop_resolving_alias(&mut self, name: &str) {
+        self.resolving_aliases.remove(name);
+    }
+
+    /// Register a sensitive field annotation.
+    pub fn register_sensitive_field(&mut self, type_name: std::string::String, field_name: std::string::String, annotation: std::string::String) {
+        self.sensitive_fields
+            .entry(type_name)
+            .or_default()
+            .push((field_name, annotation));
+    }
+
+    /// Check if a field is annotated as sensitive.
+    pub fn is_field_sensitive(&self, type_name: &str, field_name: &str) -> bool {
+        self.sensitive_fields
+            .get(type_name)
+            .map(|fields| fields.iter().any(|(f, _)| f == field_name))
+            .unwrap_or(false)
+    }
+
+    /// Get sensitive annotations for a type's field.
+    pub fn get_field_annotations(&self, type_name: &str) -> Option<&Vec<(std::string::String, std::string::String)>> {
+        self.sensitive_fields.get(type_name)
+    }
+
     pub fn register_trait_impl(
         &mut self,
         trait_name: std::string::String,
@@ -311,14 +369,14 @@ impl TypeEnv {
         }
         // Check built-in trait implementations
         match trait_name {
-            "Numeric" => matches!(ty, Type::Int | Type::Float),
-            "Comparable" => matches!(ty, Type::Int | Type::Float | Type::String)
+            "Numeric" => matches!(ty, Type::Int | Type::Float | Type::Decimal),
+            "Comparable" => matches!(ty, Type::Int | Type::Float | Type::String | Type::Decimal)
                 || self.type_satisfies_trait(ty, "Numeric"),
-            "Hashable" => matches!(ty, Type::Int | Type::Float | Type::String | Type::Bool)
+            "Hashable" => matches!(ty, Type::Int | Type::Float | Type::String | Type::Bool | Type::Decimal)
                 || self.type_satisfies_trait(ty, "Comparable"),
             "Displayable" => matches!(
                 ty,
-                Type::Int | Type::Float | Type::String | Type::Bool | Type::None
+                Type::Int | Type::Float | Type::String | Type::Bool | Type::None | Type::Decimal
             ),
             "Default" => matches!(
                 ty,
@@ -338,6 +396,7 @@ impl TypeEnv {
                     | Type::String
                     | Type::Bool
                     | Type::None
+                    | Type::Decimal
                     | Type::Struct(_)
             ),
             _ => {
@@ -381,6 +440,14 @@ pub fn is_compatible(expected: &Type, found: &Type) -> bool {
     if matches!(expected, Type::Float) && matches!(found, Type::Int) {
         return true;
     }
+    // decimal promotes to float
+    if matches!(expected, Type::Float) && matches!(found, Type::Decimal) {
+        return true;
+    }
+    // int promotes to decimal
+    if matches!(expected, Type::Decimal) && matches!(found, Type::Int) {
+        return true;
+    }
     // none is compatible with option<T>
     if matches!(found, Type::None) && matches!(expected, Type::Option(_)) {
         return true;
@@ -403,6 +470,22 @@ pub fn is_compatible(expected: &Type, found: &Type) -> bool {
         (Type::Generator(a), Type::Generator(b)) => is_compatible(a, b),
         (Type::Task(a), Type::Task(b)) => is_compatible(a, b),
         (Type::Channel(a), Type::Channel(b)) => is_compatible(a, b),
+        (Type::Stream(a), Type::Stream(b)) => is_compatible(a, b),
+        // Tables: None columns = compatible with any columns
+        (Type::Table { name: n1, columns: c1 }, Type::Table { name: n2, columns: c2 }) => {
+            let name_ok = match (n1, n2) {
+                (Some(a), Some(b)) => a == b,
+                _ => true,
+            };
+            let cols_ok = match (c1, c2) {
+                (None, _) | (_, None) => true,
+                (Some(a), Some(b)) => {
+                    a.len() == b.len()
+                        && a.iter().zip(b.iter()).all(|((n1, t1), (n2, t2))| n1 == n2 && is_compatible(t1, t2))
+                }
+            };
+            name_ok && cols_ok
+        }
         (
             Type::Function {
                 params: p1,
@@ -418,6 +501,166 @@ pub fn is_compatible(expected: &Type, found: &Type) -> bool {
                 && is_compatible(r1, r2)
         }
         _ => false,
+    }
+}
+
+/// A substitution mapping inference variables to concrete types.
+#[derive(Debug, Clone, Default)]
+pub struct Substitution {
+    pub mappings: HashMap<u32, Type>,
+}
+
+impl Substitution {
+    pub fn new() -> Self {
+        Self { mappings: HashMap::new() }
+    }
+
+    /// Compose this substitution with another.
+    pub fn compose(&mut self, other: &Substitution) {
+        // Apply other to all existing mappings
+        for ty in self.mappings.values_mut() {
+            *ty = apply_substitution(ty, other);
+        }
+        // Add new mappings from other
+        for (k, v) in &other.mappings {
+            self.mappings.entry(*k).or_insert_with(|| v.clone());
+        }
+    }
+}
+
+/// Apply a substitution to a type, replacing Var(id) with mapped types.
+pub fn apply_substitution(ty: &Type, subst: &Substitution) -> Type {
+    match ty {
+        Type::Var(id) => {
+            if let Some(replacement) = subst.mappings.get(id) {
+                apply_substitution(replacement, subst)
+            } else {
+                ty.clone()
+            }
+        }
+        Type::List(inner) => Type::List(Box::new(apply_substitution(inner, subst))),
+        Type::Map(inner) => Type::Map(Box::new(apply_substitution(inner, subst))),
+        Type::Set(inner) => Type::Set(Box::new(apply_substitution(inner, subst))),
+        Type::Option(inner) => Type::Option(Box::new(apply_substitution(inner, subst))),
+        Type::Result(ok, err) => Type::Result(
+            Box::new(apply_substitution(ok, subst)),
+            Box::new(apply_substitution(err, subst)),
+        ),
+        Type::Generator(inner) => Type::Generator(Box::new(apply_substitution(inner, subst))),
+        Type::Task(inner) => Type::Task(Box::new(apply_substitution(inner, subst))),
+        Type::Channel(inner) => Type::Channel(Box::new(apply_substitution(inner, subst))),
+        Type::Stream(inner) => Type::Stream(Box::new(apply_substitution(inner, subst))),
+        Type::Function { params, ret } => Type::Function {
+            params: params.iter().map(|p| apply_substitution(p, subst)).collect(),
+            ret: Box::new(apply_substitution(ret, subst)),
+        },
+        _ => ty.clone(),
+    }
+}
+
+/// Occurs check: does Var(id) appear in ty?
+fn occurs_in(id: u32, ty: &Type) -> bool {
+    match ty {
+        Type::Var(v) => *v == id,
+        Type::List(inner) | Type::Map(inner) | Type::Set(inner) | Type::Option(inner)
+        | Type::Generator(inner) | Type::Task(inner) | Type::Channel(inner)
+        | Type::Stream(inner) => occurs_in(id, inner),
+        Type::Result(ok, err) => occurs_in(id, ok) || occurs_in(id, err),
+        Type::Function { params, ret } => {
+            params.iter().any(|p| occurs_in(id, p)) || occurs_in(id, ret)
+        }
+        _ => false,
+    }
+}
+
+/// Unify two types, producing a substitution or an error.
+pub fn unify(a: &Type, b: &Type) -> Result<Substitution, std::string::String> {
+    // Any produces no constraint
+    if matches!(a, Type::Any) || matches!(b, Type::Any) {
+        return Ok(Substitution::new());
+    }
+    // Error suppresses
+    if matches!(a, Type::Error) || matches!(b, Type::Error) {
+        return Ok(Substitution::new());
+    }
+    // TypeParam is type-erased
+    if matches!(a, Type::TypeParam(_)) || matches!(b, Type::TypeParam(_)) {
+        return Ok(Substitution::new());
+    }
+    // Var unification
+    if let Type::Var(id) = a {
+        if occurs_in(*id, b) {
+            return Err(format!("infinite type: ?T{id} occurs in {b}"));
+        }
+        let mut s = Substitution::new();
+        s.mappings.insert(*id, b.clone());
+        return Ok(s);
+    }
+    if let Type::Var(id) = b {
+        if occurs_in(*id, a) {
+            return Err(format!("infinite type: ?T{id} occurs in {a}"));
+        }
+        let mut s = Substitution::new();
+        s.mappings.insert(*id, a.clone());
+        return Ok(s);
+    }
+    // Same type
+    if a == b {
+        return Ok(Substitution::new());
+    }
+    // int promotes to float
+    if matches!(a, Type::Float) && matches!(b, Type::Int) {
+        return Ok(Substitution::new());
+    }
+    if matches!(a, Type::Int) && matches!(b, Type::Float) {
+        return Ok(Substitution::new());
+    }
+    // Decimal promotions
+    if matches!(a, Type::Float) && matches!(b, Type::Decimal) {
+        return Ok(Substitution::new());
+    }
+    if matches!(a, Type::Decimal) && matches!(b, Type::Int) {
+        return Ok(Substitution::new());
+    }
+    // Structural recursion
+    match (a, b) {
+        (Type::List(a_inner), Type::List(b_inner)) => unify(a_inner, b_inner),
+        (Type::Map(a_inner), Type::Map(b_inner)) => unify(a_inner, b_inner),
+        (Type::Set(a_inner), Type::Set(b_inner)) => unify(a_inner, b_inner),
+        (Type::Option(a_inner), Type::Option(b_inner)) => unify(a_inner, b_inner),
+        (Type::Generator(a_inner), Type::Generator(b_inner)) => unify(a_inner, b_inner),
+        (Type::Task(a_inner), Type::Task(b_inner)) => unify(a_inner, b_inner),
+        (Type::Channel(a_inner), Type::Channel(b_inner)) => unify(a_inner, b_inner),
+        (Type::Stream(a_inner), Type::Stream(b_inner)) => unify(a_inner, b_inner),
+        (Type::Result(ok1, err1), Type::Result(ok2, err2)) => {
+            let mut s = unify(ok1, ok2)?;
+            let s2 = unify(
+                &apply_substitution(err1, &s),
+                &apply_substitution(err2, &s),
+            )?;
+            s.compose(&s2);
+            Ok(s)
+        }
+        (Type::Function { params: p1, ret: r1 }, Type::Function { params: p2, ret: r2 }) => {
+            if p1.len() != p2.len() {
+                return Err(format!("function arity mismatch: {} vs {}", p1.len(), p2.len()));
+            }
+            let mut s = Substitution::new();
+            for (a_p, b_p) in p1.iter().zip(p2.iter()) {
+                let s2 = unify(
+                    &apply_substitution(a_p, &s),
+                    &apply_substitution(b_p, &s),
+                )?;
+                s.compose(&s2);
+            }
+            let s2 = unify(
+                &apply_substitution(r1, &s),
+                &apply_substitution(r2, &s),
+            )?;
+            s.compose(&s2);
+            Ok(s)
+        }
+        _ => Err(format!("cannot unify `{a}` with `{b}`")),
     }
 }
 
@@ -508,5 +751,174 @@ mod tests {
     fn test_compatibility_error_poison() {
         assert!(is_compatible(&Type::Error, &Type::Int));
         assert!(is_compatible(&Type::Int, &Type::Error));
+    }
+
+    // ── Phase 22: Advanced Type System ──────────────────────
+
+    #[test]
+    fn test_new_type_display() {
+        assert_eq!(Type::Decimal.to_string(), "decimal");
+        assert_eq!(Type::Tensor.to_string(), "tensor");
+        assert_eq!(Type::Pipeline.to_string(), "pipeline");
+        assert_eq!(Type::Stream(Box::new(Type::Int)).to_string(), "stream<int>");
+        assert_eq!(
+            Type::Table { name: Some("User".into()), columns: None }.to_string(),
+            "table<User>"
+        );
+        assert_eq!(
+            Type::Table { name: None, columns: None }.to_string(),
+            "table"
+        );
+    }
+
+    #[test]
+    fn test_decimal_compatibility() {
+        // Decimal promotes to Float
+        assert!(is_compatible(&Type::Float, &Type::Decimal));
+        // Int promotes to Decimal
+        assert!(is_compatible(&Type::Decimal, &Type::Int));
+        // Decimal == Decimal
+        assert!(is_compatible(&Type::Decimal, &Type::Decimal));
+        // Decimal does NOT promote to Int
+        assert!(!is_compatible(&Type::Int, &Type::Decimal));
+    }
+
+    #[test]
+    fn test_stream_compatibility() {
+        assert!(is_compatible(
+            &Type::Stream(Box::new(Type::Int)),
+            &Type::Stream(Box::new(Type::Int))
+        ));
+        assert!(!is_compatible(
+            &Type::Stream(Box::new(Type::Int)),
+            &Type::Stream(Box::new(Type::String))
+        ));
+        // Any element type is compatible
+        assert!(is_compatible(
+            &Type::Stream(Box::new(Type::Any)),
+            &Type::Stream(Box::new(Type::Int))
+        ));
+    }
+
+    #[test]
+    fn test_table_column_compatibility() {
+        let t1 = Type::Table {
+            name: None,
+            columns: Some(vec![("id".into(), Type::Int), ("name".into(), Type::String)]),
+        };
+        let t2 = Type::Table {
+            name: None,
+            columns: Some(vec![("id".into(), Type::Int), ("name".into(), Type::String)]),
+        };
+        assert!(is_compatible(&t1, &t2));
+
+        // None columns = compatible with any
+        let t3 = Type::Table { name: None, columns: None };
+        assert!(is_compatible(&t1, &t3));
+        assert!(is_compatible(&t3, &t1));
+    }
+
+    #[test]
+    fn test_decimal_satisfies_traits() {
+        let env = TypeEnv::new();
+        assert!(env.type_satisfies_trait(&Type::Decimal, "Numeric"));
+        assert!(env.type_satisfies_trait(&Type::Decimal, "Comparable"));
+        assert!(env.type_satisfies_trait(&Type::Decimal, "Hashable"));
+        assert!(env.type_satisfies_trait(&Type::Decimal, "Displayable"));
+        assert!(env.type_satisfies_trait(&Type::Decimal, "Serializable"));
+    }
+
+    #[test]
+    fn test_unify_basic() {
+        // Same types unify
+        assert!(unify(&Type::Int, &Type::Int).is_ok());
+        // Any unifies with everything
+        assert!(unify(&Type::Any, &Type::Int).is_ok());
+        // Different concrete types fail
+        assert!(unify(&Type::Int, &Type::String).is_err());
+    }
+
+    #[test]
+    fn test_unify_var() {
+        let s = unify(&Type::Var(0), &Type::Int).unwrap();
+        assert_eq!(s.mappings.get(&0), Some(&Type::Int));
+    }
+
+    #[test]
+    fn test_unify_occurs_check() {
+        // Var(0) cannot unify with List(Var(0)) — infinite type
+        let result = unify(&Type::Var(0), &Type::List(Box::new(Type::Var(0))));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_unify_structural() {
+        let s = unify(
+            &Type::List(Box::new(Type::Var(0))),
+            &Type::List(Box::new(Type::Int)),
+        ).unwrap();
+        assert_eq!(s.mappings.get(&0), Some(&Type::Int));
+    }
+
+    #[test]
+    fn test_unify_function() {
+        let s = unify(
+            &Type::Function { params: vec![Type::Var(0)], ret: Box::new(Type::Var(1)) },
+            &Type::Function { params: vec![Type::Int], ret: Box::new(Type::String) },
+        ).unwrap();
+        assert_eq!(s.mappings.get(&0), Some(&Type::Int));
+        assert_eq!(s.mappings.get(&1), Some(&Type::String));
+    }
+
+    #[test]
+    fn test_apply_substitution() {
+        let mut s = Substitution::new();
+        s.mappings.insert(0, Type::Int);
+        s.mappings.insert(1, Type::String);
+
+        let ty = Type::List(Box::new(Type::Var(0)));
+        assert_eq!(apply_substitution(&ty, &s), Type::List(Box::new(Type::Int)));
+
+        let ty2 = Type::Function {
+            params: vec![Type::Var(0)],
+            ret: Box::new(Type::Var(1)),
+        };
+        assert_eq!(
+            apply_substitution(&ty2, &s),
+            Type::Function { params: vec![Type::Int], ret: Box::new(Type::String) }
+        );
+    }
+
+    #[test]
+    fn test_sensitive_fields() {
+        let mut env = TypeEnv::new();
+        env.register_sensitive_field("User".into(), "ssn".into(), "sensitive".into());
+        env.register_sensitive_field("User".into(), "email".into(), "pii".into());
+
+        assert!(env.is_field_sensitive("User", "ssn"));
+        assert!(env.is_field_sensitive("User", "email"));
+        assert!(!env.is_field_sensitive("User", "name"));
+        assert!(!env.is_field_sensitive("Other", "ssn"));
+    }
+
+    #[test]
+    fn test_resolving_aliases_cycle_detection() {
+        let mut env = TypeEnv::new();
+        assert!(!env.is_resolving_alias("Foo"));
+        env.start_resolving_alias("Foo".into());
+        assert!(env.is_resolving_alias("Foo"));
+        env.stop_resolving_alias("Foo");
+        assert!(!env.is_resolving_alias("Foo"));
+    }
+
+    #[test]
+    fn test_unify_promotions() {
+        // int <-> float is OK
+        assert!(unify(&Type::Float, &Type::Int).is_ok());
+        assert!(unify(&Type::Int, &Type::Float).is_ok());
+        // decimal <-> float
+        assert!(unify(&Type::Float, &Type::Decimal).is_ok());
+        // int -> decimal
+        assert!(unify(&Type::Decimal, &Type::Int).is_ok());
     }
 }

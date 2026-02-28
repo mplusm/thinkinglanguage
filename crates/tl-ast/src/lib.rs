@@ -74,6 +74,7 @@ pub enum StmtKind {
         body: Vec<Stmt>,
         is_generator: bool,
         is_public: bool,
+        is_async: bool,
     },
 
     /// Expression statement (e.g., a function call on its own line)
@@ -362,6 +363,8 @@ pub enum Expr {
     String(String),
     Bool(bool),
     None,
+    /// Decimal literal: `3.14d` — fixed-point decimal
+    Decimal(String),
 
     /// Variable reference
     Ident(String),
@@ -537,6 +540,15 @@ pub struct Param {
     pub type_ann: Option<TypeExpr>,
 }
 
+/// Annotation on schema/struct fields
+#[derive(Debug, Clone, PartialEq)]
+pub enum Annotation {
+    Sensitive,
+    Redact,
+    Pii,
+    Custom(String),
+}
+
 /// Schema field definition
 #[derive(Debug, Clone)]
 pub struct SchemaField {
@@ -546,6 +558,8 @@ pub struct SchemaField {
     pub doc_comment: Option<String>,
     /// Default value for added fields (used in migrations)
     pub default_value: Option<Expr>,
+    /// Security annotations (@sensitive, @redact, @pii)
+    pub annotations: Vec<Annotation>,
 }
 
 /// Type expressions (Phase 0: basic types only)

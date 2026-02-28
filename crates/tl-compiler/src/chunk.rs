@@ -335,6 +335,7 @@ impl Prototype {
                 let name = if p.name.is_empty() { "<anon>" } else { &p.name };
                 format!("fn {name}")
             }
+            Constant::Decimal(s) => format!("{s}d"),
             Constant::AstExpr(_) => "<ast_expr>".to_string(),
             Constant::AstExprList(_) => "<ast_expr_list>".to_string(),
         }
@@ -347,6 +348,8 @@ pub enum Constant {
     Int(i64),
     Float(f64),
     String(Arc<str>),
+    /// Decimal literal string — parsed to rust_decimal::Decimal at runtime
+    Decimal(Arc<str>),
     /// A nested function prototype
     Prototype(Arc<Prototype>),
     /// Raw AST expression — used for table pipe operations
@@ -535,6 +538,29 @@ pub enum BuiltinId {
     SchemaApplyMigration = 150,
     SchemaVersions = 151,
     SchemaFields = 152,
+    // Phase 22: Advanced Types
+    Decimal = 153,
+    // Phase 23: Security & Access Control
+    SecretGet = 154,
+    SecretSet = 155,
+    SecretDelete = 156,
+    SecretList = 157,
+    CheckPermission = 158,
+    MaskEmail = 159,
+    MaskPhone = 160,
+    MaskCreditCard = 161,
+    Redact = 162,
+    Hash = 163,
+    // Phase 24: Async/Await
+    AsyncReadFile = 164,
+    AsyncWriteFile = 165,
+    AsyncHttpGet = 166,
+    AsyncHttpPost = 167,
+    AsyncSleep = 168,
+    Select = 169,
+    AsyncMap = 170,
+    AsyncFilter = 171,
+    RaceAll = 172,
 }
 
 impl BuiltinId {
@@ -696,6 +722,29 @@ impl BuiltinId {
             "schema_apply_migration" => Some(BuiltinId::SchemaApplyMigration),
             "schema_versions" => Some(BuiltinId::SchemaVersions),
             "schema_fields" => Some(BuiltinId::SchemaFields),
+            // Phase 22: Advanced Types
+            "decimal" => Some(BuiltinId::Decimal),
+            // Phase 23: Security
+            "secret_get" => Some(BuiltinId::SecretGet),
+            "secret_set" => Some(BuiltinId::SecretSet),
+            "secret_delete" => Some(BuiltinId::SecretDelete),
+            "secret_list" => Some(BuiltinId::SecretList),
+            "check_permission" => Some(BuiltinId::CheckPermission),
+            "mask_email" => Some(BuiltinId::MaskEmail),
+            "mask_phone" => Some(BuiltinId::MaskPhone),
+            "mask_cc" => Some(BuiltinId::MaskCreditCard),
+            "redact" => Some(BuiltinId::Redact),
+            "hash" => Some(BuiltinId::Hash),
+            // Phase 24: Async
+            "async_read_file" => Some(BuiltinId::AsyncReadFile),
+            "async_write_file" => Some(BuiltinId::AsyncWriteFile),
+            "async_http_get" => Some(BuiltinId::AsyncHttpGet),
+            "async_http_post" => Some(BuiltinId::AsyncHttpPost),
+            "async_sleep" => Some(BuiltinId::AsyncSleep),
+            "select" => Some(BuiltinId::Select),
+            "async_map" => Some(BuiltinId::AsyncMap),
+            "async_filter" => Some(BuiltinId::AsyncFilter),
+            "race_all" => Some(BuiltinId::RaceAll),
             _ => None,
         }
     }
@@ -858,6 +907,29 @@ impl BuiltinId {
             BuiltinId::SchemaApplyMigration => "schema_apply_migration",
             BuiltinId::SchemaVersions => "schema_versions",
             BuiltinId::SchemaFields => "schema_fields",
+            // Phase 22
+            BuiltinId::Decimal => "decimal",
+            // Phase 23
+            BuiltinId::SecretGet => "secret_get",
+            BuiltinId::SecretSet => "secret_set",
+            BuiltinId::SecretDelete => "secret_delete",
+            BuiltinId::SecretList => "secret_list",
+            BuiltinId::CheckPermission => "check_permission",
+            BuiltinId::MaskEmail => "mask_email",
+            BuiltinId::MaskPhone => "mask_phone",
+            BuiltinId::MaskCreditCard => "mask_cc",
+            BuiltinId::Redact => "redact",
+            BuiltinId::Hash => "hash",
+            // Phase 24
+            BuiltinId::AsyncReadFile => "async_read_file",
+            BuiltinId::AsyncWriteFile => "async_write_file",
+            BuiltinId::AsyncHttpGet => "async_http_get",
+            BuiltinId::AsyncHttpPost => "async_http_post",
+            BuiltinId::AsyncSleep => "async_sleep",
+            BuiltinId::Select => "select",
+            BuiltinId::AsyncMap => "async_map",
+            BuiltinId::AsyncFilter => "async_filter",
+            BuiltinId::RaceAll => "race_all",
         }
     }
 }

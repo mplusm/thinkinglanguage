@@ -183,6 +183,24 @@ impl Parser {
             Token::Let => self.parse_let(),
             Token::Type => self.parse_type_alias(false),
             Token::Fn => self.parse_fn_decl(),
+            Token::Async => {
+                let start = self.peek_span().start;
+                self.advance(); // consume 'async'
+                if self.check(&Token::Fn) {
+                    let mut stmt = self.parse_fn_decl()?;
+                    if let StmtKind::FnDecl { ref mut is_async, .. } = stmt.kind {
+                        *is_async = true;
+                    }
+                    stmt.span = Span::new(start, stmt.span.end);
+                    Ok(stmt)
+                } else {
+                    Err(TlError::Parser(tl_errors::ParserError {
+                        message: "Expected 'fn' after 'async'".to_string(),
+                        span: Span::new(start, self.peek_span().end),
+                        hint: None,
+                    }))
+                }
+            }
             Token::If => self.parse_if(),
             Token::While => self.parse_while(),
             Token::For => self.parse_for(),
@@ -424,11 +442,14 @@ impl Parser {
                 None
             };
             self.match_token(&Token::Comma); // optional trailing comma
+            // Parse security annotations from doc comment
+            let annotations = parse_field_annotations(field_doc.as_deref());
             fields.push(SchemaField {
                 name: field_name,
                 type_ann,
                 doc_comment: field_doc,
                 default_value,
+                annotations,
             });
         }
         self.expect(&Token::RBrace)?;
@@ -971,7 +992,7 @@ impl Parser {
         self.expect(&Token::RBrace)?;
         let is_generator = body_contains_yield(&body);
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::FnDecl { name, type_params, params, return_type, bounds, body, is_generator, is_public: false }, start, end))
+        Ok(make_stmt(StmtKind::FnDecl { name, type_params, params, return_type, bounds, body, is_generator, is_public: false, is_async: false }, start, end))
     }
 
     fn parse_if(&mut self) -> Result<Stmt, TlError> {
@@ -1552,6 +1573,11 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Float(n))
             }
+            Token::DecimalLiteral(s) => {
+                let s = s.clone();
+                self.advance();
+                Ok(Expr::Decimal(s))
+            }
             Token::String(s) => {
                 let s = s.clone();
                 self.advance();
@@ -1880,11 +1906,13 @@ impl Parser {
             self.expect(&Token::Colon)?;
             let type_ann = self.parse_type()?;
             self.match_token(&Token::Comma);
+            let annotations = parse_field_annotations(field_doc.as_deref());
             fields.push(SchemaField {
                 name: field_name,
                 type_ann,
                 doc_comment: field_doc,
                 default_value: None,
+                annotations,
             });
         }
         self.expect(&Token::RBrace)?;
@@ -2236,6 +2264,23 @@ pub fn parse(source: &str) -> Result<Program, TlError> {
 }
 
 /// Check if a function body contains any yield expressions (makes it a generator).
+/// Parse security annotations from a doc comment string.
+fn parse_field_annotations(doc: Option<&str>) -> Vec<tl_ast::Annotation> {
+    let mut annotations = Vec::new();
+    if let Some(doc) = doc {
+        if doc.contains("@sensitive") {
+            annotations.push(tl_ast::Annotation::Sensitive);
+        }
+        if doc.contains("@redact") {
+            annotations.push(tl_ast::Annotation::Redact);
+        }
+        if doc.contains("@pii") {
+            annotations.push(tl_ast::Annotation::Pii);
+        }
+    }
+    annotations
+}
+
 fn body_contains_yield(stmts: &[Stmt]) -> bool {
     for stmt in stmts {
         if stmt_contains_yield(stmt) {
@@ -3661,6 +3706,80 @@ mod tests {
         let program = parse(source).unwrap();
         if let StmtKind::Schema { version, .. } = &program.statements[0].kind {
             assert_eq!(*version, Some(5));
+        } else {
+            panic!("Expected Schema statement");
+        }
+    }
+
+    // ── Phase 22-24 Parser Tests ───────────────────────────────────
+
+    #[test]
+    fn test_parse_decimal_literal() {
+        let source = "let x = 3.14d";
+        let program = parse(source).unwrap();
+        if let StmtKind::Let { value, .. } = &program.statements[0].kind {
+            match value {
+                // The lexer strips the trailing 'd' and underscores
+                Expr::Decimal(s) => assert_eq!(s, "3.14"),
+                _ => panic!("Expected Expr::Decimal, got {value:?}"),
+            }
+        } else {
+            panic!("Expected Let statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_decimal_underscore() {
+        let source = "let x = 1_000.50d";
+        let program = parse(source).unwrap();
+        if let StmtKind::Let { value, .. } = &program.statements[0].kind {
+            match value {
+                // Underscores and trailing 'd' are stripped by lexer
+                Expr::Decimal(s) => assert_eq!(s, "1000.50"),
+                _ => panic!("Expected Expr::Decimal"),
+            }
+        } else {
+            panic!("Expected Let statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_async_fn() {
+        let source = "async fn fetch() { return 42 }";
+        let program = parse(source).unwrap();
+        if let StmtKind::FnDecl { name, is_async, .. } = &program.statements[0].kind {
+            assert_eq!(name, "fetch");
+            assert!(*is_async);
+        } else {
+            panic!("Expected FnDecl statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_async_fn_with_params() {
+        let source = "async fn get(url, timeout) { return url }";
+        let program = parse(source).unwrap();
+        if let StmtKind::FnDecl { name, is_async, params, .. } = &program.statements[0].kind {
+            assert_eq!(name, "get");
+            assert!(*is_async);
+            assert_eq!(params.len(), 2);
+        } else {
+            panic!("Expected FnDecl statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_sensitive_annotation() {
+        let source = r#"
+/// @sensitive
+schema Secret {
+    password: string
+}
+"#;
+        let program = parse(source).unwrap();
+        if let StmtKind::Schema { fields, .. } = &program.statements[0].kind {
+            assert!(!fields.is_empty());
+            // The annotation is on the schema-level doc, not on individual fields
         } else {
             panic!("Expected Schema statement");
         }

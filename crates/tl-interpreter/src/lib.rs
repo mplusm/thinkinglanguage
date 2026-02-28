@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 use tl_ast::*;
 use tl_errors::{RuntimeError, TlError};
+use tl_compiler::security::SecurityPolicy;
 use tl_data::translate::{translate_expr, LocalValue, TranslateContext};
 use tl_data::{
     ArrowDataType, ArrowField, ArrowSchema,
@@ -289,6 +290,10 @@ pub enum Value {
     Channel(Arc<TlChannel>),
     /// A generator (lazy iterator)
     Generator(Arc<TlGenerator>),
+    /// A fixed-point decimal value (Phase 22)
+    Decimal(rust_decimal::Decimal),
+    /// A secret value with redacted display (Phase 23)
+    Secret(String),
     /// An opaque Python object (feature-gated)
     #[cfg(feature = "python")]
     PyObject(Arc<InterpPyObjectWrapper>),
@@ -374,6 +379,8 @@ impl fmt::Display for Value {
             Value::Task(t) => write!(f, "<task {}>", t.id),
             Value::Channel(c) => write!(f, "<channel {}>", c.id),
             Value::Generator(g) => write!(f, "<generator {}>", g.id),
+            Value::Decimal(d) => write!(f, "{d}"),
+            Value::Secret(_) => write!(f, "***"),
             #[cfg(feature = "python")]
             Value::PyObject(w) => write!(f, "{w}"),
         }
@@ -389,6 +396,8 @@ impl Value {
             Value::String(s) => !s.is_empty(),
             Value::List(items) => !items.is_empty(),
             Value::Map(pairs) => !pairs.is_empty(),
+            Value::Decimal(d) => !d.is_zero(),
+            Value::Secret(s) => !s.is_empty(),
             Value::None => false,
             #[cfg(feature = "python")]
             Value::PyObject(_) => true,
@@ -429,6 +438,8 @@ impl Value {
             Value::Task(_) => "task",
             Value::Channel(_) => "channel",
             Value::Generator(_) => "generator",
+            Value::Decimal(_) => "decimal",
+            Value::Secret(_) => "secret",
             #[cfg(feature = "python")]
             Value::PyObject(_) => "pyobject",
         }
@@ -632,6 +643,19 @@ impl Environment {
         global.insert("schema_diff".to_string(), Value::Builtin("schema_diff".to_string()));
         global.insert("schema_versions".to_string(), Value::Builtin("schema_versions".to_string()));
         global.insert("schema_fields".to_string(), Value::Builtin("schema_fields".to_string()));
+        // Phase 22: Advanced Types
+        global.insert("decimal".to_string(), Value::Builtin("decimal".to_string()));
+        // Phase 23: Security & Access Control
+        global.insert("secret_get".to_string(), Value::Builtin("secret_get".to_string()));
+        global.insert("secret_set".to_string(), Value::Builtin("secret_set".to_string()));
+        global.insert("secret_delete".to_string(), Value::Builtin("secret_delete".to_string()));
+        global.insert("secret_list".to_string(), Value::Builtin("secret_list".to_string()));
+        global.insert("check_permission".to_string(), Value::Builtin("check_permission".to_string()));
+        global.insert("mask_email".to_string(), Value::Builtin("mask_email".to_string()));
+        global.insert("mask_phone".to_string(), Value::Builtin("mask_phone".to_string()));
+        global.insert("mask_cc".to_string(), Value::Builtin("mask_cc".to_string()));
+        global.insert("redact".to_string(), Value::Builtin("redact".to_string()));
+        global.insert("hash".to_string(), Value::Builtin("hash".to_string()));
 
         Self {
             scopes: vec![global],
@@ -704,6 +728,10 @@ pub struct Interpreter {
     pub project_root: Option<std::path::PathBuf>,
     /// Schema registry for versioned schemas
     pub schema_registry: tl_compiler::schema::SchemaRegistry,
+    /// Secret vault for credential management (Phase 23)
+    pub secret_vault: HashMap<String, String>,
+    /// Security policy for sandbox mode (Phase 23)
+    pub security_policy: Option<SecurityPolicy>,
 }
 
 impl Interpreter {
@@ -721,6 +749,8 @@ impl Interpreter {
             package_roots: HashMap::new(),
             project_root: None,
             schema_registry: tl_compiler::schema::SchemaRegistry::new(),
+            secret_vault: HashMap::new(),
+            security_policy: None,
         }
     }
 
@@ -1234,6 +1264,14 @@ impl Interpreter {
                 let pat_val = match expr {
                     Expr::Int(n) => Value::Int(*n),
                     Expr::Float(n) => Value::Float(*n),
+                    Expr::Decimal(s) => {
+                        use std::str::FromStr;
+                        let cleaned = s.trim_end_matches('d');
+                        match rust_decimal::Decimal::from_str(cleaned) {
+                            Ok(d) => Value::Decimal(d),
+                            Err(_) => return None,
+                        }
+                    }
                     Expr::String(s) => Value::String(s.clone()),
                     Expr::Bool(b) => Value::Bool(*b),
                     Expr::None => Value::None,
@@ -1350,6 +1388,13 @@ impl Interpreter {
         match expr {
             Expr::Int(n) => Ok(Value::Int(*n)),
             Expr::Float(n) => Ok(Value::Float(*n)),
+            Expr::Decimal(s) => {
+                use std::str::FromStr;
+                let cleaned = s.trim_end_matches('d');
+                let d = rust_decimal::Decimal::from_str(cleaned)
+                    .map_err(|e| runtime_err(format!("Invalid decimal: {e}")))?;
+                Ok(Value::Decimal(d))
+            }
             Expr::String(s) => Ok(Value::String(self.interpolate_string(s)?)),
             Expr::Bool(b) => Ok(Value::Bool(*b)),
             Expr::None => Ok(Value::None),
@@ -1374,6 +1419,7 @@ impl Interpreter {
                     UnaryOp::Neg => match val {
                         Value::Int(n) => Ok(Value::Int(-n)),
                         Value::Float(n) => Ok(Value::Float(-n)),
+                        Value::Decimal(d) => Ok(Value::Decimal(-d)),
                         _ => Err(runtime_err(format!(
                             "Cannot negate {}",
                             val.type_name()
@@ -1853,6 +1899,47 @@ impl Interpreter {
             // Tensor * scalar
             (Value::Tensor(t), Value::Float(s)) | (Value::Float(s), Value::Tensor(t)) if *op == BinOp::Mul => {
                 Ok(Value::Tensor(t.scale(*s)))
+            }
+
+            // Decimal arithmetic (Phase 22)
+            (Value::Decimal(a), Value::Decimal(b)) => match op {
+                BinOp::Add => Ok(Value::Decimal(a + b)),
+                BinOp::Sub => Ok(Value::Decimal(a - b)),
+                BinOp::Mul => Ok(Value::Decimal(a * b)),
+                BinOp::Div => {
+                    if b.is_zero() {
+                        Err(runtime_err("Division by zero".to_string()))
+                    } else {
+                        Ok(Value::Decimal(a / b))
+                    }
+                }
+                BinOp::Eq => Ok(Value::Bool(a == b)),
+                BinOp::Neq => Ok(Value::Bool(a != b)),
+                BinOp::Lt => Ok(Value::Bool(a < b)),
+                BinOp::Gt => Ok(Value::Bool(a > b)),
+                BinOp::Lte => Ok(Value::Bool(a <= b)),
+                BinOp::Gte => Ok(Value::Bool(a >= b)),
+                _ => Err(runtime_err(format!("Unsupported op: decimal {op} decimal"))),
+            },
+            // Decimal + Int -> Decimal
+            (Value::Decimal(a), Value::Int(b)) => {
+                let b_dec = rust_decimal::Decimal::from(*b);
+                self.eval_binop(&Value::Decimal(*a), op, &Value::Decimal(b_dec))
+            }
+            (Value::Int(a), Value::Decimal(b)) => {
+                let a_dec = rust_decimal::Decimal::from(*a);
+                self.eval_binop(&Value::Decimal(a_dec), op, &Value::Decimal(*b))
+            }
+            // Decimal + Float -> Float
+            (Value::Decimal(a), Value::Float(b)) => {
+                use rust_decimal::prelude::ToPrimitive;
+                let a_f = a.to_f64().unwrap_or(0.0);
+                self.eval_binop(&Value::Float(a_f), op, &Value::Float(*b))
+            }
+            (Value::Float(a), Value::Decimal(b)) => {
+                use rust_decimal::prelude::ToPrimitive;
+                let b_f = b.to_f64().unwrap_or(0.0);
+                self.eval_binop(&Value::Float(*a), op, &Value::Float(b_f))
             }
 
             _ => Err(runtime_err(format!(
@@ -4042,6 +4129,155 @@ impl Interpreter {
                 Ok(Value::List(fields.into_iter().map(|(n, t)| Value::String(format!("{}: {}", n, t))).collect()))
             }
 
+            // Phase 22: decimal() builtin
+            "decimal" => {
+                use std::str::FromStr;
+                match args.first() {
+                    Some(Value::String(s)) => {
+                        let cleaned = s.trim_end_matches('d');
+                        let d = rust_decimal::Decimal::from_str(cleaned)
+                            .map_err(|e| runtime_err(format!("Invalid decimal: {e}")))?;
+                        Ok(Value::Decimal(d))
+                    }
+                    Some(Value::Int(n)) => Ok(Value::Decimal(rust_decimal::Decimal::from(*n))),
+                    Some(Value::Float(n)) => {
+                        use rust_decimal::prelude::FromPrimitive;
+                        Ok(Value::Decimal(rust_decimal::Decimal::from_f64(*n).unwrap_or_default()))
+                    }
+                    Some(Value::Decimal(d)) => Ok(Value::Decimal(*d)),
+                    _ => Err(runtime_err_s("decimal() expects a string, int, or float")),
+                }
+            }
+
+            // Phase 23: Secret vault
+            "secret_get" => {
+                let key = match args.first() { Some(Value::String(s)) => s.clone(), _ => return Err(runtime_err_s("secret_get: need key")) };
+                if let Some(val) = self.secret_vault.get(&key) {
+                    Ok(Value::Secret(val.clone()))
+                } else {
+                    // Fallback to env var
+                    let env_key = format!("TL_SECRET_{}", key.to_uppercase());
+                    match std::env::var(&env_key) {
+                        Ok(val) => Ok(Value::Secret(val)),
+                        Err(_) => Ok(Value::None),
+                    }
+                }
+            }
+            "secret_set" => {
+                let key = match args.first() { Some(Value::String(s)) => s.clone(), _ => return Err(runtime_err_s("secret_set: need key")) };
+                let val = match args.get(1) {
+                    Some(Value::String(s)) => s.clone(),
+                    Some(Value::Secret(s)) => s.clone(),
+                    _ => return Err(runtime_err_s("secret_set: need string value")),
+                };
+                self.secret_vault.insert(key, val);
+                Ok(Value::None)
+            }
+            "secret_delete" => {
+                let key = match args.first() { Some(Value::String(s)) => s.clone(), _ => return Err(runtime_err_s("secret_delete: need key")) };
+                self.secret_vault.remove(&key);
+                Ok(Value::None)
+            }
+            "secret_list" => {
+                let keys: Vec<Value> = self.secret_vault.keys().map(|k| Value::String(k.clone())).collect();
+                Ok(Value::List(keys))
+            }
+            "check_permission" => {
+                let perm = match args.first() { Some(Value::String(s)) => s.clone(), _ => return Err(runtime_err_s("check_permission: need permission string")) };
+                let allowed = match &self.security_policy {
+                    Some(policy) => policy.check(&perm),
+                    None => true,
+                };
+                Ok(Value::Bool(allowed))
+            }
+
+            // Phase 23: Data masking
+            "mask_email" => {
+                let email = match args.first() { Some(Value::String(s)) => s.clone(), Some(Value::Secret(s)) => s.clone(), _ => return Err(runtime_err_s("mask_email: need string")) };
+                let masked = if let Some(at_pos) = email.find('@') {
+                    let local = &email[..at_pos];
+                    let domain = &email[at_pos..];
+                    if local.len() <= 1 {
+                        format!("*{domain}")
+                    } else {
+                        format!("{}***{domain}", &local[..1])
+                    }
+                } else {
+                    "***".to_string()
+                };
+                Ok(Value::String(masked))
+            }
+            "mask_phone" => {
+                let phone = match args.first() { Some(Value::String(s)) => s.clone(), Some(Value::Secret(s)) => s.clone(), _ => return Err(runtime_err_s("mask_phone: need string")) };
+                let digits: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
+                if digits.len() >= 4 {
+                    let last4 = &digits[digits.len()-4..];
+                    Ok(Value::String(format!("***-***-{last4}")))
+                } else {
+                    Ok(Value::String("***".to_string()))
+                }
+            }
+            "mask_cc" => {
+                let cc = match args.first() { Some(Value::String(s)) => s.clone(), Some(Value::Secret(s)) => s.clone(), _ => return Err(runtime_err_s("mask_cc: need string")) };
+                let digits: String = cc.chars().filter(|c| c.is_ascii_digit()).collect();
+                if digits.len() >= 4 {
+                    let last4 = &digits[digits.len()-4..];
+                    Ok(Value::String(format!("****-****-****-{last4}")))
+                } else {
+                    Ok(Value::String("****-****-****-****".to_string()))
+                }
+            }
+            "redact" => {
+                let val = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    Some(Value::Secret(s)) => s.clone(),
+                    Some(v) => format!("{v}"),
+                    None => return Err(runtime_err_s("redact: need value")),
+                };
+                let policy = match args.get(1) { Some(Value::String(s)) => s.as_str(), _ => "full" };
+                let result = match policy {
+                    "partial" => {
+                        if val.len() <= 2 { "***".to_string() }
+                        else { format!("{}***{}", &val[..1], &val[val.len()-1..]) }
+                    }
+                    "hash" => {
+                        use sha2::Digest;
+                        let hash = sha2::Sha256::digest(val.as_bytes());
+                        format!("{:x}", hash)
+                    }
+                    _ => "***".to_string(), // "full"
+                };
+                Ok(Value::String(result))
+            }
+            "hash" => {
+                let val = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    Some(Value::Secret(s)) => s.clone(),
+                    Some(v) => format!("{v}"),
+                    None => return Err(runtime_err_s("hash: need value")),
+                };
+                let algo = match args.get(1) { Some(Value::String(s)) => s.as_str(), _ => "sha256" };
+                let result = match algo {
+                    "sha256" => {
+                        use sha2::Digest;
+                        let hash = sha2::Sha256::digest(val.as_bytes());
+                        format!("{:x}", hash)
+                    }
+                    "sha512" => {
+                        use sha2::Digest;
+                        let hash = sha2::Sha512::digest(val.as_bytes());
+                        format!("{:x}", hash)
+                    }
+                    "md5" => {
+                        use md5::Digest;
+                        let hash = md5::Md5::digest(val.as_bytes());
+                        format!("{:x}", hash)
+                    }
+                    _ => return Err(runtime_err(format!("hash: unknown algorithm '{algo}', use sha256/sha512/md5"))),
+                };
+                Ok(Value::String(result))
+            }
+
             _ => Err(runtime_err(format!("Unknown builtin: {name}"))),
         }
     }
@@ -5226,6 +5462,7 @@ fn values_equal(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => x == y,
         (Value::Float(x), Value::Float(y)) => x == y,
+        (Value::Decimal(x), Value::Decimal(y)) => x == y,
         (Value::String(x), Value::String(y)) => x == y,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::None, Value::None) => true,
@@ -8327,5 +8564,164 @@ let f = schema_fields("F", 1)
 print(len(f))
 "#);
         assert_eq!(output, vec!["2"]);
+    }
+
+    // ── Phase 22: Decimal Tests ────────────────────────────────────
+
+    #[test]
+    fn test_interp_decimal_literal() {
+        let output = run_output(r#"
+let x = 3.14d
+print(x)
+"#);
+        assert_eq!(output, vec!["3.14"]);
+    }
+
+    #[test]
+    fn test_interp_decimal_arithmetic() {
+        let output = run_output(r#"
+let a = 10.50d
+let b = 3.25d
+print(a + b)
+print(a - b)
+print(a * b)
+"#);
+        assert_eq!(output, vec!["13.75", "7.25", "34.1250"]);
+    }
+
+    #[test]
+    fn test_interp_decimal_int_mixed() {
+        let output = run_output(r#"
+let d = 5.5d
+let i = 2
+print(d + i)
+"#);
+        assert_eq!(output, vec!["7.5"]);
+    }
+
+    #[test]
+    fn test_interp_decimal_comparison() {
+        let output = run_output(r#"
+let a = 1.0d
+let b = 2.0d
+print(a < b)
+print(a == a)
+"#);
+        assert_eq!(output, vec!["true", "true"]);
+    }
+
+    #[test]
+    fn test_interp_decimal_negation() {
+        let output = run_output(r#"
+let x = 5.0d
+print(-x)
+"#);
+        assert_eq!(output, vec!["-5.0"]);
+    }
+
+    #[test]
+    fn test_interp_decimal_builtin() {
+        let output = run_output(r#"
+let x = decimal("99.99")
+print(x)
+let y = decimal(42)
+print(y)
+"#);
+        assert_eq!(output, vec!["99.99", "42"]);
+    }
+
+    #[test]
+    fn test_interp_decimal_type_of() {
+        let output = run_output(r#"
+let x = 1.0d
+print(type_of(x))
+"#);
+        assert_eq!(output, vec!["decimal"]);
+    }
+
+    // ── Phase 23: Security Tests ───────────────────────────────────
+
+    #[test]
+    fn test_interp_secret_set_get() {
+        let output = run_output(r#"
+secret_set("api_key", "abc123")
+let s = secret_get("api_key")
+print(s)
+"#);
+        // Secret display is redacted
+        assert_eq!(output, vec!["***"]);
+    }
+
+    #[test]
+    fn test_interp_secret_list_delete() {
+        let output = run_output(r#"
+secret_set("k1", "v1")
+secret_set("k2", "v2")
+print(len(secret_list()))
+secret_delete("k1")
+print(len(secret_list()))
+"#);
+        assert_eq!(output, vec!["2", "1"]);
+    }
+
+    #[test]
+    fn test_interp_mask_email() {
+        let output = run_output(r#"
+print(mask_email("alice@example.com"))
+"#);
+        assert_eq!(output, vec!["a***@example.com"]);
+    }
+
+    #[test]
+    fn test_interp_mask_phone() {
+        let output = run_output(r#"
+print(mask_phone("555-123-4567"))
+"#);
+        assert_eq!(output, vec!["***-***-4567"]);
+    }
+
+    #[test]
+    fn test_interp_mask_cc() {
+        let output = run_output(r#"
+print(mask_cc("4111111111111111"))
+"#);
+        assert_eq!(output, vec!["****-****-****-1111"]);
+    }
+
+    #[test]
+    fn test_interp_redact() {
+        let output = run_output(r#"
+print(redact("sensitive", "full"))
+print(redact("secret", "partial"))
+"#);
+        assert_eq!(output, vec!["***", "s***t"]);
+    }
+
+    #[test]
+    fn test_interp_hash_sha256() {
+        let output = run_output(r#"
+let h = hash("hello", "sha256")
+print(len(h))
+"#);
+        assert_eq!(output, vec!["64"]);
+    }
+
+    #[test]
+    fn test_interp_hash_md5() {
+        let output = run_output(r#"
+let h = hash("hello", "md5")
+print(len(h))
+"#);
+        assert_eq!(output, vec!["32"]);
+    }
+
+    #[test]
+    fn test_interp_check_permission() {
+        let output = run_output(r#"
+print(check_permission("network"))
+print(check_permission("file_write"))
+"#);
+        // Without sandbox, everything allowed
+        assert_eq!(output, vec!["true", "true"]);
     }
 }

@@ -15,6 +15,11 @@ use crate::chunk::*;
 use crate::opcode::*;
 use crate::value::*;
 
+fn decimal_to_f64(d: &rust_decimal::Decimal) -> f64 {
+    use rust_decimal::prelude::ToPrimitive;
+    d.to_f64().unwrap_or(f64::NAN)
+}
+
 fn runtime_err(msg: impl Into<String>) -> TlError {
     TlError::Runtime(RuntimeError {
         message: msg.into(),
@@ -185,6 +190,10 @@ fn execute_pure_fn(proto: &Arc<Prototype>, args: &[VmValue]) -> Result<VmValue, 
                     Constant::Int(n) => VmValue::Int(*n),
                     Constant::Float(n) => VmValue::Float(*n),
                     Constant::String(s) => VmValue::String(s.clone()),
+                    Constant::Decimal(s) => {
+                        use std::str::FromStr;
+                        VmValue::Decimal(rust_decimal::Decimal::from_str(s).unwrap_or_default())
+                    }
                     _ => VmValue::None,
                 };
                 stack[base + a as usize] = val;
@@ -392,6 +401,10 @@ pub struct Vm {
     pub project_root: Option<std::path::PathBuf>,
     /// Schema registry for versioned schemas
     pub schema_registry: crate::schema::SchemaRegistry,
+    /// Secret vault for credential management
+    pub secret_vault: HashMap<String, String>,
+    /// Security policy (optional, set via --sandbox)
+    pub security_policy: Option<crate::security::SecurityPolicy>,
 }
 
 impl Vm {
@@ -412,6 +425,8 @@ impl Vm {
             package_roots: HashMap::new(),
             project_root: None,
             schema_registry: crate::schema::SchemaRegistry::new(),
+            secret_vault: HashMap::new(),
+            security_policy: None,
         }
     }
 
@@ -649,6 +664,7 @@ impl Vm {
                     let result = match &self.stack[base + b as usize] {
                         VmValue::Int(n) => VmValue::Int(-n),
                         VmValue::Float(n) => VmValue::Float(-n),
+                        VmValue::Decimal(d) => VmValue::Decimal(-d),
                         other => return Err(runtime_err(format!("Cannot negate {}", other.type_name()))),
                     };
                     self.stack[base + a as usize] = result;
@@ -1467,6 +1483,10 @@ impl Vm {
                     upvalues: Vec::new(),
                 })))
             }
+            Constant::Decimal(s) => {
+                use std::str::FromStr;
+                Ok(VmValue::Decimal(rust_decimal::Decimal::from_str(s).unwrap_or_default()))
+            }
             Constant::AstExpr(_) | Constant::AstExprList(_) => Ok(VmValue::None),
         }
     }
@@ -1496,6 +1516,12 @@ impl Vm {
                 let result = a.add(b).map_err(|e| runtime_err(format!("{e}")))?;
                 Ok(VmValue::Tensor(Arc::new(result)))
             }
+            // Decimal arithmetic
+            (VmValue::Decimal(a), VmValue::Decimal(b)) => Ok(VmValue::Decimal(a + b)),
+            (VmValue::Decimal(a), VmValue::Int(b)) => Ok(VmValue::Decimal(a + rust_decimal::Decimal::from(*b))),
+            (VmValue::Int(a), VmValue::Decimal(b)) => Ok(VmValue::Decimal(rust_decimal::Decimal::from(*a) + b)),
+            (VmValue::Decimal(a), VmValue::Float(b)) => Ok(VmValue::Float(decimal_to_f64(a) + b)),
+            (VmValue::Float(a), VmValue::Decimal(b)) => Ok(VmValue::Float(a + decimal_to_f64(b))),
             _ => Err(runtime_err(format!(
                 "Cannot apply `+` to {} and {}",
                 left.type_name(), right.type_name()
@@ -1515,6 +1541,11 @@ impl Vm {
                 let result = a.sub(b).map_err(|e| runtime_err(format!("{e}")))?;
                 Ok(VmValue::Tensor(Arc::new(result)))
             }
+            (VmValue::Decimal(a), VmValue::Decimal(b)) => Ok(VmValue::Decimal(a - b)),
+            (VmValue::Decimal(a), VmValue::Int(b)) => Ok(VmValue::Decimal(a - rust_decimal::Decimal::from(*b))),
+            (VmValue::Int(a), VmValue::Decimal(b)) => Ok(VmValue::Decimal(rust_decimal::Decimal::from(*a) - b)),
+            (VmValue::Decimal(a), VmValue::Float(b)) => Ok(VmValue::Float(decimal_to_f64(a) - b)),
+            (VmValue::Float(a), VmValue::Decimal(b)) => Ok(VmValue::Float(a - decimal_to_f64(b))),
             _ => Err(runtime_err(format!(
                 "Cannot apply `-` to {} and {}",
                 left.type_name(), right.type_name()
@@ -1541,6 +1572,11 @@ impl Vm {
                 let result = t.scale(*s);
                 Ok(VmValue::Tensor(Arc::new(result)))
             }
+            (VmValue::Decimal(a), VmValue::Decimal(b)) => Ok(VmValue::Decimal(a * b)),
+            (VmValue::Decimal(a), VmValue::Int(b)) => Ok(VmValue::Decimal(a * rust_decimal::Decimal::from(*b))),
+            (VmValue::Int(a), VmValue::Decimal(b)) => Ok(VmValue::Decimal(rust_decimal::Decimal::from(*a) * b)),
+            (VmValue::Decimal(a), VmValue::Float(b)) => Ok(VmValue::Float(decimal_to_f64(a) * b)),
+            (VmValue::Float(a), VmValue::Decimal(b)) => Ok(VmValue::Float(a * decimal_to_f64(b))),
             _ => Err(runtime_err(format!(
                 "Cannot apply `*` to {} and {}",
                 left.type_name(), right.type_name()
@@ -1566,6 +1602,20 @@ impl Vm {
                 let result = a.div(b).map_err(|e| runtime_err(format!("{e}")))?;
                 Ok(VmValue::Tensor(Arc::new(result)))
             }
+            (VmValue::Decimal(a), VmValue::Decimal(b)) => {
+                if b.is_zero() { return Err(runtime_err("Division by zero")); }
+                Ok(VmValue::Decimal(a / b))
+            }
+            (VmValue::Decimal(a), VmValue::Int(b)) => {
+                if *b == 0 { return Err(runtime_err("Division by zero")); }
+                Ok(VmValue::Decimal(a / rust_decimal::Decimal::from(*b)))
+            }
+            (VmValue::Int(a), VmValue::Decimal(b)) => {
+                if b.is_zero() { return Err(runtime_err("Division by zero")); }
+                Ok(VmValue::Decimal(rust_decimal::Decimal::from(*a) / b))
+            }
+            (VmValue::Decimal(a), VmValue::Float(b)) => Ok(VmValue::Float(decimal_to_f64(a) / b)),
+            (VmValue::Float(a), VmValue::Decimal(b)) => Ok(VmValue::Float(a / decimal_to_f64(b))),
             _ => Err(runtime_err(format!(
                 "Cannot apply `/` to {} and {}",
                 left.type_name(), right.type_name()
@@ -1615,6 +1665,7 @@ impl Vm {
             (VmValue::String(a), VmValue::String(b)) => a == b,
             (VmValue::Bool(a), VmValue::Bool(b)) => a == b,
             (VmValue::None, VmValue::None) => true,
+            (VmValue::Decimal(a), VmValue::Decimal(b)) => a == b,
             _ => false,
         }
     }
@@ -1636,6 +1687,13 @@ impl Vm {
                 Ok(a.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal) as i8)
             }
             (VmValue::String(a), VmValue::String(b)) => Ok(a.cmp(b) as i8),
+            (VmValue::Decimal(a), VmValue::Decimal(b)) => Ok(a.cmp(b) as i8),
+            (VmValue::Decimal(a), VmValue::Int(b)) => {
+                Ok(a.cmp(&rust_decimal::Decimal::from(*b)) as i8)
+            }
+            (VmValue::Int(a), VmValue::Decimal(b)) => {
+                Ok(rust_decimal::Decimal::from(*a).cmp(b) as i8)
+            }
             _ => Err(runtime_err(format!(
                 "Cannot compare {} and {}",
                 left.type_name(), right.type_name()
@@ -3625,6 +3683,147 @@ impl Vm {
                 let version = match args.get(1) { Some(VmValue::Int(v)) => *v, _ => return Err(runtime_err("schema_fields: need version")) };
                 let fields = self.schema_registry.fields(&name, version);
                 Ok(VmValue::List(fields.into_iter().map(|(n, t)| VmValue::String(std::sync::Arc::from(format!("{}: {}", n, t)))).collect()))
+            }
+
+            // ── Phase 22: Advanced Types ──
+            BuiltinId::Decimal => {
+                use std::str::FromStr;
+                let s = match args.first() {
+                    Some(VmValue::String(s)) => s.to_string(),
+                    Some(VmValue::Int(n)) => n.to_string(),
+                    Some(VmValue::Float(f)) => f.to_string(),
+                    _ => return Err(runtime_err("decimal(): expected string, int, or float")),
+                };
+                let d = rust_decimal::Decimal::from_str(&s)
+                    .map_err(|e| runtime_err(format!("decimal(): invalid: {e}")))?;
+                Ok(VmValue::Decimal(d))
+            }
+
+            // ── Phase 23: Security ──
+            BuiltinId::SecretGet => {
+                let key = match args.first() { Some(VmValue::String(s)) => s.to_string(), _ => return Err(runtime_err("secret_get: need key")) };
+                if let Some(val) = self.secret_vault.get(&key) {
+                    Ok(VmValue::Secret(Arc::from(val.as_str())))
+                } else {
+                    // Fallback to env var TL_SECRET_{KEY}
+                    let env_key = format!("TL_SECRET_{}", key.to_uppercase());
+                    match std::env::var(&env_key) {
+                        Ok(val) => Ok(VmValue::Secret(Arc::from(val.as_str()))),
+                        Err(_) => Ok(VmValue::None),
+                    }
+                }
+            }
+            BuiltinId::SecretSet => {
+                let key = match args.first() { Some(VmValue::String(s)) => s.to_string(), _ => return Err(runtime_err("secret_set: need key")) };
+                let val = match args.get(1) {
+                    Some(VmValue::String(s)) => s.to_string(),
+                    Some(VmValue::Secret(s)) => s.to_string(),
+                    _ => return Err(runtime_err("secret_set: need value")),
+                };
+                self.secret_vault.insert(key, val);
+                Ok(VmValue::None)
+            }
+            BuiltinId::SecretDelete => {
+                let key = match args.first() { Some(VmValue::String(s)) => s.to_string(), _ => return Err(runtime_err("secret_delete: need key")) };
+                self.secret_vault.remove(&key);
+                Ok(VmValue::None)
+            }
+            BuiltinId::SecretList => {
+                let keys: Vec<VmValue> = self.secret_vault.keys()
+                    .map(|k| VmValue::String(Arc::from(k.as_str())))
+                    .collect();
+                Ok(VmValue::List(keys))
+            }
+            BuiltinId::CheckPermission => {
+                let perm = match args.first() { Some(VmValue::String(s)) => s.to_string(), _ => return Err(runtime_err("check_permission: need permission name")) };
+                let allowed = match self.security_policy {
+                    Some(ref policy) => policy.check(&perm),
+                    None => true,
+                };
+                Ok(VmValue::Bool(allowed))
+            }
+            BuiltinId::MaskEmail => {
+                let email = match args.first() { Some(VmValue::String(s)) => s.to_string(), _ => return Err(runtime_err("mask_email: need string")) };
+                let masked = if let Some(at_pos) = email.find('@') {
+                    let local = &email[..at_pos];
+                    let domain = &email[at_pos..];
+                    if local.len() > 1 {
+                        format!("{}***{}", &local[..1], domain)
+                    } else {
+                        format!("***{domain}")
+                    }
+                } else {
+                    "***".to_string()
+                };
+                Ok(VmValue::String(Arc::from(masked.as_str())))
+            }
+            BuiltinId::MaskPhone => {
+                let phone = match args.first() { Some(VmValue::String(s)) => s.to_string(), _ => return Err(runtime_err("mask_phone: need string")) };
+                let digits: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
+                let masked = if digits.len() >= 4 {
+                    let last4 = &digits[digits.len()-4..];
+                    format!("***-***-{last4}")
+                } else {
+                    "***".to_string()
+                };
+                Ok(VmValue::String(Arc::from(masked.as_str())))
+            }
+            BuiltinId::MaskCreditCard => {
+                let cc = match args.first() { Some(VmValue::String(s)) => s.to_string(), _ => return Err(runtime_err("mask_cc: need string")) };
+                let digits: String = cc.chars().filter(|c| c.is_ascii_digit()).collect();
+                let masked = if digits.len() >= 4 {
+                    let last4 = &digits[digits.len()-4..];
+                    format!("****-****-****-{last4}")
+                } else {
+                    "****-****-****-****".to_string()
+                };
+                Ok(VmValue::String(Arc::from(masked.as_str())))
+            }
+            BuiltinId::Redact => {
+                let val = match args.first() { Some(v) => format!("{v}"), _ => return Err(runtime_err("redact: need value")) };
+                let policy = match args.get(1) { Some(VmValue::String(s)) => s.to_string(), _ => "full".to_string() };
+                let result = match policy.as_str() {
+                    "full" => "***".to_string(),
+                    "partial" => {
+                        if val.len() > 2 { format!("{}***{}", &val[..1], &val[val.len()-1..]) } else { "***".to_string() }
+                    }
+                    "hash" => {
+                        use sha2::Digest;
+                        let hash = sha2::Sha256::digest(val.as_bytes());
+                        format!("{:x}", hash)
+                    }
+                    _ => "***".to_string(),
+                };
+                Ok(VmValue::String(Arc::from(result.as_str())))
+            }
+            BuiltinId::Hash => {
+                let val = match args.first() { Some(VmValue::String(s)) => s.to_string(), _ => return Err(runtime_err("hash: need string")) };
+                let algo = match args.get(1) { Some(VmValue::String(s)) => s.to_string(), _ => "sha256".to_string() };
+                let result = match algo.as_str() {
+                    "sha256" => {
+                        use sha2::Digest;
+                        format!("{:x}", sha2::Sha256::digest(val.as_bytes()))
+                    }
+                    "sha512" => {
+                        use sha2::Digest;
+                        format!("{:x}", sha2::Sha512::digest(val.as_bytes()))
+                    }
+                    "md5" => {
+                        use md5::Digest;
+                        format!("{:x}", md5::Md5::digest(val.as_bytes()))
+                    }
+                    _ => return Err(runtime_err(format!("hash: unknown algorithm '{algo}' (use sha256, sha512, or md5)"))),
+                };
+                Ok(VmValue::String(Arc::from(result.as_str())))
+            }
+
+            // ── Phase 24: Async builtins (stub — full implementation needs tokio feature) ──
+            BuiltinId::AsyncReadFile | BuiltinId::AsyncWriteFile |
+            BuiltinId::AsyncHttpGet | BuiltinId::AsyncHttpPost |
+            BuiltinId::AsyncSleep | BuiltinId::Select |
+            BuiltinId::AsyncMap | BuiltinId::AsyncFilter |
+            BuiltinId::RaceAll => {
+                Err(runtime_err(format!("{}: async builtins require the 'async' feature", builtin_id.name())))
             }
         }
     }
@@ -7824,5 +8023,78 @@ let issues = schema_check("User", 1, 2, "backward")
 print(len(issues))"#;
         let output = run_output(source);
         assert_eq!(output, vec!["1"]);
+    }
+
+    // ── Phase 22: Decimal VM Tests ─────────────────────────────────
+
+    #[test]
+    fn test_vm_decimal_literal_and_arithmetic() {
+        let output = run_output("let a = 10.5d\nlet b = 2.5d\nprint(a + b)\nprint(a * b)");
+        assert_eq!(output, vec!["13.0", "26.25"]);
+    }
+
+    #[test]
+    fn test_vm_decimal_div_by_zero() {
+        let source = "let a = 1.0d\nlet b = 0.0d\nlet c = a / b";
+        let program = tl_parser::parse(source).unwrap();
+        let proto = crate::compile(&program).unwrap();
+        let mut vm = Vm::new();
+        let result = vm.execute(&proto);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_vm_decimal_comparison_ops() {
+        let output = run_output("let a = 1.0d\nlet b = 2.0d\nprint(a < b)\nprint(a >= b)\nprint(a == a)");
+        assert_eq!(output, vec!["true", "false", "true"]);
+    }
+
+    // ── Phase 23: Security VM Tests ────────────────────────────────
+
+    #[test]
+    fn test_vm_secret_vault_crud() {
+        let output = run_output("secret_set(\"key\", \"value\")\nlet s = secret_get(\"key\")\nprint(s)\nsecret_delete(\"key\")\nlet s2 = secret_get(\"key\")\nprint(type_of(s2))");
+        assert_eq!(output, vec!["***", "none"]);
+    }
+
+    #[test]
+    fn test_vm_mask_email_basic() {
+        let output = run_output("print(mask_email(\"alice@domain.com\"))");
+        assert_eq!(output, vec!["a***@domain.com"]);
+    }
+
+    #[test]
+    fn test_vm_mask_phone_basic() {
+        let output = run_output("print(mask_phone(\"123-456-7890\"))");
+        assert_eq!(output, vec!["***-***-7890"]);
+    }
+
+    #[test]
+    fn test_vm_mask_cc_basic() {
+        let output = run_output("print(mask_cc(\"4111222233334444\"))");
+        assert_eq!(output, vec!["****-****-****-4444"]);
+    }
+
+    #[test]
+    fn test_vm_hash_produces_hex() {
+        let output = run_output("let h = hash(\"test\", \"sha256\")\nprint(len(h))");
+        assert_eq!(output, vec!["64"]);
+    }
+
+    #[test]
+    fn test_vm_redact_modes() {
+        let output = run_output("print(redact(\"hello\", \"full\"))\nprint(redact(\"hello\", \"partial\"))");
+        assert_eq!(output, vec!["***", "h***o"]);
+    }
+
+    #[test]
+    fn test_vm_security_policy_sandbox() {
+        let source = "print(check_permission(\"network\"))\nprint(check_permission(\"file_read\"))";
+        let program = tl_parser::parse(source).unwrap();
+        let proto = crate::compile(&program).unwrap();
+        let mut vm = Vm::new();
+        vm.security_policy = Some(crate::security::SecurityPolicy::sandbox());
+        vm.execute(&proto).unwrap();
+        assert_eq!(vm.output, vec!["false", "true"]);
     }
 }

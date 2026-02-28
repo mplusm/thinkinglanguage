@@ -31,6 +31,10 @@ pub enum Token {
     #[regex(r"[0-9][0-9_]*\.[0-9][0-9_]*([eE][+-]?[0-9]+)?", |lex| lex.slice().replace('_', "").parse::<f64>().ok())]
     Float(f64),
 
+    /// Decimal literal: 3.14d, 1_000.5d — fixed-point decimal (requires decimal point + 'd' suffix)
+    #[regex(r"[0-9][0-9_]*\.[0-9][0-9_]*d", |lex| { let s = lex.slice(); Some(s[..s.len()-1].replace('_', "")) }, priority = 6)]
+    DecimalLiteral(String),
+
     /// String literal: "hello {name}"
     #[regex(r#""([^"\\]|\\.)*""#, |lex| {
         let s = lex.slice();
@@ -736,5 +740,28 @@ mod tests {
         let tokens = tokenize("migrate User from 1 to 2").unwrap();
         assert!(matches!(tokens[0].token, Token::Migrate));
         assert!(matches!(&tokens[1].token, Token::Ident(s) if s == "User"));
+    }
+
+    // Phase 22: Decimal Literals
+
+    #[test]
+    fn test_decimal_literal() {
+        let tokens = tokenize("3.14d").unwrap();
+        // The lexer strips the trailing 'd' and underscores
+        assert!(matches!(&tokens[0].token, Token::DecimalLiteral(s) if s == "3.14"));
+    }
+
+    #[test]
+    fn test_decimal_literal_with_underscore() {
+        let tokens = tokenize("1_000.50d").unwrap();
+        // Underscores and trailing 'd' are stripped
+        assert!(matches!(&tokens[0].token, Token::DecimalLiteral(s) if s == "1000.50"));
+    }
+
+    #[test]
+    fn test_decimal_vs_float() {
+        // 3.14 without 'd' should be a float, not decimal
+        let tokens = tokenize("3.14").unwrap();
+        assert!(matches!(&tokens[0].token, Token::Float(_)));
     }
 }

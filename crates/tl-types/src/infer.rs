@@ -95,7 +95,13 @@ pub fn infer_expr(expr: &Expr, env: &TypeEnv) -> Type {
                     "is_generator" | "file_exists" => Type::Bool,
                     "assert" | "assert_eq" => Type::Unit,
                     // Phase 15: Data Quality & Connectors
-                    "fill_null" | "drop_null" | "dedup" | "clamp" | "data_profile" | "read_mysql" => Type::Table(None),
+                    "fill_null" | "drop_null" | "dedup" | "clamp" | "data_profile" | "read_mysql" => Type::Table { name: None, columns: None },
+                    // Phase 22: Advanced Types
+                    "decimal" => Type::Decimal,
+                    "tensor" | "tensor_zeros" | "tensor_ones" | "tensor_reshape" | "tensor_transpose"
+                    | "tensor_dot" => Type::Tensor,
+                    "tensor_shape" => Type::List(Box::new(Type::Int)),
+                    "tensor_sum" | "tensor_mean" => Type::Float,
                     "row_count" | "levenshtein" => Type::Int,
                     "null_rate" => Type::Float,
                     "is_unique" | "is_email" | "is_url" | "is_phone" | "is_between" => Type::Bool,
@@ -113,6 +119,18 @@ pub fn infer_expr(expr: &Expr, env: &TypeEnv) -> Type {
                     "py_import" => Type::PyObject,
                     "py_eval" | "py_call" | "py_getattr" | "py_to_tl" => Type::Any,
                     "py_setattr" => Type::Unit,
+                    // Phase 23: Security & Access Control
+                    "secret_get" => Type::String,
+                    "secret_set" | "secret_delete" => Type::Unit,
+                    "secret_list" => Type::List(Box::new(Type::String)),
+                    "check_permission" => Type::Bool,
+                    "mask_email" | "mask_phone" | "mask_cc" | "redact" | "hash" => Type::String,
+                    // Phase 24: Async/Await
+                    "async_read_file" | "async_http_get" | "async_http_post" => Type::Task(Box::new(Type::String)),
+                    "async_write_file" | "async_sleep" => Type::Task(Box::new(Type::Unit)),
+                    "select" | "race_all" => Type::Any,
+                    "async_map" => Type::List(Box::new(Type::Any)),
+                    "async_filter" => Type::List(Box::new(Type::Any)),
                     _ => {
                         if let Some(sig) = env.lookup_fn(name) {
                             sig.ret.clone()
@@ -379,6 +397,12 @@ fn infer_binop(left: &Expr, op: &BinOp, right: &Expr, env: &TypeEnv) -> Type {
                 (Type::Float, Type::Float) | (Type::Int, Type::Float) | (Type::Float, Type::Int) => {
                     Type::Float
                 }
+                // Decimal arithmetic
+                (Type::Decimal, Type::Decimal) | (Type::Decimal, Type::Int) | (Type::Int, Type::Decimal) => {
+                    Type::Decimal
+                }
+                // Decimal + Float => Float
+                (Type::Decimal, Type::Float) | (Type::Float, Type::Decimal) => Type::Float,
                 (Type::String, Type::String) if matches!(op, BinOp::Add) => Type::String,
                 _ => {
                     if matches!(left_ty, Type::Any) || matches!(right_ty, Type::Any) {
