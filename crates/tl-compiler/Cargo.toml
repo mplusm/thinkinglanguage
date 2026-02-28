@@ -24,6 +24,10 @@ reqwest = { version = "0.12", features = ["blocking", "rustls-tls"] }
 serde_json = "1"
 regex = "1"
 chrono = "0.4"
+pyo3 = { version = "0.23", features = ["auto-initialize"], optional = true }
+arrow-ipc = { version = "53", optional = true }
+arrow-array = { version = "53", optional = true }
+arrow-schema = { version = "53", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -33,3 +37,4 @@ default = []
 mysql = ["tl-data/mysql"]
 s3 = ["tl-data/s3"]
 redis = ["tl-data/redis"]
+python = ["pyo3", "arrow-ipc", "arrow-array", "arrow-schema"]

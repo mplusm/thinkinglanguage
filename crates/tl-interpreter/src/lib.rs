@@ -172,6 +172,49 @@ impl Clone for TlGenerator {
     }
 }
 
+/// Wrapper around a Python object for storage in interpreter Value.
+#[cfg(feature = "python")]
+pub struct InterpPyObjectWrapper {
+    pub inner: pyo3::Py<pyo3::PyAny>,
+}
+
+#[cfg(feature = "python")]
+impl Clone for InterpPyObjectWrapper {
+    fn clone(&self) -> Self {
+        pyo3::Python::with_gil(|py| InterpPyObjectWrapper {
+            inner: self.inner.clone_ref(py),
+        })
+    }
+}
+
+#[cfg(feature = "python")]
+impl fmt::Debug for InterpPyObjectWrapper {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use pyo3::prelude::*;
+        pyo3::Python::with_gil(|py| {
+            let obj = self.inner.bind(py);
+            match obj.repr() {
+                Ok(r) => write!(f, "{}", r),
+                Err(_) => write!(f, "<pyobject>"),
+            }
+        })
+    }
+}
+
+#[cfg(feature = "python")]
+impl fmt::Display for InterpPyObjectWrapper {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use pyo3::prelude::*;
+        pyo3::Python::with_gil(|py| {
+            let obj = self.inner.bind(py);
+            match obj.str() {
+                Ok(s) => write!(f, "{}", s),
+                Err(_) => write!(f, "<pyobject>"),
+            }
+        })
+    }
+}
+
 /// Runtime value
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -246,6 +289,9 @@ pub enum Value {
     Channel(Arc<TlChannel>),
     /// A generator (lazy iterator)
     Generator(Arc<TlGenerator>),
+    /// An opaque Python object (feature-gated)
+    #[cfg(feature = "python")]
+    PyObject(Arc<InterpPyObjectWrapper>),
 }
 
 impl fmt::Display for Value {
@@ -328,6 +374,8 @@ impl fmt::Display for Value {
             Value::Task(t) => write!(f, "<task {}>", t.id),
             Value::Channel(c) => write!(f, "<channel {}>", c.id),
             Value::Generator(g) => write!(f, "<generator {}>", g.id),
+            #[cfg(feature = "python")]
+            Value::PyObject(w) => write!(f, "{w}"),
         }
     }
 }
@@ -342,6 +390,8 @@ impl Value {
             Value::List(items) => !items.is_empty(),
             Value::Map(pairs) => !pairs.is_empty(),
             Value::None => false,
+            #[cfg(feature = "python")]
+            Value::PyObject(_) => true,
             _ => true,
         }
     }
@@ -379,6 +429,8 @@ impl Value {
             Value::Task(_) => "task",
             Value::Channel(_) => "channel",
             Value::Generator(_) => "generator",
+            #[cfg(feature = "python")]
+            Value::PyObject(_) => "pyobject",
         }
     }
 }
@@ -564,6 +616,13 @@ impl Environment {
         global.insert("redis_del".to_string(), Value::Builtin("redis_del".to_string()));
         global.insert("graphql_query".to_string(), Value::Builtin("graphql_query".to_string()));
         global.insert("register_s3".to_string(), Value::Builtin("register_s3".to_string()));
+        // Phase 20: Python FFI
+        global.insert("py_import".to_string(), Value::Builtin("py_import".to_string()));
+        global.insert("py_call".to_string(), Value::Builtin("py_call".to_string()));
+        global.insert("py_eval".to_string(), Value::Builtin("py_eval".to_string()));
+        global.insert("py_getattr".to_string(), Value::Builtin("py_getattr".to_string()));
+        global.insert("py_setattr".to_string(), Value::Builtin("py_setattr".to_string()));
+        global.insert("py_to_tl".to_string(), Value::Builtin("py_to_tl".to_string()));
 
         Self {
             scopes: vec![global],
@@ -1278,6 +1337,10 @@ impl Interpreter {
                             .find(|(k, _)| k == field)
                             .map(|(_, v)| v.clone())
                             .unwrap_or(Value::None))
+                    }
+                    #[cfg(feature = "python")]
+                    Value::PyObject(wrapper) => {
+                        Ok(interp_py_get_member(wrapper, field))
                     }
                     _ => Err(runtime_err(format!(
                         "Cannot access field `{field}` on {}",
@@ -3786,6 +3849,44 @@ impl Interpreter {
                 Err(runtime_err_s("register_s3() requires the 's3' feature"))
             }
 
+            // Phase 20: Python FFI
+            "py_import" => {
+                #[cfg(feature = "python")]
+                { self.interp_py_import(args) }
+                #[cfg(not(feature = "python"))]
+                Err(runtime_err_s("py_import() requires the 'python' feature"))
+            }
+            "py_call" => {
+                #[cfg(feature = "python")]
+                { self.interp_py_call(args) }
+                #[cfg(not(feature = "python"))]
+                Err(runtime_err_s("py_call() requires the 'python' feature"))
+            }
+            "py_eval" => {
+                #[cfg(feature = "python")]
+                { self.interp_py_eval(args) }
+                #[cfg(not(feature = "python"))]
+                Err(runtime_err_s("py_eval() requires the 'python' feature"))
+            }
+            "py_getattr" => {
+                #[cfg(feature = "python")]
+                { self.interp_py_getattr(args) }
+                #[cfg(not(feature = "python"))]
+                Err(runtime_err_s("py_getattr() requires the 'python' feature"))
+            }
+            "py_setattr" => {
+                #[cfg(feature = "python")]
+                { self.interp_py_setattr(args) }
+                #[cfg(not(feature = "python"))]
+                Err(runtime_err_s("py_setattr() requires the 'python' feature"))
+            }
+            "py_to_tl" => {
+                #[cfg(feature = "python")]
+                { self.interp_py_to_tl(args) }
+                #[cfg(not(feature = "python"))]
+                Err(runtime_err_s("py_to_tl() requires the 'python' feature"))
+            }
+
             _ => Err(runtime_err(format!("Unknown builtin: {name}"))),
         }
     }
@@ -4158,6 +4259,12 @@ impl Interpreter {
                     return self.call_function(&func, &all_args);
                 }
             }
+        }
+
+        // Python method dispatch
+        #[cfg(feature = "python")]
+        if let Value::PyObject(wrapper) = obj {
+            return interp_py_call_method(wrapper, method, args);
         }
 
         Err(runtime_err(format!(
@@ -5889,6 +5996,250 @@ impl Interpreter {
         self.env.set(name.to_string(), Value::Connector(config));
         Ok(Signal::None)
     }
+
+    // --- Phase 20: Python FFI builtins (interpreter) ---
+
+    #[cfg(feature = "python")]
+    fn interp_py_import(&mut self, args: &[Value]) -> Result<Value, TlError> {
+        use pyo3::prelude::*;
+        if args.is_empty() { return Err(runtime_err_s("py_import() expects a module name")); }
+        let name = match &args[0] {
+            Value::String(s) => s.clone(),
+            _ => return Err(runtime_err_s("py_import() expects a string module name")),
+        };
+        pyo3::Python::with_gil(|py| {
+            let module = py.import(&*name)
+                .map_err(|e| runtime_err(format!("py_import('{name}'): {e}")))?;
+            Ok(Value::PyObject(Arc::new(InterpPyObjectWrapper {
+                inner: module.into_any().unbind(),
+            })))
+        })
+    }
+
+    #[cfg(feature = "python")]
+    fn interp_py_eval(&mut self, args: &[Value]) -> Result<Value, TlError> {
+        use pyo3::prelude::*;
+        if args.is_empty() { return Err(runtime_err_s("py_eval() expects a code string")); }
+        let code = match &args[0] {
+            Value::String(s) => s.clone(),
+            _ => return Err(runtime_err_s("py_eval() expects a string")),
+        };
+        pyo3::Python::with_gil(|py| {
+            let result = py.eval(&std::ffi::CString::new(code.as_str()).unwrap(), None, None)
+                .map_err(|e| runtime_err(format!("py_eval(): {e}")))?;
+            interp_py_to_value(py, &result)
+                .map_err(|e| runtime_err(format!("py_eval() conversion: {e}")))
+        })
+    }
+
+    #[cfg(feature = "python")]
+    fn interp_py_call(&mut self, args: &[Value]) -> Result<Value, TlError> {
+        use pyo3::prelude::*;
+        if args.is_empty() { return Err(runtime_err_s("py_call() expects a callable and arguments")); }
+        let callable = match &args[0] {
+            Value::PyObject(w) => w.clone(),
+            _ => return Err(runtime_err_s("py_call() first argument must be a Python object")),
+        };
+        let call_args = &args[1..];
+        pyo3::Python::with_gil(|py| {
+            let py_args: Vec<pyo3::Py<pyo3::PyAny>> = call_args.iter()
+                .map(|a| interp_value_to_py(py, a))
+                .collect::<Result<_, _>>()
+                .map_err(|e| runtime_err(format!("py_call() arg conversion: {e}")))?;
+            let tuple = pyo3::types::PyTuple::new(py, &py_args)
+                .map_err(|e| runtime_err(format!("py_call() tuple: {e}")))?;
+            let result = callable.inner.call1(py, tuple)
+                .map_err(|e| runtime_err(format!("py_call(): {e}")))?;
+            interp_py_to_value(py, result.bind(py))
+                .map_err(|e| runtime_err(format!("py_call() result conversion: {e}")))
+        })
+    }
+
+    #[cfg(feature = "python")]
+    fn interp_py_getattr(&mut self, args: &[Value]) -> Result<Value, TlError> {
+        use pyo3::prelude::*;
+        if args.len() < 2 { return Err(runtime_err_s("py_getattr() expects (object, name)")); }
+        let obj = match &args[0] {
+            Value::PyObject(w) => w.clone(),
+            _ => return Err(runtime_err_s("py_getattr() first argument must be a Python object")),
+        };
+        let attr_name = match &args[1] {
+            Value::String(s) => s.clone(),
+            _ => return Err(runtime_err_s("py_getattr() second argument must be a string")),
+        };
+        pyo3::Python::with_gil(|py| {
+            let bound = obj.inner.bind(py);
+            let attr = bound.getattr(attr_name.as_str())
+                .map_err(|e| runtime_err(format!("py_getattr('{attr_name}'): {e}")))?;
+            interp_py_to_value(py, &attr)
+                .map_err(|e| runtime_err(format!("py_getattr() conversion: {e}")))
+        })
+    }
+
+    #[cfg(feature = "python")]
+    fn interp_py_setattr(&mut self, args: &[Value]) -> Result<Value, TlError> {
+        use pyo3::prelude::*;
+        if args.len() < 3 { return Err(runtime_err_s("py_setattr() expects (object, name, value)")); }
+        let obj = match &args[0] {
+            Value::PyObject(w) => w.clone(),
+            _ => return Err(runtime_err_s("py_setattr() first argument must be a Python object")),
+        };
+        let attr_name = match &args[1] {
+            Value::String(s) => s.clone(),
+            _ => return Err(runtime_err_s("py_setattr() second argument must be a string")),
+        };
+        pyo3::Python::with_gil(|py| {
+            let py_val = interp_value_to_py(py, &args[2])
+                .map_err(|e| runtime_err(format!("py_setattr() conversion: {e}")))?;
+            obj.inner.bind(py).setattr(attr_name.as_str(), py_val)
+                .map_err(|e| runtime_err(format!("py_setattr('{attr_name}'): {e}")))?;
+            Ok(Value::None)
+        })
+    }
+
+    #[cfg(feature = "python")]
+    fn interp_py_to_tl(&mut self, args: &[Value]) -> Result<Value, TlError> {
+        use pyo3::prelude::*;
+        if args.is_empty() { return Err(runtime_err_s("py_to_tl() expects a Python object")); }
+        match &args[0] {
+            Value::PyObject(w) => {
+                pyo3::Python::with_gil(|py| {
+                    let bound = w.inner.bind(py);
+                    interp_py_to_value(py, &bound)
+                        .map_err(|e| runtime_err(format!("py_to_tl(): {e}")))
+                })
+            }
+            other => Ok(other.clone()),
+        }
+    }
+}
+
+// --- Phase 20: Python FFI value conversion for interpreter ---
+
+#[cfg(feature = "python")]
+fn interp_value_to_py(py: pyo3::Python<'_>, val: &Value) -> pyo3::PyResult<pyo3::Py<pyo3::PyAny>> {
+    use pyo3::prelude::*;
+    use pyo3::types::{PyDict, PyList, PySet};
+
+    match val {
+        Value::Int(n) => Ok((*n).into_pyobject(py)?.into_any().into()),
+        Value::Float(f) => Ok((*f).into_pyobject(py)?.into_any().unbind()),
+        Value::String(s) => Ok(s.as_str().into_pyobject(py)?.into_any().unbind()),
+        Value::Bool(b) => Ok((*b).into_pyobject(py)?.to_owned().into_any().unbind()),
+        Value::None => Ok(py.None()),
+        Value::List(items) => {
+            let py_items: Vec<pyo3::Py<pyo3::PyAny>> = items.iter()
+                .map(|item| interp_value_to_py(py, item))
+                .collect::<pyo3::PyResult<_>>()?;
+            Ok(PyList::new(py, &py_items)?.into_any().unbind())
+        }
+        Value::Map(pairs) => {
+            let dict = PyDict::new(py);
+            for (k, v) in pairs {
+                let py_val = interp_value_to_py(py, v)?;
+                dict.set_item(k.as_str(), py_val)?;
+            }
+            Ok(dict.into_any().unbind())
+        }
+        Value::Set(items) => {
+            let py_items: Vec<pyo3::Py<pyo3::PyAny>> = items.iter()
+                .map(|item| interp_value_to_py(py, item))
+                .collect::<pyo3::PyResult<_>>()?;
+            Ok(PySet::new(py, &py_items)?.into_any().unbind())
+        }
+        Value::PyObject(w) => Ok(w.inner.clone_ref(py)),
+        _ => Err(pyo3::exceptions::PyTypeError::new_err(format!(
+            "Cannot convert TL {} to Python", val.type_name()
+        ))),
+    }
+}
+
+#[cfg(feature = "python")]
+fn interp_py_to_value(py: pyo3::Python<'_>, obj: &pyo3::Bound<'_, pyo3::PyAny>) -> pyo3::PyResult<Value> {
+    use pyo3::prelude::*;
+    use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PySet, PyString};
+
+    if obj.is_instance_of::<PyBool>() {
+        return Ok(Value::Bool(obj.extract::<bool>()?));
+    }
+    if obj.is_instance_of::<PyInt>() {
+        return Ok(Value::Int(obj.extract::<i64>()?));
+    }
+    if obj.is_instance_of::<PyFloat>() {
+        return Ok(Value::Float(obj.extract::<f64>()?));
+    }
+    if obj.is_instance_of::<PyString>() {
+        return Ok(Value::String(obj.extract::<String>()?));
+    }
+    if obj.is_none() {
+        return Ok(Value::None);
+    }
+    if obj.is_instance_of::<PyList>() {
+        let list = obj.downcast::<PyList>()?;
+        let items: Vec<Value> = list.iter()
+            .map(|item| interp_py_to_value(py, &item))
+            .collect::<pyo3::PyResult<_>>()?;
+        return Ok(Value::List(items));
+    }
+    if obj.is_instance_of::<PyDict>() {
+        let dict = obj.downcast::<PyDict>()?;
+        let mut pairs = Vec::new();
+        for (k, v) in dict.iter() {
+            let key: String = k.extract()?;
+            let val = interp_py_to_value(py, &v)?;
+            pairs.push((key, val));
+        }
+        return Ok(Value::Map(pairs));
+    }
+    if obj.is_instance_of::<PySet>() {
+        let set = obj.downcast::<PySet>()?;
+        let mut items = Vec::new();
+        for item in set.iter() {
+            items.push(interp_py_to_value(py, &item)?);
+        }
+        return Ok(Value::Set(items));
+    }
+
+    // Everything else stays as opaque PyObject
+    Ok(Value::PyObject(Arc::new(InterpPyObjectWrapper {
+        inner: obj.clone().unbind(),
+    })))
+}
+
+#[cfg(feature = "python")]
+fn interp_py_get_member(wrapper: &InterpPyObjectWrapper, field: &str) -> Value {
+    use pyo3::prelude::*;
+    pyo3::Python::with_gil(|py| {
+        let bound = wrapper.inner.bind(py);
+        match bound.getattr(field) {
+            Ok(attr) => interp_py_to_value(py, &attr).unwrap_or(Value::None),
+            Err(_) => Value::None,
+        }
+    })
+}
+
+#[cfg(feature = "python")]
+fn interp_py_call_method(
+    wrapper: &InterpPyObjectWrapper,
+    method: &str,
+    args: &[Value],
+) -> Result<Value, TlError> {
+    use pyo3::prelude::*;
+    pyo3::Python::with_gil(|py| {
+        let bound = wrapper.inner.bind(py);
+        let py_args: Vec<pyo3::Py<pyo3::PyAny>> = args.iter()
+            .map(|a| interp_value_to_py(py, a))
+            .collect::<Result<_, _>>()
+            .map_err(|e| runtime_err(format!("Python arg conversion: {e}")))?;
+        let tuple = pyo3::types::PyTuple::new(py, &py_args)
+            .map_err(|e| runtime_err(format!("Python tuple: {e}")))?;
+        let attr = bound.getattr(method)
+            .map_err(|e| runtime_err(format!("Python: no attribute '{method}': {e}")))?;
+        let result = attr.call1(tuple)
+            .map_err(|e| runtime_err(format!("Python method '{method}': {e}")))?;
+        interp_py_to_value(py, &result)
+            .map_err(|e| runtime_err(format!("Python result conversion: {e}")))
+    })
 }
 
 #[cfg(test)]

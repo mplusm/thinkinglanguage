@@ -103,6 +103,10 @@ pub fn infer_expr(expr: &Expr, env: &TypeEnv) -> Type {
                     "graphql_query" => Type::Any,
                     "redis_get" => Type::Any,
                     "redis_set" | "redis_del" | "register_s3" => Type::Unit,
+                    // Phase 20: Python FFI
+                    "py_import" => Type::PyObject,
+                    "py_eval" | "py_call" | "py_getattr" | "py_to_tl" => Type::Any,
+                    "py_setattr" => Type::Unit,
                     _ => {
                         if let Some(sig) = env.lookup_fn(name) {
                             sig.ret.clone()

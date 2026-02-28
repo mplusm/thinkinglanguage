@@ -948,6 +948,10 @@ impl Vm {
                                 .map(|(_, v)| v.clone())
                                 .unwrap_or(VmValue::None)
                         }
+                        #[cfg(feature = "python")]
+                        VmValue::PyObject(wrapper) => {
+                            crate::python::py_get_member(wrapper, field_name.as_ref())
+                        }
                         _ => VmValue::None,
                     };
                     self.stack[base + a as usize] = result;
@@ -3485,6 +3489,43 @@ impl Vm {
                 #[cfg(not(feature = "s3"))]
                 Err(runtime_err("register_s3() requires the 's3' feature"))
             }
+            // Phase 20: Python FFI
+            BuiltinId::PyImport => {
+                #[cfg(feature = "python")]
+                { crate::python::py_import_impl(&args) }
+                #[cfg(not(feature = "python"))]
+                Err(runtime_err("py_import() requires the 'python' feature"))
+            }
+            BuiltinId::PyCall => {
+                #[cfg(feature = "python")]
+                { crate::python::py_call_impl(&args) }
+                #[cfg(not(feature = "python"))]
+                Err(runtime_err("py_call() requires the 'python' feature"))
+            }
+            BuiltinId::PyEval => {
+                #[cfg(feature = "python")]
+                { crate::python::py_eval_impl(&args) }
+                #[cfg(not(feature = "python"))]
+                Err(runtime_err("py_eval() requires the 'python' feature"))
+            }
+            BuiltinId::PyGetAttr => {
+                #[cfg(feature = "python")]
+                { crate::python::py_getattr_impl(&args) }
+                #[cfg(not(feature = "python"))]
+                Err(runtime_err("py_getattr() requires the 'python' feature"))
+            }
+            BuiltinId::PySetAttr => {
+                #[cfg(feature = "python")]
+                { crate::python::py_setattr_impl(&args) }
+                #[cfg(not(feature = "python"))]
+                Err(runtime_err("py_setattr() requires the 'python' feature"))
+            }
+            BuiltinId::PyToTl => {
+                #[cfg(feature = "python")]
+                { crate::python::py_to_tl_impl(&args) }
+                #[cfg(not(feature = "python"))]
+                Err(runtime_err("py_to_tl() requires the 'python' feature"))
+            }
         }
     }
 
@@ -4024,6 +4065,10 @@ impl Vm {
                 } else {
                     Err(runtime_err(format!("No method '{}' on struct '{}'", method, inst.type_name)))
                 }
+            }
+            #[cfg(feature = "python")]
+            VmValue::PyObject(wrapper) => {
+                crate::python::py_call_method(wrapper, method, args)
             }
             _ => {
                 // Try looking up Type::method from type_name
@@ -7397,5 +7442,83 @@ print(s.contains("b"))"#);
         // Same test, just verify VM works correctly
         let output = run_output("let f = (x) => x * 3 + 1\nprint(f(4))");
         assert_eq!(output, vec!["13"]);
+    }
+
+    // Phase 20: Python FFI feature-disabled test
+    #[test]
+    #[cfg(not(feature = "python"))]
+    fn test_py_feature_disabled() {
+        let result = run("py_import(\"math\")");
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("python") && msg.contains("feature"));
+    }
+
+    #[test]
+    #[cfg(feature = "python")]
+    fn test_vm_py_import_and_eval() {
+        pyo3::prepare_freethreaded_python();
+        let output = run_output("let m = py_import(\"math\")\nlet pi = m.pi\nprint(pi)");
+        assert_eq!(output.len(), 1);
+        let pi: f64 = output[0].parse().unwrap();
+        assert!((pi - std::f64::consts::PI).abs() < 1e-10);
+    }
+
+    #[test]
+    #[cfg(feature = "python")]
+    fn test_vm_py_eval_arithmetic() {
+        pyo3::prepare_freethreaded_python();
+        let output = run_output("let x = py_eval(\"2 ** 10\")\nprint(x)");
+        assert_eq!(output, vec!["1024"]);
+    }
+
+    #[test]
+    #[cfg(feature = "python")]
+    fn test_vm_py_method_dispatch() {
+        pyo3::prepare_freethreaded_python();
+        let output = run_output("let m = py_import(\"math\")\nprint(m.sqrt(25.0))");
+        assert_eq!(output, vec!["5.0"]);
+    }
+
+    #[test]
+    #[cfg(feature = "python")]
+    fn test_vm_py_list_conversion() {
+        pyo3::prepare_freethreaded_python();
+        let output = run_output("let x = py_eval(\"[10, 20, 30]\")\nprint(x)");
+        assert_eq!(output, vec!["[10, 20, 30]"]);
+    }
+
+    #[test]
+    #[cfg(feature = "python")]
+    fn test_vm_py_none_conversion() {
+        pyo3::prepare_freethreaded_python();
+        let output = run_output("let x = py_eval(\"None\")\nprint(x)");
+        assert_eq!(output, vec!["none"]);
+    }
+
+    #[test]
+    #[cfg(feature = "python")]
+    fn test_vm_py_error_msg_quality() {
+        pyo3::prepare_freethreaded_python();
+        let result = run("py_import(\"nonexistent_xyz_module\")");
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("py_import") && msg.contains("nonexistent_xyz_module"));
+    }
+
+    #[test]
+    #[cfg(feature = "python")]
+    fn test_vm_py_getattr_setattr() {
+        pyo3::prepare_freethreaded_python();
+        let output = run_output("let t = py_import(\"types\")\nlet obj = py_call(py_getattr(t, \"SimpleNamespace\"))\npy_setattr(obj, \"val\", 99)\nprint(py_getattr(obj, \"val\"))");
+        assert_eq!(output, vec!["99"]);
+    }
+
+    #[test]
+    #[cfg(feature = "python")]
+    fn test_vm_py_callable_round_trip() {
+        pyo3::prepare_freethreaded_python();
+        let output = run_output("let m = py_import(\"math\")\nlet f = py_getattr(m, \"floor\")\nprint(py_call(f, 3.7))");
+        assert_eq!(output, vec!["3"]);
     }
 }

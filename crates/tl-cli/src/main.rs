@@ -62,6 +62,8 @@ impl TlHelper {
             "fill_null", "drop_null", "dedup", "clamp", "data_profile", "row_count", "null_rate", "is_unique",
             "is_email", "is_url", "is_phone", "is_between", "levenshtein", "soundex",
             "read_mysql", "redis_connect", "redis_get", "redis_set", "redis_del", "graphql_query", "register_s3",
+            // Phase 20: Python FFI
+            "py_import", "py_call", "py_eval", "py_getattr", "py_setattr", "py_to_tl",
         ].iter().map(|s| String::from(*s)).collect();
         completions.sort();
         TlHelper { completions }

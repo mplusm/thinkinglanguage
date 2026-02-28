@@ -12,6 +12,8 @@ pub mod vm;
 pub mod jit;
 pub mod jit_runtime;
 pub mod module;
+#[cfg(feature = "python")]
+pub mod python;
 
 pub use compiler::{compile, compile_with_source};
 pub use vm::Vm;

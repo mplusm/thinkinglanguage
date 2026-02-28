@@ -518,6 +518,13 @@ pub enum BuiltinId {
     RedisDel = 135,
     GraphqlQuery = 136,
     RegisterS3 = 137,
+    // Phase 20: Python FFI
+    PyImport = 138,
+    PyCall = 139,
+    PyEval = 140,
+    PyGetAttr = 141,
+    PySetAttr = 142,
+    PyToTl = 143,
 }
 
 impl BuiltinId {
@@ -662,6 +669,13 @@ impl BuiltinId {
             "redis_del" => Some(BuiltinId::RedisDel),
             "graphql_query" => Some(BuiltinId::GraphqlQuery),
             "register_s3" => Some(BuiltinId::RegisterS3),
+            // Phase 20: Python FFI
+            "py_import" => Some(BuiltinId::PyImport),
+            "py_call" => Some(BuiltinId::PyCall),
+            "py_eval" => Some(BuiltinId::PyEval),
+            "py_getattr" => Some(BuiltinId::PyGetAttr),
+            "py_setattr" => Some(BuiltinId::PySetAttr),
+            "py_to_tl" => Some(BuiltinId::PyToTl),
             _ => None,
         }
     }
@@ -807,6 +821,13 @@ impl BuiltinId {
             BuiltinId::RedisDel => "redis_del",
             BuiltinId::GraphqlQuery => "graphql_query",
             BuiltinId::RegisterS3 => "register_s3",
+            // Phase 20: Python FFI
+            BuiltinId::PyImport => "py_import",
+            BuiltinId::PyCall => "py_call",
+            BuiltinId::PyEval => "py_eval",
+            BuiltinId::PyGetAttr => "py_getattr",
+            BuiltinId::PySetAttr => "py_setattr",
+            BuiltinId::PyToTl => "py_to_tl",
         }
     }
 }

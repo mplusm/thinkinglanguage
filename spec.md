@@ -1857,6 +1857,35 @@ New files: editors/vscode/ (package.json, extension.ts, tmLanguage.json, etc.)
 Tests: 685 existing + 47 new = 732 passed, 1 ignored
 ```
 
+### Phase 20: Python FFI Bridge ✅
+
+**Goal:** Bidirectional Python interop via pyo3, enabling TL users to call any Python library
+
+```
+Phase 20: Python FFI Bridge ✅
+  ✅ pyo3 integration — feature-gated `python` feature, auto-initialize
+  ✅ VmValue::PyObject — opaque Python object wrapper with Display/Debug/Clone
+  ✅ Value conversion — TL↔Python bidirectional (int, float, string, bool, none, list, map, set)
+  ✅ py_import(name) — import a Python module, returns PyObject
+  ✅ py_eval(code) — evaluate a Python expression, auto-convert result
+  ✅ py_call(callable, args...) — call a Python callable with TL arguments
+  ✅ py_getattr(obj, name) — get attribute from Python object
+  ✅ py_setattr(obj, name, value) — set attribute on Python object
+  ✅ py_to_tl(obj) — explicitly convert Python object to TL value
+  ✅ GetMember integration — `math.pi` syntax on PyObjects via dot notation
+  ✅ MethodCall integration — `math.sqrt(16)` syntax via method dispatch
+  ✅ Tensor↔numpy — TL Tensor converts to/from numpy ndarray
+  ✅ Type system — Type::PyObject variant, inference rules for py_* builtins
+  ✅ Interpreter support — full Python FFI in tree-walking interpreter
+  ✅ Feature-gated — graceful error when python feature not enabled
+  ✅ CLI tab completion — py_import, py_call, py_eval, py_getattr, py_setattr, py_to_tl
+
+New file: crates/tl-compiler/src/python.rs (core FFI, conversions, tensor interchange)
+New file: crates/tl-compiler/tests/python_integration.rs (26 e2e tests)
+BuiltinIds: 138-143 (PyImport, PyCall, PyEval, PyGetAttr, PySetAttr, PyToTl)
+Tests: 996 existing (unchanged) + 44 new (with python feature) = 1040, 1 ignored
+```
+
 ### Phase 13: Data Quality & Connectors ✅ (Phase 15)
 
 **Goal:** Production data engineering with clean/validate and connectors

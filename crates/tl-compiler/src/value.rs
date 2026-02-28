@@ -60,6 +60,9 @@ pub enum VmValue {
     Generator(Arc<Mutex<VmGenerator>>),
     /// A set (unique values)
     Set(Vec<VmValue>),
+    /// An opaque Python object (feature-gated)
+    #[cfg(feature = "python")]
+    PyObject(Arc<crate::python::PyObjectWrapper>),
 }
 
 /// Struct type definition
@@ -273,6 +276,8 @@ impl VmValue {
             VmValue::Map(pairs) => !pairs.is_empty(),
             VmValue::Set(items) => !items.is_empty(),
             VmValue::None => false,
+            #[cfg(feature = "python")]
+            VmValue::PyObject(_) => true,
             _ => true,
         }
     }
@@ -305,6 +310,8 @@ impl VmValue {
             VmValue::Task(_) => "task",
             VmValue::Channel(_) => "channel",
             VmValue::Generator(_) => "generator",
+            #[cfg(feature = "python")]
+            VmValue::PyObject(_) => "pyobject",
         }
     }
 }
@@ -368,6 +375,8 @@ impl fmt::Debug for VmValue {
                 }
                 write!(f, "}}")
             }
+            #[cfg(feature = "python")]
+            VmValue::PyObject(w) => write!(f, "PyObject({w:?})"),
         }
     }
 }
@@ -451,6 +460,8 @@ impl fmt::Display for VmValue {
                 }
                 write!(f, "}}")
             }
+            #[cfg(feature = "python")]
+            VmValue::PyObject(w) => write!(f, "{w}"),
         }
     }
 }

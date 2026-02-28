@@ -53,6 +53,8 @@ pub enum Type {
     TypeParam(std::string::String),
     /// Inference variable (unresolved)
     Var(u32),
+    /// An opaque Python object
+    PyObject,
     /// Poison type — suppresses further errors
     Error,
 }
@@ -91,6 +93,7 @@ impl fmt::Display for Type {
             Type::Channel(t) => write!(f, "channel<{t}>"),
             Type::TypeParam(name) => write!(f, "{name}"),
             Type::Var(id) => write!(f, "?T{id}"),
+            Type::PyObject => write!(f, "pyobject"),
             Type::Error => write!(f, "<error>"),
         }
     }
