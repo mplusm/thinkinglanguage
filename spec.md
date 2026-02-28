@@ -1586,8 +1586,12 @@ Reference: Compare against Polars (DataFrame performance), DuckDB (analytical qu
 | 11 | Semantic Analysis & Optimization | ✅ Complete | 685 |
 | 12 | LSP & Developer Tooling | ✅ Complete | 732 |
 | 13 | Data Quality & Connectors | ✅ Complete | 780 |
+| 14 | LSP & Developer Tooling | ✅ Complete | 828 |
+| 15 | Package Manager & Registry | ✅ Complete | 856 |
+| 16 | Pattern Matching & Destructuring | ✅ Complete | 891 |
+| 17 | Closures & Lambdas Improvements | ✅ Complete | 934 |
 
-**Current test count: 780 passed + 1 ignored**
+**Current test count: 934 passed + 1 ignored**
 
 ### Phase 0: Foundation ✅
 
@@ -1921,6 +1925,35 @@ New AST types: Pattern, StructPatternField, MatchArm, StmtKind::LetDestructure
 New token: DotDotDot
 New opcodes: ExtractField (62), ExtractNamedField (63)
 Tests: 828 existing + 63 new = 891 passed, 1 ignored
+```
+
+### Phase 18: Closures & Lambdas Improvements ✅
+
+**Goal:** Block-body closures, type aliases, shorthand syntax, closure type checking, higher-order patterns
+
+```
+Deliverables:
+  ✅ Block-body closures: (params) -> ReturnType { stmts; expr }
+  ✅ ClosureBody enum: Expr(Box<Expr>) | Block { stmts, expr }
+  ✅ Closure return_type: Option<TypeExpr> field
+  ✅ Parser: is_closure_ahead() detects both => and -> variants
+  ✅ Parser: extract_tail_expr() helper for block body tail expressions
+  ✅ Compiler: compile_closure_expr() handles both ClosureBody variants
+  ✅ Interpreter: eval_closure_body() with Signal::Return handling
+  ✅ Type aliases: type Name = TypeExpr (StmtKind::TypeAlias)
+  ✅ Generic type aliases: type Result<T> = Result<T, Error>
+  ✅ Type alias resolution in type checker (convert_type_expr_with_env)
+  ✅ TypeEnv: type_aliases registry with register/lookup methods
+  ✅ Shorthand closure syntax: x => expr (single param, no parens)
+  ✅ IIFE: ((x) => x * 2)(5) works via existing postfix call parsing
+  ✅ Closure type checking: return type validation, unused param warnings
+  ✅ Higher-order patterns: closures as arguments, return values, in collections
+  ✅ Recursive closures via let binding
+  ✅ Both VM and interpreter backends produce identical results
+  ✅ Formatter: block-body closures, type aliases
+
+New AST types: ClosureBody, StmtKind::TypeAlias
+Tests: 891 existing + 43 new = 934 passed, 1 ignored
 ```
 
 ### Future: Advanced Compiler (Deferred)

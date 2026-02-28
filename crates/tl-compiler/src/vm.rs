@@ -5084,7 +5084,7 @@ impl Vm {
             AstExpr::Float(f) => Ok(VmValue::Float(*f)),
             AstExpr::Bool(b) => Ok(VmValue::Bool(*b)),
             AstExpr::None => Ok(VmValue::None),
-            AstExpr::Closure { params: _, body: _ } => {
+            AstExpr::Closure { params: _, body: _, .. } => {
                 use crate::compiler;
                 let wrapper = tl_ast::Program {
                     statements: vec![tl_ast::Stmt { kind: tl_ast::StmtKind::Expr(expr.clone()), span: tl_errors::Span::new(0, 0) }],
@@ -7294,5 +7294,106 @@ print(s.contains("b"))"#);
         vm.execute(&proto).unwrap();
 
         assert_eq!(vm.output, vec!["helped"]);
+    }
+
+    // ── Phase 18: Closures & Lambdas Improvements ────────────────
+
+    #[test]
+    fn test_block_body_closure_basic() {
+        let output = run_output("let f = (x: int64) -> int64 { let y = x * 2\n y + 1 }\nprint(f(5))");
+        assert_eq!(output, vec!["11"]);
+    }
+
+    #[test]
+    fn test_block_body_closure_captures_upvalue() {
+        let output = run_output("let offset = 10\nlet f = (x) -> int64 { let y = x + offset\n y }\nprint(f(5))");
+        assert_eq!(output, vec!["15"]);
+    }
+
+    #[test]
+    fn test_block_body_closure_as_hof_arg() {
+        let output = run_output("let nums = [1, 2, 3]\nlet result = map(nums, (x) -> int64 { let doubled = x * 2\n doubled + 1 })\nprint(result)");
+        assert_eq!(output, vec!["[3, 5, 7]"]);
+    }
+
+    #[test]
+    fn test_block_body_closure_multi_stmt() {
+        let output = run_output("let f = (a, b) -> int64 { let sum = a + b\n let product = a * b\n sum + product }\nprint(f(3, 4))");
+        assert_eq!(output, vec!["19"]);
+    }
+
+    #[test]
+    fn test_type_alias_noop() {
+        // Type alias should be a no-op at runtime, code using aliased types should work
+        let output = run_output("type Mapper = fn(int64) -> int64\nlet f: Mapper = (x) => x * 2\nprint(f(5))");
+        assert_eq!(output, vec!["10"]);
+    }
+
+    #[test]
+    fn test_type_alias_in_function_sig() {
+        let output = run_output("type Mapper = fn(int64) -> int64\nfn apply(f: Mapper, x: int64) -> int64 { f(x) }\nprint(apply((x) => x + 10, 5))");
+        assert_eq!(output, vec!["15"]);
+    }
+
+    #[test]
+    fn test_shorthand_closure() {
+        let output = run_output("let double = x => x * 2\nprint(double(5))");
+        assert_eq!(output, vec!["10"]);
+    }
+
+    #[test]
+    fn test_shorthand_closure_in_map() {
+        let output = run_output("let nums = [1, 2, 3]\nprint(map(nums, x => x * 2))");
+        assert_eq!(output, vec!["[2, 4, 6]"]);
+    }
+
+    #[test]
+    fn test_iife() {
+        let output = run_output("let r = ((x) => x * 2)(5)\nprint(r)");
+        assert_eq!(output, vec!["10"]);
+    }
+
+    #[test]
+    fn test_hof_apply() {
+        let output = run_output("fn apply(f, x) { f(x) }\nprint(apply((x) => x + 10, 5))");
+        assert_eq!(output, vec!["15"]);
+    }
+
+    #[test]
+    fn test_closure_stored_in_list() {
+        let output = run_output("let fns = [(x) => x + 1, (x) => x * 2]\nprint(fns[0](5))\nprint(fns[1](5))");
+        assert_eq!(output, vec!["6", "10"]);
+    }
+
+    #[test]
+    fn test_block_body_closure_with_return() {
+        // Use explicit return statements since if/else is a statement, not a tail expression
+        let output = run_output("let classify = (x) -> string { if x > 0 { return \"positive\" }\n \"non-positive\" }\nprint(classify(5))\nprint(classify(-1))");
+        assert_eq!(output, vec!["positive", "non-positive"]);
+    }
+
+    #[test]
+    fn test_shorthand_closure_in_filter() {
+        let output = run_output("let nums = [1, 2, 3, 4, 5, 6]\nlet evens = filter(nums, x => x % 2 == 0)\nprint(evens)");
+        assert_eq!(output, vec!["[2, 4, 6]"]);
+    }
+
+    #[test]
+    fn test_block_closure_with_multiple_returns() {
+        let output = run_output("let abs_val = (x) -> int64 { if x < 0 { return -x }\n x }\nprint(abs_val(-5))\nprint(abs_val(3))");
+        assert_eq!(output, vec!["5", "3"]);
+    }
+
+    #[test]
+    fn test_type_alias_with_block_closure() {
+        let output = run_output("type Transform = fn(int64) -> int64\nlet f: Transform = (x) -> int64 { let y = x * x\n y + 1 }\nprint(f(3))");
+        assert_eq!(output, vec!["10"]);
+    }
+
+    #[test]
+    fn test_closure_both_backends_expr() {
+        // Same test, just verify VM works correctly
+        let output = run_output("let f = (x) => x * 3 + 1\nprint(f(4))");
+        assert_eq!(output, vec!["13"]);
     }
 }

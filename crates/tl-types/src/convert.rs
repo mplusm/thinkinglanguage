@@ -3,31 +3,58 @@
 
 use tl_ast::TypeExpr;
 
-use crate::Type;
+use crate::{Type, TypeEnv};
 
 /// Convert an AST type expression into the internal Type representation.
 pub fn convert_type_expr(texpr: &TypeExpr) -> Type {
     convert_type_expr_with_params(texpr, &[])
 }
 
+/// Convert an AST type expression, resolving type aliases from the environment.
+pub fn convert_type_expr_with_env(texpr: &TypeExpr, env: &TypeEnv) -> Type {
+    convert_type_expr_impl(texpr, &[], Some(env))
+}
+
 /// Convert an AST type expression, recognizing type parameters from the given list.
 pub fn convert_type_expr_with_params(texpr: &TypeExpr, type_params: &[String]) -> Type {
+    convert_type_expr_impl(texpr, type_params, None)
+}
+
+fn convert_type_expr_impl(texpr: &TypeExpr, type_params: &[String], env: Option<&TypeEnv>) -> Type {
     match texpr {
         TypeExpr::Named(name) => {
             if type_params.contains(name) {
                 Type::TypeParam(name.clone())
+            } else if let Some(env) = env {
+                if let Some((alias_params, alias_value)) = env.lookup_type_alias(name) {
+                    if alias_params.is_empty() {
+                        return convert_type_expr_impl(alias_value, type_params, Some(env));
+                    }
+                }
+                convert_named(name)
             } else {
                 convert_named(name)
             }
         }
-        TypeExpr::Generic { name, args } => convert_generic_with_params(name, args, type_params),
-        TypeExpr::Optional(inner) => Type::Option(Box::new(convert_type_expr_with_params(inner, type_params))),
+        TypeExpr::Generic { name, args } => {
+            // Check if it's a type alias with type params
+            if let Some(env) = env {
+                if let Some((alias_params, alias_value)) = env.lookup_type_alias(name).cloned() {
+                    if !alias_params.is_empty() && alias_params.len() == args.len() {
+                        // Substitute type params — for now, just resolve the alias value
+                        return convert_type_expr_impl(&alias_value, type_params, Some(env));
+                    }
+                }
+            }
+            convert_generic_impl(name, args, type_params, env)
+        }
+        TypeExpr::Optional(inner) => Type::Option(Box::new(convert_type_expr_impl(inner, type_params, env))),
         TypeExpr::Function {
             params,
             return_type,
         } => Type::Function {
-            params: params.iter().map(|p| convert_type_expr_with_params(p, type_params)).collect(),
-            ret: Box::new(convert_type_expr_with_params(return_type, type_params)),
+            params: params.iter().map(|p| convert_type_expr_impl(p, type_params, env)).collect(),
+            ret: Box::new(convert_type_expr_impl(return_type, type_params, env)),
         },
     }
 }
@@ -56,20 +83,24 @@ fn convert_generic(name: &str, args: &[TypeExpr]) -> Type {
 }
 
 fn convert_generic_with_params(name: &str, args: &[TypeExpr], type_params: &[String]) -> Type {
+    convert_generic_impl(name, args, type_params, None)
+}
+
+fn convert_generic_impl(name: &str, args: &[TypeExpr], type_params: &[String], env: Option<&TypeEnv>) -> Type {
     match name {
-        "list" if args.len() == 1 => Type::List(Box::new(convert_type_expr_with_params(&args[0], type_params))),
-        "map" if args.len() == 1 => Type::Map(Box::new(convert_type_expr_with_params(&args[0], type_params))),
-        "set" if args.len() == 1 => Type::Set(Box::new(convert_type_expr_with_params(&args[0], type_params))),
-        "option" if args.len() == 1 => Type::Option(Box::new(convert_type_expr_with_params(&args[0], type_params))),
+        "list" if args.len() == 1 => Type::List(Box::new(convert_type_expr_impl(&args[0], type_params, env))),
+        "map" if args.len() == 1 => Type::Map(Box::new(convert_type_expr_impl(&args[0], type_params, env))),
+        "set" if args.len() == 1 => Type::Set(Box::new(convert_type_expr_impl(&args[0], type_params, env))),
+        "option" if args.len() == 1 => Type::Option(Box::new(convert_type_expr_impl(&args[0], type_params, env))),
         "result" if args.len() == 2 => Type::Result(
-            Box::new(convert_type_expr_with_params(&args[0], type_params)),
-            Box::new(convert_type_expr_with_params(&args[1], type_params)),
+            Box::new(convert_type_expr_impl(&args[0], type_params, env)),
+            Box::new(convert_type_expr_impl(&args[1], type_params, env)),
         ),
         "generator" if args.len() == 1 => {
-            Type::Generator(Box::new(convert_type_expr_with_params(&args[0], type_params)))
+            Type::Generator(Box::new(convert_type_expr_impl(&args[0], type_params, env)))
         }
-        "task" if args.len() == 1 => Type::Task(Box::new(convert_type_expr_with_params(&args[0], type_params))),
-        "channel" if args.len() == 1 => Type::Channel(Box::new(convert_type_expr_with_params(&args[0], type_params))),
+        "task" if args.len() == 1 => Type::Task(Box::new(convert_type_expr_impl(&args[0], type_params, env))),
+        "channel" if args.len() == 1 => Type::Channel(Box::new(convert_type_expr_impl(&args[0], type_params, env))),
         "table" if args.len() == 1 => {
             if let TypeExpr::Named(schema) = &args[0] {
                 Type::Table(Some(schema.clone()))

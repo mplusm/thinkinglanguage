@@ -547,6 +547,20 @@ impl Formatter {
                 self.push_indent();
                 self.output.push_str("}\n");
             }
+            StmtKind::TypeAlias { name, type_params, value, is_public } => {
+                self.push_indent();
+                if *is_public { self.output.push_str("pub "); }
+                self.output.push_str("type ");
+                self.output.push_str(name);
+                if !type_params.is_empty() {
+                    self.output.push('<');
+                    self.output.push_str(&type_params.join(", "));
+                    self.output.push('>');
+                }
+                self.output.push_str(" = ");
+                self.output.push_str(&self.format_type_expr(value));
+                self.output.push('\n');
+            }
         }
     }
 
@@ -606,7 +620,7 @@ impl Formatter {
                     .collect();
                 format!("{{ {} }}", pairs_str.join(", "))
             }
-            Expr::Closure { params, body } => {
+            Expr::Closure { params, return_type, body } => {
                 let params_str: Vec<String> = params.iter().map(|p| {
                     if let Some(ann) = &p.type_ann {
                         format!("{}: {}", p.name, self.format_type_expr(ann))
@@ -614,7 +628,42 @@ impl Formatter {
                         p.name.clone()
                     }
                 }).collect();
-                format!("({}) => {}", params_str.join(", "), self.format_expr(body))
+                match body {
+                    tl_ast::ClosureBody::Expr(e) => {
+                        format!("({}) => {}", params_str.join(", "), self.format_expr(e))
+                    }
+                    tl_ast::ClosureBody::Block { stmts, expr } => {
+                        let rt = return_type.as_ref()
+                            .map(|t| format!(" {}", self.format_type_expr(t)))
+                            .unwrap_or_default();
+                        let mut parts = Vec::new();
+                        for s in stmts {
+                            if let StmtKind::Expr(e) = &s.kind {
+                                parts.push(self.format_expr(e));
+                            } else if let StmtKind::Let { name, mutable, type_ann, value, .. } = &s.kind {
+                                let mut s = String::new();
+                                s.push_str("let ");
+                                if *mutable { s.push_str("mut "); }
+                                s.push_str(name);
+                                if let Some(ann) = type_ann {
+                                    s.push_str(": ");
+                                    s.push_str(&self.format_type_expr(ann));
+                                }
+                                s.push_str(" = ");
+                                s.push_str(&self.format_expr(value));
+                                parts.push(s);
+                            } else if let StmtKind::Return(Some(e)) = &s.kind {
+                                parts.push(format!("return {}", self.format_expr(e)));
+                            } else {
+                                parts.push("...".to_string());
+                            }
+                        }
+                        if let Some(e) = expr {
+                            parts.push(self.format_expr(e));
+                        }
+                        format!("({}) ->{} {{ {} }}", params_str.join(", "), rt, parts.join("; "))
+                    }
+                }
             }
             Expr::Range { start, end } => {
                 format!("{}..{}", self.format_expr(start), self.format_expr(end))

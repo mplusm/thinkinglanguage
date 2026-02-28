@@ -323,7 +323,15 @@ impl<'a> TypeChecker<'a> {
                 self.mark_used_in_expr(left);
                 self.mark_used_in_expr(right);
             }
-            Expr::Closure { body, .. } => self.mark_used_in_expr(body),
+            Expr::Closure { body, .. } => {
+                match body {
+                    tl_ast::ClosureBody::Expr(e) => self.mark_used_in_expr(e),
+                    tl_ast::ClosureBody::Block { stmts, expr } => {
+                        for s in stmts { self.mark_used_in_stmt(s); }
+                        if let Some(e) = expr { self.mark_used_in_expr(e); }
+                    }
+                }
+            }
             Expr::NullCoalesce { expr, default } => {
                 self.mark_used_in_expr(expr);
                 self.mark_used_in_expr(default);
@@ -439,6 +447,9 @@ impl<'a> TypeChecker<'a> {
 
                 // Check match exhaustiveness in value expression
                 self.check_match_exhaustiveness_in_expr(value, stmt.span);
+
+                // Check closure return type annotation matches body
+                self.check_closure_return_type(value, stmt.span);
 
                 let inferred = infer_expr(value, &self.env);
                 if let Some(ann) = type_ann {
@@ -890,6 +901,11 @@ impl<'a> TypeChecker<'a> {
                     self.check_stmt(method);
                 }
             }
+
+            StmtKind::TypeAlias { name, type_params, value, .. } => {
+                // Register the type alias in the type environment
+                self.env.register_type_alias(name.clone(), type_params.clone(), value.clone());
+            }
         }
     }
 
@@ -954,6 +970,89 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Check match expressions for exhaustiveness warnings.
+    /// Check that a closure's return type annotation matches its body type.
+    fn check_closure_return_type(&mut self, expr: &Expr, span: Span) {
+        if let Expr::Closure { return_type: Some(rt), body, params, .. } = expr {
+            let declared = convert_type_expr(rt);
+            let body_type = match body {
+                tl_ast::ClosureBody::Expr(e) => infer_expr(e, &self.env),
+                tl_ast::ClosureBody::Block { expr: Some(e), .. } => infer_expr(e, &self.env),
+                tl_ast::ClosureBody::Block { expr: None, .. } => Type::None,
+            };
+            if !is_compatible(&declared, &body_type) && !matches!(body_type, Type::Any) {
+                self.warnings.push(TypeError {
+                    message: "Closure return type mismatch".to_string(),
+                    span,
+                    expected: Some(declared.to_string()),
+                    found: Some(body_type.to_string()),
+                    hint: Some("The declared return type does not match the body expression type".to_string()),
+                });
+            }
+            // Warn on unused closure parameters (except _-prefixed)
+            for p in params {
+                if !p.name.starts_with('_') && p.name != "self" {
+                    let is_used = match body {
+                        tl_ast::ClosureBody::Expr(e) => self.expr_references_name(e, &p.name),
+                        tl_ast::ClosureBody::Block { stmts, expr } => {
+                            stmts.iter().any(|s| self.stmt_references_name(s, &p.name))
+                                || expr.as_ref().map_or(false, |e| self.expr_references_name(e, &p.name))
+                        }
+                    };
+                    if !is_used {
+                        self.warnings.push(TypeError {
+                            message: format!("Unused closure parameter `{}`", p.name),
+                            span,
+                            expected: None,
+                            found: None,
+                            hint: Some(format!("Prefix with `_` to suppress: `_{}`", p.name)),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    /// Check if an expression references a name (simple identifier check).
+    fn expr_references_name(&self, expr: &Expr, name: &str) -> bool {
+        match expr {
+            Expr::Ident(n) => n == name,
+            Expr::BinOp { left, right, .. } => self.expr_references_name(left, name) || self.expr_references_name(right, name),
+            Expr::UnaryOp { expr: e, .. } => self.expr_references_name(e, name),
+            Expr::Call { function, args } => self.expr_references_name(function, name) || args.iter().any(|a| self.expr_references_name(a, name)),
+            Expr::Pipe { left, right } => self.expr_references_name(left, name) || self.expr_references_name(right, name),
+            Expr::Member { object, .. } => self.expr_references_name(object, name),
+            Expr::Index { object, index } => self.expr_references_name(object, name) || self.expr_references_name(index, name),
+            Expr::List(items) => items.iter().any(|i| self.expr_references_name(i, name)),
+            Expr::Map(pairs) => pairs.iter().any(|(k, v)| self.expr_references_name(k, name) || self.expr_references_name(v, name)),
+            Expr::Block { stmts, expr } => stmts.iter().any(|s| self.stmt_references_name(s, name)) || expr.as_ref().map_or(false, |e| self.expr_references_name(e, name)),
+            Expr::Assign { target, value } => self.expr_references_name(target, name) || self.expr_references_name(value, name),
+            Expr::NullCoalesce { expr: e, default } => self.expr_references_name(e, name) || self.expr_references_name(default, name),
+            Expr::Range { start, end } => self.expr_references_name(start, name) || self.expr_references_name(end, name),
+            Expr::Await(e) | Expr::Try(e) => self.expr_references_name(e, name),
+            Expr::NamedArg { value, .. } => self.expr_references_name(value, name),
+            Expr::StructInit { fields, .. } => fields.iter().any(|(_, e)| self.expr_references_name(e, name)),
+            Expr::EnumVariant { args, .. } => args.iter().any(|a| self.expr_references_name(a, name)),
+            _ => false,
+        }
+    }
+
+    /// Check if a statement references a name.
+    fn stmt_references_name(&self, stmt: &Stmt, name: &str) -> bool {
+        match &stmt.kind {
+            StmtKind::Expr(e) | StmtKind::Return(Some(e)) | StmtKind::Throw(e) => self.expr_references_name(e, name),
+            StmtKind::Let { value, .. } | StmtKind::LetDestructure { value, .. } => self.expr_references_name(value, name),
+            StmtKind::If { condition, then_body, else_ifs, else_body } => {
+                self.expr_references_name(condition, name)
+                    || then_body.iter().any(|s| self.stmt_references_name(s, name))
+                    || else_ifs.iter().any(|(c, b)| self.expr_references_name(c, name) || b.iter().any(|s| self.stmt_references_name(s, name)))
+                    || else_body.as_ref().map_or(false, |b| b.iter().any(|s| self.stmt_references_name(s, name)))
+            }
+            StmtKind::While { condition, body } => self.expr_references_name(condition, name) || body.iter().any(|s| self.stmt_references_name(s, name)),
+            StmtKind::For { iter, body, .. } => self.expr_references_name(iter, name) || body.iter().any(|s| self.stmt_references_name(s, name)),
+            _ => false,
+        }
+    }
+
     fn check_match_exhaustiveness_in_expr(&mut self, expr: &Expr, span: Span) {
         if let Expr::Match { subject, arms } = expr {
             let subject_ty = infer_expr(subject, &self.env);
@@ -1604,5 +1703,46 @@ mod tests {
         ];
         let missing = check_match_exhaustiveness_patterns(&ty, &arms, &env);
         assert!(missing.is_empty(), "OR patterns should cover all variants");
+    }
+
+    // ── Phase 18: Closure type checking ────────────────
+
+    #[test]
+    fn test_checker_closure_annotated_params() {
+        let src = "let _f = (x: int64) => x * 2";
+        let program = tl_parser::parse(src).unwrap();
+        let config = CheckerConfig::default();
+        let result = check_program(&program, &config);
+        assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn test_checker_block_body_closure_type_inferred() {
+        let src = "let _f = (x: int64) -> int64 { let _y = x * 2\n _y + 1 }";
+        let program = tl_parser::parse(src).unwrap();
+        let config = CheckerConfig::default();
+        let result = check_program(&program, &config);
+        assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn test_checker_unused_closure_param_warning() {
+        let src = "let _f = (x: int64) -> int64 { 42 }";
+        let program = tl_parser::parse(src).unwrap();
+        let config = CheckerConfig::default();
+        let result = check_program(&program, &config);
+        let has_unused_warning = result.warnings.iter().any(|w| w.message.contains("Unused closure parameter"));
+        assert!(has_unused_warning, "Expected unused closure parameter warning, got: {:?}", result.warnings);
+    }
+
+    #[test]
+    fn test_checker_closure_return_type_mismatch() {
+        // Closure declares int64 return type but body returns a string
+        let src = "let _f = (x: int64) -> int64 { \"hello\" }";
+        let program = tl_parser::parse(src).unwrap();
+        let config = CheckerConfig::default();
+        let result = check_program(&program, &config);
+        let has_mismatch = result.warnings.iter().any(|w| w.message.contains("return type mismatch"));
+        assert!(has_mismatch, "Expected return type mismatch warning, got: {:?}", result.warnings);
     }
 }

@@ -193,7 +193,7 @@ pub enum Value {
     /// A closure (anonymous function with captured environment)
     Closure {
         params: Vec<Param>,
-        body: Box<Expr>,
+        body: ClosureBody,
         captured_env: Vec<HashMap<String, Value>>,
     },
     /// A lazy DataFusion table (DataFrame)
@@ -1049,8 +1049,37 @@ impl Interpreter {
                 }
                 Ok(Signal::None)
             }
+            StmtKind::TypeAlias { .. } => {
+                // Type aliases are type-checker only; no runtime effect
+                Ok(Signal::None)
+            }
             StmtKind::Break => Ok(Signal::Break),
             StmtKind::Continue => Ok(Signal::Continue),
+        }
+    }
+
+    /// Evaluate a closure body (either expr or block).
+    fn eval_closure_body(&mut self, body: &ClosureBody) -> Result<Value, TlError> {
+        match body {
+            ClosureBody::Expr(e) => self.eval_expr(e),
+            ClosureBody::Block { stmts, expr } => {
+                for s in stmts {
+                    match self.exec_stmt(s)? {
+                        Signal::Return(val) => return Ok(val),
+                        Signal::Throw(val) => return Err(TlError::Runtime(RuntimeError {
+                            message: format!("{}", val),
+                            span: None,
+                            stack_trace: vec![],
+                        })),
+                        _ => {}
+                    }
+                }
+                if let Some(e) = expr {
+                    self.eval_expr(e)
+                } else {
+                    Ok(Value::None)
+                }
+            }
         }
     }
 
@@ -1375,10 +1404,10 @@ impl Interpreter {
                 }
             }
 
-            Expr::Closure { params, body } => {
+            Expr::Closure { params, body, .. } => {
                 Ok(Value::Closure {
                     params: params.clone(),
-                    body: Box::new(body.as_ref().clone()),
+                    body: body.clone(),
                     captured_env: self.env.scopes.clone(),
                 })
             }
@@ -1767,7 +1796,32 @@ impl Interpreter {
                 for (param, arg) in params.iter().zip(args) {
                     self.env.set(param.name.clone(), arg.clone());
                 }
-                let result = self.eval_expr(body);
+                let result = match &body {
+                    ClosureBody::Expr(e) => self.eval_expr(e),
+                    ClosureBody::Block { stmts, expr } => {
+                        let mut early_return = None;
+                        for s in stmts {
+                            match self.exec_stmt(s) {
+                                Ok(Signal::Return(val)) => {
+                                    early_return = Some(val);
+                                    break;
+                                }
+                                Ok(_) => {}
+                                Err(e) => {
+                                    self.env.scopes = saved_env;
+                                    return Err(e);
+                                }
+                            }
+                        }
+                        if let Some(val) = early_return {
+                            Ok(val)
+                        } else if let Some(e) = expr {
+                            self.eval_expr(e)
+                        } else {
+                            Ok(Value::None)
+                        }
+                    }
+                };
                 // Restore original env
                 self.env.scopes = saved_env;
                 result
@@ -2829,7 +2883,7 @@ impl Interpreter {
                             for param in &params {
                                 interp.env.set(param.name.clone(), Value::None);
                             }
-                            let result = interp.eval_expr(&body);
+                            let result = interp.eval_closure_body(&body);
                             interp.env.pop_scope();
                             let _ = tx.send(result.map_err(|e| format!("{e}")));
                         });
@@ -3014,7 +3068,7 @@ impl Interpreter {
                                 if let Some(p) = params.first() {
                                     interp.env.set(p.name.clone(), item);
                                 }
-                                let result = interp.eval_expr(&body);
+                                let result = interp.eval_closure_body(&body);
                                 interp.env.pop_scope();
                                 result.map_err(|e| format!("{e}"))
                             });
@@ -7539,5 +7593,91 @@ print(match r { Result::Ok(v) if v > 100 => "big", Result::Ok(v) => v, Result::E
     fn test_interp_case_with_pattern() {
         let output = run_output("let x = 15\nprint(case { x > 10 => \"big\", x > 0 => \"small\", _ => \"other\" })");
         assert_eq!(output, vec!["big"]);
+    }
+
+    // ── Phase 18: Closures & Lambdas Improvements ────────────────
+
+    #[test]
+    fn test_interp_block_body_closure() {
+        let output = run_output("let f = (x: int64) -> int64 { let y = x * 2\n y + 1 }\nprint(f(5))");
+        assert_eq!(output, vec!["11"]);
+    }
+
+    #[test]
+    fn test_interp_block_body_closure_captured_var() {
+        let output = run_output("let offset = 10\nlet f = (x) -> int64 { let y = x + offset\n y }\nprint(f(5))");
+        assert_eq!(output, vec!["15"]);
+    }
+
+    #[test]
+    fn test_interp_block_body_closure_as_hof_arg() {
+        let output = run_output("let nums = [1, 2, 3]\nlet result = map(nums, (x) -> int64 { let doubled = x * 2\n doubled + 1 })\nprint(result)");
+        assert_eq!(output, vec!["[3, 5, 7]"]);
+    }
+
+    #[test]
+    fn test_interp_type_alias_noop() {
+        let output = run_output("type Mapper = fn(int64) -> int64\nlet f: Mapper = (x) => x * 2\nprint(f(5))");
+        assert_eq!(output, vec!["10"]);
+    }
+
+    #[test]
+    fn test_interp_type_alias_in_function_sig() {
+        let output = run_output("type Mapper = fn(int64) -> int64\nfn apply(f: Mapper, x: int64) -> int64 { f(x) }\nprint(apply((x) => x + 10, 5))");
+        assert_eq!(output, vec!["15"]);
+    }
+
+    #[test]
+    fn test_interp_shorthand_closure() {
+        let output = run_output("let double = x => x * 2\nprint(double(5))");
+        assert_eq!(output, vec!["10"]);
+    }
+
+    #[test]
+    fn test_interp_iife() {
+        let output = run_output("let r = ((x) => x * 2)(5)\nprint(r)");
+        assert_eq!(output, vec!["10"]);
+    }
+
+    #[test]
+    fn test_interp_closure_as_return_value() {
+        let output = run_output("fn make_adder(n) { (x) => x + n }\nlet add5 = make_adder(5)\nprint(add5(3))");
+        assert_eq!(output, vec!["8"]);
+    }
+
+    #[test]
+    fn test_interp_hof_apply() {
+        let output = run_output("fn apply(f, x) { f(x) }\nprint(apply((x) => x + 10, 5))");
+        assert_eq!(output, vec!["15"]);
+    }
+
+    #[test]
+    fn test_interp_nested_closures() {
+        let output = run_output("let add = (a) => (b) => a + b\nlet add3 = add(3)\nprint(add3(4))");
+        assert_eq!(output, vec!["7"]);
+    }
+
+    #[test]
+    fn test_interp_recursive_closure() {
+        let output = run_output("fn fact(n) { if n <= 1 { 1 } else { n * fact(n - 1) } }\nprint(fact(5))");
+        assert_eq!(output, vec!["120"]);
+    }
+
+    #[test]
+    fn test_interp_block_body_closure_with_return() {
+        let output = run_output("let classify = (x) -> string { if x > 0 { return \"positive\" }\n \"non-positive\" }\nprint(classify(5))\nprint(classify(-1))");
+        assert_eq!(output, vec!["positive", "non-positive"]);
+    }
+
+    #[test]
+    fn test_interp_shorthand_in_filter() {
+        let output = run_output("let nums = [1, 2, 3, 4, 5, 6]\nlet evens = filter(nums, x => x % 2 == 0)\nprint(evens)");
+        assert_eq!(output, vec!["[2, 4, 6]"]);
+    }
+
+    #[test]
+    fn test_interp_both_backends_expr() {
+        let output = run_output("let f = (x) => x * 3 + 1\nprint(f(4))");
+        assert_eq!(output, vec!["13"]);
     }
 }

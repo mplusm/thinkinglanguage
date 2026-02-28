@@ -498,6 +498,10 @@ impl Compiler {
                 // and freeing it would allow reuse of registers occupied by locals
                 Ok(())
             }
+            StmtKind::TypeAlias { .. } => {
+                // Type aliases are type-checker only; no runtime code needed
+                Ok(())
+            }
         }
     }
 
@@ -668,11 +672,24 @@ impl Compiler {
     fn compile_closure_expr(
         &mut self,
         params: &[Param],
-        body: &Expr,
+        body: &ClosureBody,
         dest: u8,
     ) -> Result<(), TlError> {
-        // Create a synthetic function body that returns the expression
-        let body_stmt = vec![Stmt { kind: StmtKind::Return(Some(body.clone())), span: Span::new(0, 0) }];
+        // Build the body statements based on closure body kind
+        let body_stmts = match body {
+            ClosureBody::Expr(e) => {
+                // Single-expression closure: wrap in return
+                vec![Stmt { kind: StmtKind::Return(Some(e.as_ref().clone())), span: Span::new(0, 0) }]
+            }
+            ClosureBody::Block { stmts, expr } => {
+                // Block closure: compile stmts, then return tail expr (if any)
+                let mut all = stmts.clone();
+                if let Some(e) = expr {
+                    all.push(Stmt { kind: StmtKind::Return(Some(e.as_ref().clone())), span: Span::new(0, 0) });
+                }
+                all
+            }
+        };
 
         // Push new compiler state
         let mut fn_state = CompilerState::new("<closure>".to_string());
@@ -692,7 +709,7 @@ impl Compiler {
 
         self.states.push(fn_state);
 
-        for stmt in &body_stmt {
+        for stmt in &body_stmts {
             self.compile_stmt(stmt)?;
         }
 
@@ -1554,7 +1571,7 @@ impl Compiler {
             Expr::Match { subject, arms } => {
                 self.compile_match(subject, arms, dest)?;
             }
-            Expr::Closure { params, body } => {
+            Expr::Closure { params, body, .. } => {
                 self.compile_closure_expr(params, body, dest)?;
             }
             Expr::Range { start, end } => {

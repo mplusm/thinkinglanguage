@@ -158,8 +158,8 @@ pub fn infer_expr(expr: &Expr, env: &TypeEnv) -> Type {
         }
 
         // Closure — infer param types from annotations and return type from body
-        Expr::Closure { params, body, .. } => Type::Function {
-            params: params
+        Expr::Closure { params, body, return_type, .. } => {
+            let param_types: Vec<Type> = params
                 .iter()
                 .map(|p| {
                     p.type_ann
@@ -167,9 +167,17 @@ pub fn infer_expr(expr: &Expr, env: &TypeEnv) -> Type {
                         .map(|t| convert_type_expr(t))
                         .unwrap_or(Type::Any)
                 })
-                .collect(),
-            ret: Box::new(infer_expr(body, env)),
-        },
+                .collect();
+            let ret = match body {
+                tl_ast::ClosureBody::Expr(e) => infer_expr(e, env),
+                tl_ast::ClosureBody::Block { expr: Some(e), .. } => infer_expr(e, env),
+                tl_ast::ClosureBody::Block { expr: None, .. } => {
+                    // If no tail expr, use return_type annotation or None
+                    return_type.as_ref().map(|t| convert_type_expr(t)).unwrap_or(Type::None)
+                }
+            };
+            Type::Function { params: param_types, ret: Box::new(ret) }
+        }
 
         // Null coalesce: option<T> ?? T -> T
         Expr::NullCoalesce { expr, default } => {
@@ -585,11 +593,12 @@ mod tests {
                 name: "x".into(),
                 type_ann: Some(tl_ast::TypeExpr::Named("int".into())),
             }],
-            body: Box::new(Expr::BinOp {
+            return_type: None,
+            body: tl_ast::ClosureBody::Expr(Box::new(Expr::BinOp {
                 left: Box::new(Expr::Ident("x".into())),
                 op: BinOp::Mul,
                 right: Box::new(Expr::Int(2)),
-            }),
+            })),
         };
         let ty = infer_expr(&expr, &env);
         match ty {
@@ -608,7 +617,8 @@ mod tests {
                 name: "x".into(),
                 type_ann: None,
             }],
-            body: Box::new(Expr::Int(42)),
+            return_type: None,
+            body: tl_ast::ClosureBody::Expr(Box::new(Expr::Int(42))),
         };
         let ty = infer_expr(&expr, &env);
         match ty {

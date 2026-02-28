@@ -119,6 +119,7 @@ impl Parser {
     fn parse_statement(&mut self) -> Result<Stmt, TlError> {
         match self.peek() {
             Token::Let => self.parse_let(),
+            Token::Type => self.parse_type_alias(false),
             Token::Fn => self.parse_fn_decl(),
             Token::If => self.parse_if(),
             Token::While => self.parse_while(),
@@ -222,9 +223,14 @@ impl Parser {
                 stmt.span = Span::new(start, stmt.span.end);
                 Ok(stmt)
             }
+            Token::Type => {
+                let mut stmt = self.parse_type_alias(true)?;
+                stmt.span = Span::new(start, stmt.span.end);
+                Ok(stmt)
+            }
             _ => Err(TlError::Parser(ParserError {
                 message: format!(
-                    "`pub` can only be applied to fn, struct, enum, schema, let, use, mod, or trait, found `{}`",
+                    "`pub` can only be applied to fn, struct, enum, schema, let, use, mod, trait, or type, found `{}`",
                     self.peek()
                 ),
                 span: self.peek_span(),
@@ -1378,6 +1384,17 @@ impl Parser {
             }
             Token::Ident(name) => {
                 let name = name.clone();
+                // Check for shorthand closure: x => expr
+                if self.pos + 1 < self.tokens.len() && self.tokens[self.pos + 1].token == Token::FatArrow {
+                    self.advance(); // consume ident
+                    self.advance(); // consume =>
+                    let body = self.parse_expression()?;
+                    return Ok(Expr::Closure {
+                        params: vec![Param { name, type_ann: None }],
+                        return_type: None,
+                        body: ClosureBody::Expr(Box::new(body)),
+                    });
+                }
                 self.advance();
                 Ok(Expr::Ident(name))
             }
@@ -1472,8 +1489,9 @@ impl Parser {
         }
     }
 
-    /// Look ahead from current `(` to determine if this is a closure `(params) => expr`.
-    /// Scans forward to find the matching `)`, then checks if the next token is `=>`.
+    /// Look ahead from current `(` to determine if this is a closure `(params) => expr`
+    /// or `(params) -> Type { ... }`.
+    /// Scans forward to find the matching `)`, then checks if the next token is `=>` or `->`.
     fn is_closure_ahead(&self) -> bool {
         // Current token should be LParen
         let mut i = self.pos + 1; // skip the LParen
@@ -1484,9 +1502,9 @@ impl Parser {
                 Token::RParen => {
                     depth -= 1;
                     if depth == 0 {
-                        // Check if next token after `)` is `=>`
+                        // Check if next token after `)` is `=>` or `->`
                         return i + 1 < self.tokens.len()
-                            && self.tokens[i + 1].token == Token::FatArrow;
+                            && matches!(self.tokens[i + 1].token, Token::FatArrow | Token::Arrow);
                     }
                 }
                 _ if i >= self.tokens.len() - 1 => return false, // hit EOF sentinel
@@ -1497,17 +1515,53 @@ impl Parser {
         false
     }
 
-    /// Parse a closure: `(params) => expr`
+    /// Parse a closure: `(params) => expr` or `(params) -> Type { stmts; expr }`
     fn parse_closure(&mut self) -> Result<Expr, TlError> {
+        use tl_ast::ClosureBody;
         self.expect(&Token::LParen)?;
         let params = self.parse_param_list()?;
         self.expect(&Token::RParen)?;
-        self.expect(&Token::FatArrow)?;
-        let body = self.parse_expression()?;
-        Ok(Expr::Closure {
-            params,
-            body: Box::new(body),
-        })
+
+        if self.match_token(&Token::FatArrow) {
+            // Expression-body closure: (x) => x * 2
+            let body = self.parse_expression()?;
+            Ok(Expr::Closure {
+                params,
+                return_type: None,
+                body: ClosureBody::Expr(Box::new(body)),
+            })
+        } else if self.match_token(&Token::Arrow) {
+            // Block-body closure: (x) -> int64 { let y = x * 2; y + 1 }
+            let return_type = self.parse_type()?;
+            self.expect(&Token::LBrace)?;
+            let stmts = self.parse_block_body()?;
+            // Check if the last statement is an expression statement — if so, treat as tail expr
+            let (stmts, expr) = self.extract_tail_expr(stmts);
+            self.expect(&Token::RBrace)?;
+            Ok(Expr::Closure {
+                params,
+                return_type: Some(return_type),
+                body: ClosureBody::Block { stmts, expr },
+            })
+        } else {
+            Err(TlError::Parser(ParserError {
+                message: "Expected `=>` or `->` after closure parameters".to_string(),
+                span: self.peek_span(),
+                hint: Some("Use `=>` for expression closures or `->` for block closures".into()),
+            }))
+        }
+    }
+
+    /// Extract the last expression-statement from a block as a tail expression.
+    fn extract_tail_expr(&self, mut stmts: Vec<Stmt>) -> (Vec<Stmt>, Option<Box<Expr>>) {
+        if let Some(last) = stmts.last() {
+            if let StmtKind::Expr(_) = &last.kind {
+                if let StmtKind::Expr(e) = stmts.pop().unwrap().kind {
+                    return (stmts, Some(Box::new(e)));
+                }
+            }
+        }
+        (stmts, None)
     }
 
     // ── Argument & Parameter Lists ───────────────────────────
@@ -1742,6 +1796,22 @@ impl Parser {
     }
 
     /// Parse `trait Name { fn method(self) -> type; ... }`
+    /// Parse `type Name<T> = TypeExpr`
+    fn parse_type_alias(&mut self, is_public: bool) -> Result<Stmt, TlError> {
+        let start = self.peek_span().start;
+        self.advance(); // consume 'type'
+        let name = self.expect_ident()?;
+        let type_params = self.parse_optional_type_params()?;
+        self.expect(&Token::Assign)?;
+        let value = self.parse_type()?;
+        let end = self.previous_span().end;
+        Ok(make_stmt(
+            StmtKind::TypeAlias { name, type_params, value, is_public },
+            start,
+            end,
+        ))
+    }
+
     fn parse_trait_def(&mut self) -> Result<Stmt, TlError> {
         let start = self.peek_span().start;
         self.advance(); // consume 'trait'
@@ -3039,6 +3109,142 @@ mod tests {
             assert_eq!(arms.len(), 3);
         } else {
             panic!("Expected match expression");
+        }
+    }
+
+    // ── Phase 18: Closures & Lambdas Improvements ────────────────
+
+    #[test]
+    fn test_parse_expr_closure_still_works() {
+        let program = parse("let f = (x) => x * 2").unwrap();
+        if let StmtKind::Let { value, .. } = &program.statements[0].kind {
+            if let Expr::Closure { params, body, return_type } = value {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].name, "x");
+                assert!(return_type.is_none());
+                assert!(matches!(body, ClosureBody::Expr(_)));
+            } else {
+                panic!("Expected closure");
+            }
+        } else {
+            panic!("Expected let");
+        }
+    }
+
+    #[test]
+    fn test_parse_block_body_closure() {
+        let program = parse("let f = (x: int64) -> int64 { let y = x * 2\n y + 1 }").unwrap();
+        if let StmtKind::Let { value, .. } = &program.statements[0].kind {
+            if let Expr::Closure { params, body, return_type } = value {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].name, "x");
+                assert!(return_type.is_some());
+                if let ClosureBody::Block { stmts, expr } = body {
+                    assert_eq!(stmts.len(), 1); // let y = x * 2
+                    assert!(expr.is_some()); // y + 1
+                } else {
+                    panic!("Expected block body");
+                }
+            } else {
+                panic!("Expected closure");
+            }
+        } else {
+            panic!("Expected let");
+        }
+    }
+
+    #[test]
+    fn test_is_closure_ahead_arrow() {
+        // (x) -> int64 { ... } should be detected as closure
+        let program = parse("let f = (x) -> int64 { x + 1 }").unwrap();
+        if let StmtKind::Let { value, .. } = &program.statements[0].kind {
+            assert!(matches!(value, Expr::Closure { .. }));
+        } else {
+            panic!("Expected let with closure");
+        }
+    }
+
+    #[test]
+    fn test_parse_block_body_closure_no_params() {
+        let program = parse("let f = () -> int64 { 42 }").unwrap();
+        if let StmtKind::Let { value, .. } = &program.statements[0].kind {
+            if let Expr::Closure { params, body, .. } = value {
+                assert_eq!(params.len(), 0);
+                if let ClosureBody::Block { stmts, expr } = body {
+                    assert!(stmts.is_empty());
+                    assert!(expr.is_some());
+                } else {
+                    panic!("Expected block body");
+                }
+            } else {
+                panic!("Expected closure");
+            }
+        } else {
+            panic!("Expected let");
+        }
+    }
+
+    #[test]
+    fn test_parse_type_alias_simple() {
+        let program = parse("type Mapper = fn(int64) -> int64").unwrap();
+        if let StmtKind::TypeAlias { name, type_params, value, is_public } = &program.statements[0].kind {
+            assert_eq!(name, "Mapper");
+            assert!(type_params.is_empty());
+            assert!(!is_public);
+            assert!(matches!(value, TypeExpr::Function { .. }));
+        } else {
+            panic!("Expected TypeAlias");
+        }
+    }
+
+    #[test]
+    fn test_parse_type_alias_generic() {
+        let program = parse("type Pair<T> = list<T>").unwrap();
+        if let StmtKind::TypeAlias { name, type_params, .. } = &program.statements[0].kind {
+            assert_eq!(name, "Pair");
+            assert_eq!(type_params, &["T"]);
+        } else {
+            panic!("Expected TypeAlias");
+        }
+    }
+
+    #[test]
+    fn test_parse_pub_type_alias() {
+        let program = parse("pub type Predicate = fn(string) -> bool").unwrap();
+        if let StmtKind::TypeAlias { name, is_public, .. } = &program.statements[0].kind {
+            assert_eq!(name, "Predicate");
+            assert!(is_public);
+        } else {
+            panic!("Expected TypeAlias");
+        }
+    }
+
+    #[test]
+    fn test_parse_shorthand_closure() {
+        let program = parse("let f = x => x * 2").unwrap();
+        if let StmtKind::Let { value, .. } = &program.statements[0].kind {
+            if let Expr::Closure { params, body, return_type } = value {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].name, "x");
+                assert!(return_type.is_none());
+                assert!(matches!(body, ClosureBody::Expr(_)));
+            } else {
+                panic!("Expected closure");
+            }
+        } else {
+            panic!("Expected let");
+        }
+    }
+
+    #[test]
+    fn test_parse_shorthand_closure_in_call() {
+        // Shorthand closure as argument: map(list, x => x + 1)
+        let program = parse("map(nums, x => x + 1)").unwrap();
+        if let StmtKind::Expr(Expr::Call { args, .. }) = &program.statements[0].kind {
+            assert_eq!(args.len(), 2);
+            assert!(matches!(&args[1], Expr::Closure { .. }));
+        } else {
+            panic!("Expected call with closure arg");
         }
     }
 }

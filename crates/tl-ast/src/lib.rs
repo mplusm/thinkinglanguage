@@ -231,6 +231,14 @@ pub enum StmtKind {
         is_public: bool,
     },
 
+    /// `type Mapper = fn(int64) -> int64`
+    TypeAlias {
+        name: String,
+        type_params: Vec<String>,
+        value: TypeExpr,
+        is_public: bool,
+    },
+
     /// `break`
     Break,
 
@@ -301,6 +309,15 @@ pub struct MatchArm {
     pub pattern: Pattern,
     pub guard: Option<Expr>,
     pub body: Expr,
+}
+
+/// Closure body: either a single expression or a block with statements.
+#[derive(Debug, Clone)]
+pub enum ClosureBody {
+    /// `(x) => x * 2`
+    Expr(Box<Expr>),
+    /// `(x) -> int64 { let y = x * 2; y + 1 }`
+    Block { stmts: Vec<Stmt>, expr: Option<Box<Expr>> },
 }
 
 /// Expressions
@@ -382,10 +399,11 @@ pub enum Expr {
         arms: Vec<MatchArm>,
     },
 
-    /// Closure: (params) => expr
+    /// Closure: (params) => expr  or  (params) -> Type { stmts; expr }
     Closure {
         params: Vec<Param>,
-        body: Box<Expr>,
+        return_type: Option<TypeExpr>,
+        body: ClosureBody,
     },
 
     /// Range: start..end

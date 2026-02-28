@@ -117,6 +117,8 @@ pub struct TypeEnv {
     traits: std::collections::HashMap<std::string::String, TraitInfo>,
     /// Trait implementations: (trait_name, type_name) -> method names
     trait_impls: std::collections::HashMap<(std::string::String, std::string::String), Vec<std::string::String>>,
+    /// Type aliases: name -> (type_params, TypeExpr)
+    type_aliases: std::collections::HashMap<std::string::String, (Vec<std::string::String>, tl_ast::TypeExpr)>,
     /// Next inference variable ID
     next_var: u32,
 }
@@ -143,6 +145,7 @@ impl TypeEnv {
             enums: std::collections::HashMap::new(),
             traits: std::collections::HashMap::new(),
             trait_impls: std::collections::HashMap::new(),
+            type_aliases: std::collections::HashMap::new(),
             next_var: 0,
         };
         env.register_builtin_traits();
@@ -264,6 +267,19 @@ impl TypeEnv {
 
     pub fn lookup_trait(&self, name: &str) -> Option<&TraitInfo> {
         self.traits.get(name)
+    }
+
+    pub fn register_type_alias(
+        &mut self,
+        name: std::string::String,
+        type_params: Vec<std::string::String>,
+        value: tl_ast::TypeExpr,
+    ) {
+        self.type_aliases.insert(name, (type_params, value));
+    }
+
+    pub fn lookup_type_alias(&self, name: &str) -> Option<&(Vec<std::string::String>, tl_ast::TypeExpr)> {
+        self.type_aliases.get(name)
     }
 
     pub fn register_trait_impl(
