@@ -490,7 +490,64 @@ impl Compiler {
                 self.current().dead_code = true;
                 Ok(())
             }
+            StmtKind::LetDestructure { pattern, value, .. } => {
+                let val_reg = self.current().alloc_register();
+                self.compile_expr(value, val_reg)?;
+                self.compile_let_destructure(pattern, val_reg)?;
+                // Note: don't free val_reg — locals were allocated above it
+                // and freeing it would allow reuse of registers occupied by locals
+                Ok(())
+            }
         }
+    }
+
+    /// Compile let-destructuring: bind pattern variables from a value register.
+    fn compile_let_destructure(&mut self, pattern: &Pattern, val_reg: u8) -> Result<(), TlError> {
+        match pattern {
+            Pattern::Binding(name) => {
+                let local = self.add_local(name.clone());
+                self.current().emit_abc(Op::Move, local, val_reg, 0, 0);
+            }
+            Pattern::Wildcard => {} // ignore value
+            Pattern::Struct { fields, .. } => {
+                for field in fields {
+                    let fname_const = self.current().add_constant(Constant::String(Arc::from(field.name.as_str())));
+                    let bind_name = match &field.pattern {
+                        Some(Pattern::Binding(n)) => n.clone(),
+                        _ => field.name.clone(),
+                    };
+                    let local = self.add_local(bind_name);
+                    self.current().emit_abc(Op::ExtractNamedField, local, val_reg, fname_const as u8, 0);
+                }
+            }
+            Pattern::List { elements, rest } => {
+                for (i, elem_pat) in elements.iter().enumerate() {
+                    match elem_pat {
+                        Pattern::Binding(name) => {
+                            let local = self.add_local(name.clone());
+                            self.current().emit_abc(Op::ExtractField, local, val_reg, i as u8, 0);
+                        }
+                        Pattern::Wildcard => {}
+                        _ => {}
+                    }
+                }
+                if let Some(rest_name) = rest {
+                    let local = self.add_local(rest_name.clone());
+                    self.current().emit_abc(Op::ExtractField, local, val_reg, (elements.len() as u8) | 0x80, 0);
+                }
+            }
+            Pattern::Enum { args, .. } => {
+                // Extract enum fields if variant matches (runtime will error if not)
+                for (i, arg_pat) in args.iter().enumerate() {
+                    if let Pattern::Binding(name) = arg_pat {
+                        let local = self.add_local(name.clone());
+                        self.current().emit_abc(Op::ExtractField, local, val_reg, i as u8, 0);
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn compile_function(
@@ -1819,31 +1876,34 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_case(&mut self, arms: &[(Expr, Expr)], dest: u8) -> Result<(), TlError> {
+    fn compile_case(&mut self, arms: &[MatchArm], dest: u8) -> Result<(), TlError> {
         let mut end_jumps = Vec::new();
+        let mut has_default = false;
 
-        for (pattern, body) in arms {
-            // Wildcard _ always matches
-            if matches!(pattern, Expr::Ident(s) if s == "_") {
-                self.compile_expr(body, dest)?;
+        for arm in arms {
+            if let Some(ref guard) = arm.guard {
+                // Conditional arm: guard is the boolean condition
+                let cond_reg = self.current().alloc_register();
+                self.compile_expr(guard, cond_reg)?;
+                let jump_false = self.current().current_pos();
+                self.current().emit_abx(Op::JumpIfFalse, cond_reg, 0, 0);
+                self.current().free_register();
+
+                self.compile_expr(&arm.body, dest)?;
+                let jump_end = self.current().current_pos();
+                self.current().emit_abx(Op::Jump, 0, 0, 0);
+                end_jumps.push(jump_end);
+
+                self.current().patch_jump(jump_false);
+            } else {
+                // Default arm (Wildcard without guard)
+                self.compile_expr(&arm.body, dest)?;
+                has_default = true;
                 break;
             }
-            let cond_reg = self.current().alloc_register();
-            self.compile_expr(pattern, cond_reg)?;
-            let jump_false = self.current().current_pos();
-            self.current().emit_abx(Op::JumpIfFalse, cond_reg, 0, 0);
-            self.current().free_register();
-
-            self.compile_expr(body, dest)?;
-            let jump_end = self.current().current_pos();
-            self.current().emit_abx(Op::Jump, 0, 0, 0);
-            end_jumps.push(jump_end);
-
-            self.current().patch_jump(jump_false);
         }
 
-        // Default: load None if no arm matched
-        if !arms.iter().any(|(p, _)| matches!(p, Expr::Ident(s) if s == "_")) {
+        if !has_default {
             self.current().emit_abx(Op::LoadNone, dest, 0, 0);
         }
 
@@ -1854,49 +1914,331 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_match(&mut self, subject: &Expr, arms: &[(Expr, Expr)], dest: u8) -> Result<(), TlError> {
+    fn compile_match(&mut self, subject: &Expr, arms: &[MatchArm], dest: u8) -> Result<(), TlError> {
         let subj_reg = self.current().alloc_register();
         self.compile_expr(subject, subj_reg)?;
 
         let mut end_jumps = Vec::new();
+        let mut has_unconditional = false;
 
-        for (pattern, body) in arms {
-            if matches!(pattern, Expr::Ident(s) if s == "_") {
-                self.compile_expr(body, dest)?;
-                self.current().free_register(); // subj_reg
-                // Patch remaining
-                for pos in end_jumps {
-                    self.current().patch_jump(pos);
-                }
-                return Ok(());
+        for arm in arms {
+            // Check if this arm is unconditional (wildcard or unguarded binding)
+            let is_unconditional = match &arm.pattern {
+                Pattern::Wildcard => true,
+                Pattern::Binding(_) if arm.guard.is_none() => true,
+                Pattern::Struct { name: None, .. } if arm.guard.is_none() => true,
+                _ => false,
+            };
+
+            self.compile_match_arm(arm, subj_reg, dest, &mut end_jumps)?;
+
+            if is_unconditional {
+                has_unconditional = true;
+                break; // No point compiling more arms
             }
-
-            let pat_reg = self.current().alloc_register();
-            self.compile_expr(pattern, pat_reg)?;
-            let result_reg = self.current().alloc_register();
-            self.current().emit_abc(Op::TestMatch, subj_reg, pat_reg, result_reg, 0);
-
-            let jump_false = self.current().current_pos();
-            self.current().emit_abx(Op::JumpIfFalse, result_reg, 0, 0);
-            self.current().free_register(); // result_reg
-            self.current().free_register(); // pat_reg
-
-            self.compile_expr(body, dest)?;
-            let jump_end = self.current().current_pos();
-            self.current().emit_abx(Op::Jump, 0, 0, 0);
-            end_jumps.push(jump_end);
-
-            self.current().patch_jump(jump_false);
         }
 
-        // No match — load None
-        self.current().emit_abx(Op::LoadNone, dest, 0, 0);
-        self.current().free_register(); // subj_reg
+        if !has_unconditional {
+            // No match — load None
+            self.current().emit_abx(Op::LoadNone, dest, 0, 0);
+            self.current().free_register(); // subj_reg
+        }
 
         for pos in end_jumps {
             self.current().patch_jump(pos);
         }
 
+        Ok(())
+    }
+
+    /// Compile a single match arm against the subject in subj_reg.
+    /// Returns Ok(true) if this arm is an unconditional match (wildcard/unguarded binding).
+    fn compile_match_arm(
+        &mut self,
+        arm: &MatchArm,
+        subj_reg: u8,
+        dest: u8,
+        end_jumps: &mut Vec<usize>,
+    ) -> Result<(), TlError> {
+        match &arm.pattern {
+            Pattern::Wildcard => {
+                self.compile_expr(&arm.body, dest)?;
+                self.current().free_register(); // subj_reg
+                for pos in end_jumps.drain(..) {
+                    self.current().patch_jump(pos);
+                }
+                // Return via a special mechanism — we'll handle this by checking after the call
+                // Actually, we can't return early from the caller. Instead, emit jump to end.
+                // The caller won't emit more arms after wildcard since the loop will end.
+                return Ok(());
+            }
+            Pattern::Binding(name) => {
+                let local = self.add_local(name.clone());
+                self.current().emit_abc(Op::Move, local, subj_reg, 0, 0);
+
+                if let Some(guard) = &arm.guard {
+                    let guard_reg = self.current().alloc_register();
+                    self.compile_expr(guard, guard_reg)?;
+                    let jf = self.current().current_pos();
+                    self.current().emit_abx(Op::JumpIfFalse, guard_reg, 0, 0);
+                    self.current().free_register();
+
+                    self.compile_expr(&arm.body, dest)?;
+                    let jump_end = self.current().current_pos();
+                    self.current().emit_abx(Op::Jump, 0, 0, 0);
+                    end_jumps.push(jump_end);
+                    self.current().patch_jump(jf);
+                } else {
+                    // Unconditional match
+                    self.compile_expr(&arm.body, dest)?;
+                    self.current().free_register(); // subj_reg
+                    for pos in end_jumps.drain(..) {
+                        self.current().patch_jump(pos);
+                    }
+                    return Ok(());
+                }
+            }
+            Pattern::Literal(expr) => {
+                let pat_reg = self.current().alloc_register();
+                self.compile_expr(expr, pat_reg)?;
+                let result_reg = self.current().alloc_register();
+                self.current().emit_abc(Op::TestMatch, subj_reg, pat_reg, result_reg, 0);
+
+                let jump_false = self.current().current_pos();
+                self.current().emit_abx(Op::JumpIfFalse, result_reg, 0, 0);
+                self.current().free_register(); // result_reg
+                self.current().free_register(); // pat_reg
+
+                self.compile_guard_and_body(arm, dest, end_jumps, jump_false)?;
+            }
+            Pattern::Enum { type_name: _, variant, args } => {
+                let variant_const = self.current().add_constant(Constant::String(Arc::from(variant.as_str())));
+                let result_reg = self.current().alloc_register();
+                self.current().emit_abc(Op::MatchEnum, subj_reg, variant_const as u8, result_reg, 0);
+
+                let jump_false = self.current().current_pos();
+                self.current().emit_abx(Op::JumpIfFalse, result_reg, 0, 0);
+                self.current().free_register(); // result_reg
+
+                // Bind destructured fields
+                for (i, arg_pat) in args.iter().enumerate() {
+                    match arg_pat {
+                        Pattern::Binding(name) => {
+                            let local = self.add_local(name.clone());
+                            self.current().emit_abc(Op::ExtractField, local, subj_reg, i as u8, 0);
+                        }
+                        Pattern::Wildcard => {}
+                        _ => {}
+                    }
+                }
+
+                self.compile_guard_and_body(arm, dest, end_jumps, jump_false)?;
+            }
+            Pattern::Struct { name: struct_name, fields } => {
+                // For named structs, check struct type via TestMatch
+                let jump_false = if let Some(sname) = struct_name {
+                    let name_const = self.current().add_constant(Constant::String(Arc::from(sname.as_str())));
+                    let name_reg = self.current().alloc_register();
+                    self.current().emit_abx(Op::LoadConst, name_reg, name_const as u16, 0);
+                    let result_reg = self.current().alloc_register();
+                    self.current().emit_abc(Op::TestMatch, subj_reg, name_reg, result_reg, 0);
+                    let jf = self.current().current_pos();
+                    self.current().emit_abx(Op::JumpIfFalse, result_reg, 0, 0);
+                    self.current().free_register(); // result_reg
+                    self.current().free_register(); // name_reg
+                    jf
+                } else {
+                    usize::MAX
+                };
+
+                // Extract named fields
+                for field in fields {
+                    let fname_const = self.current().add_constant(Constant::String(Arc::from(field.name.as_str())));
+                    match &field.pattern {
+                        None | Some(Pattern::Binding(_)) => {
+                            let bind_name = match &field.pattern {
+                                Some(Pattern::Binding(n)) => n.clone(),
+                                _ => field.name.clone(),
+                            };
+                            let local = self.add_local(bind_name);
+                            self.current().emit_abc(Op::ExtractNamedField, local, subj_reg, fname_const as u8, 0);
+                        }
+                        Some(Pattern::Wildcard) => {}
+                        _ => {
+                            let local = self.add_local(field.name.clone());
+                            self.current().emit_abc(Op::ExtractNamedField, local, subj_reg, fname_const as u8, 0);
+                        }
+                    }
+                }
+
+                if jump_false != usize::MAX {
+                    self.compile_guard_and_body(arm, dest, end_jumps, jump_false)?;
+                } else {
+                    // No type check — just guard + body
+                    if let Some(guard) = &arm.guard {
+                        let guard_reg = self.current().alloc_register();
+                        self.compile_expr(guard, guard_reg)?;
+                        let gj = self.current().current_pos();
+                        self.current().emit_abx(Op::JumpIfFalse, guard_reg, 0, 0);
+                        self.current().free_register();
+
+                        self.compile_expr(&arm.body, dest)?;
+                        let jump_end = self.current().current_pos();
+                        self.current().emit_abx(Op::Jump, 0, 0, 0);
+                        end_jumps.push(jump_end);
+                        self.current().patch_jump(gj);
+                    } else {
+                        // Unconditional struct match
+                        self.compile_expr(&arm.body, dest)?;
+                        self.current().free_register(); // subj_reg
+                        for pos in end_jumps.drain(..) {
+                            self.current().patch_jump(pos);
+                        }
+                        return Ok(());
+                    }
+                }
+            }
+            Pattern::List { elements, rest } => {
+                // Check list length
+                let len_builtin_reg = self.current().alloc_register();
+                // Call len(subj)
+                self.current().emit_abc(Op::CallBuiltin, len_builtin_reg, BuiltinId::Len as u8, subj_reg, 0);
+                self.current().emit_abc(Op::Move, 1, 0, 0, 0); // arg count = 1
+
+                let expected_len_reg = self.current().alloc_register();
+                let len_val = elements.len() as i64;
+                let len_const = self.current().add_constant(Constant::Int(len_val));
+                self.current().emit_abx(Op::LoadConst, expected_len_reg, len_const as u16, 0);
+
+                let cmp_reg = self.current().alloc_register();
+                if rest.is_some() {
+                    self.current().emit_abc(Op::Gte, cmp_reg, len_builtin_reg, expected_len_reg, 0);
+                } else {
+                    self.current().emit_abc(Op::Eq, cmp_reg, len_builtin_reg, expected_len_reg, 0);
+                }
+                let jump_false = self.current().current_pos();
+                self.current().emit_abx(Op::JumpIfFalse, cmp_reg, 0, 0);
+                self.current().free_register(); // cmp_reg
+                self.current().free_register(); // expected_len_reg
+                self.current().free_register(); // len_builtin_reg
+
+                // Extract elements by index
+                for (i, elem_pat) in elements.iter().enumerate() {
+                    match elem_pat {
+                        Pattern::Binding(name) => {
+                            let local = self.add_local(name.clone());
+                            self.current().emit_abc(Op::ExtractField, local, subj_reg, i as u8, 0);
+                        }
+                        Pattern::Wildcard => {}
+                        _ => {}
+                    }
+                }
+
+                // Rest pattern
+                if let Some(rest_name) = rest {
+                    let local = self.add_local(rest_name.clone());
+                    self.current().emit_abc(Op::ExtractField, local, subj_reg, (elements.len() as u8) | 0x80, 0);
+                }
+
+                self.compile_guard_and_body(arm, dest, end_jumps, jump_false)?;
+            }
+            Pattern::Or(patterns) => {
+                let mut match_jumps = Vec::new();
+
+                for sub_pat in patterns {
+                    match sub_pat {
+                        Pattern::Literal(expr) => {
+                            let pat_reg = self.current().alloc_register();
+                            self.compile_expr(expr, pat_reg)?;
+                            let result_reg = self.current().alloc_register();
+                            self.current().emit_abc(Op::TestMatch, subj_reg, pat_reg, result_reg, 0);
+                            let jump_true = self.current().current_pos();
+                            self.current().emit_abx(Op::JumpIfTrue, result_reg, 0, 0);
+                            match_jumps.push(jump_true);
+                            self.current().free_register(); // result_reg
+                            self.current().free_register(); // pat_reg
+                        }
+                        Pattern::Enum { variant, .. } => {
+                            let variant_const = self.current().add_constant(Constant::String(Arc::from(variant.as_str())));
+                            let result_reg = self.current().alloc_register();
+                            self.current().emit_abc(Op::MatchEnum, subj_reg, variant_const as u8, result_reg, 0);
+                            let jump_true = self.current().current_pos();
+                            self.current().emit_abx(Op::JumpIfTrue, result_reg, 0, 0);
+                            match_jumps.push(jump_true);
+                            self.current().free_register();
+                        }
+                        Pattern::Wildcard | Pattern::Binding(_) => {
+                            let jump = self.current().current_pos();
+                            self.current().emit_abx(Op::Jump, 0, 0, 0);
+                            match_jumps.push(jump);
+                        }
+                        _ => {}
+                    }
+                }
+
+                // None matched — skip body
+                let jump_skip = self.current().current_pos();
+                self.current().emit_abx(Op::Jump, 0, 0, 0);
+
+                // Patch match jumps to body
+                for jt in &match_jumps {
+                    self.current().patch_jump(*jt);
+                }
+
+                // Guard + body
+                if let Some(guard) = &arm.guard {
+                    let guard_reg = self.current().alloc_register();
+                    self.compile_expr(guard, guard_reg)?;
+                    let gj = self.current().current_pos();
+                    self.current().emit_abx(Op::JumpIfFalse, guard_reg, 0, 0);
+                    self.current().free_register();
+
+                    self.compile_expr(&arm.body, dest)?;
+                    let jump_end = self.current().current_pos();
+                    self.current().emit_abx(Op::Jump, 0, 0, 0);
+                    end_jumps.push(jump_end);
+                    self.current().patch_jump(gj);
+                } else {
+                    self.compile_expr(&arm.body, dest)?;
+                    let jump_end = self.current().current_pos();
+                    self.current().emit_abx(Op::Jump, 0, 0, 0);
+                    end_jumps.push(jump_end);
+                }
+
+                self.current().patch_jump(jump_skip);
+            }
+        }
+        Ok(())
+    }
+
+    /// Helper: compile guard check (if any) + body, patch jump_false
+    fn compile_guard_and_body(
+        &mut self,
+        arm: &MatchArm,
+        dest: u8,
+        end_jumps: &mut Vec<usize>,
+        jump_false: usize,
+    ) -> Result<(), TlError> {
+        let guard_jump = if let Some(guard) = &arm.guard {
+            let guard_reg = self.current().alloc_register();
+            self.compile_expr(guard, guard_reg)?;
+            let jf = self.current().current_pos();
+            self.current().emit_abx(Op::JumpIfFalse, guard_reg, 0, 0);
+            self.current().free_register();
+            Some(jf)
+        } else {
+            None
+        };
+
+        self.compile_expr(&arm.body, dest)?;
+        let jump_end = self.current().current_pos();
+        self.current().emit_abx(Op::Jump, 0, 0, 0);
+        end_jumps.push(jump_end);
+
+        self.current().patch_jump(jump_false);
+        if let Some(gj) = guard_jump {
+            self.current().patch_jump(gj);
+        }
         Ok(())
     }
 

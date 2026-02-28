@@ -399,6 +399,17 @@ impl Formatter {
                 self.push_indent();
                 self.output.push_str("}\n");
             }
+            StmtKind::LetDestructure { pattern, mutable, value, is_public } => {
+                self.push_indent();
+                if *is_public { self.output.push_str("pub "); }
+                self.output.push_str("let ");
+                if *mutable { self.output.push_str("mut "); }
+                self.output.push_str(&self.format_pattern(pattern));
+                self.output.push_str(" = ");
+                let val_str = self.format_expr(value);
+                self.output.push_str(&val_str);
+                self.output.push('\n');
+            }
             StmtKind::Break => {
                 self.push_indent();
                 self.output.push_str("break\n");
@@ -664,11 +675,15 @@ impl Formatter {
             }
             Expr::Case { arms } => {
                 let mut out = String::from("case {\n");
-                for (pattern, body) in arms {
+                for arm in arms {
                     out.push_str(&"    ".repeat(self.indent + 1));
-                    out.push_str(&self.format_expr(pattern));
+                    out.push_str(&self.format_pattern(&arm.pattern));
+                    if let Some(guard) = &arm.guard {
+                        out.push_str(" if ");
+                        out.push_str(&self.format_expr(guard));
+                    }
                     out.push_str(" => ");
-                    out.push_str(&self.format_expr(body));
+                    out.push_str(&self.format_expr(&arm.body));
                     out.push('\n');
                 }
                 out.push_str(&"    ".repeat(self.indent));
@@ -677,16 +692,62 @@ impl Formatter {
             }
             Expr::Match { subject, arms } => {
                 let mut out = format!("match {} {{\n", self.format_expr(subject));
-                for (pattern, body) in arms {
+                for arm in arms {
                     out.push_str(&"    ".repeat(self.indent + 1));
-                    out.push_str(&self.format_expr(pattern));
+                    out.push_str(&self.format_pattern(&arm.pattern));
+                    if let Some(guard) = &arm.guard {
+                        out.push_str(" if ");
+                        out.push_str(&self.format_expr(guard));
+                    }
                     out.push_str(" => ");
-                    out.push_str(&self.format_expr(body));
+                    out.push_str(&self.format_expr(&arm.body));
                     out.push('\n');
                 }
                 out.push_str(&"    ".repeat(self.indent));
                 out.push('}');
                 out
+            }
+        }
+    }
+
+    fn format_pattern(&self, pattern: &Pattern) -> String {
+        match pattern {
+            Pattern::Wildcard => "_".to_string(),
+            Pattern::Binding(name) => name.clone(),
+            Pattern::Literal(expr) => self.format_expr(expr),
+            Pattern::Enum { type_name, variant, args } => {
+                if args.is_empty() {
+                    format!("{type_name}::{variant}")
+                } else {
+                    let args_str: Vec<String> = args.iter().map(|a| self.format_pattern(a)).collect();
+                    format!("{type_name}::{variant}({})", args_str.join(", "))
+                }
+            }
+            Pattern::Struct { name, fields } => {
+                let prefix = name.as_deref().unwrap_or("");
+                let fields_str: Vec<String> = fields.iter().map(|f| {
+                    if let Some(pat) = &f.pattern {
+                        format!("{}: {}", f.name, self.format_pattern(pat))
+                    } else {
+                        f.name.clone()
+                    }
+                }).collect();
+                if prefix.is_empty() {
+                    format!("{{ {} }}", fields_str.join(", "))
+                } else {
+                    format!("{prefix} {{ {} }}", fields_str.join(", "))
+                }
+            }
+            Pattern::List { elements, rest } => {
+                let mut parts: Vec<String> = elements.iter().map(|e| self.format_pattern(e)).collect();
+                if let Some(rest_name) = rest {
+                    parts.push(format!("...{rest_name}"));
+                }
+                format!("[{}]", parts.join(", "))
+            }
+            Pattern::Or(patterns) => {
+                let parts: Vec<String> = patterns.iter().map(|p| self.format_pattern(p)).collect();
+                parts.join(" or ")
             }
         }
     }

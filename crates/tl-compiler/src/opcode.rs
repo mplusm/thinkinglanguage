@@ -182,6 +182,15 @@ pub enum Op {
     /// If source is None → early return None
     /// Otherwise → passthrough
     TryPropagate = 61,
+
+    // ── Phase 17: Pattern Matching ──
+    /// ExtractField: A = dest, B = source reg, C = field index
+    /// Extracts field[C] from an enum instance or list into dest.
+    /// If C has high bit set (C | 0x80), extracts rest (sublist from index C & 0x7F).
+    ExtractField = 62,
+    /// ExtractNamedField: A = dest, B = source reg, C = field name constant index
+    /// Extracts a named field from a struct into dest.
+    ExtractNamedField = 63,
 }
 
 impl Op {
@@ -250,6 +259,8 @@ impl Op {
             Op::Await => "Await",
             Op::Yield => "Yield",
             Op::TryPropagate => "TryPropagate",
+            Op::ExtractField => "ExtractField",
+            Op::ExtractNamedField => "ExtractNamedField",
         }
     }
 }

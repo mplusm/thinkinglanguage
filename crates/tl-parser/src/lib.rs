@@ -200,10 +200,7 @@ impl Parser {
                 Ok(stmt)
             }
             Token::Let => {
-                let mut stmt = self.parse_let()?;
-                if let StmtKind::Let { ref mut is_public, .. } = stmt.kind {
-                    *is_public = true;
-                }
+                let mut stmt = self.parse_let_with_pub(true)?;
                 stmt.span = Span::new(start, stmt.span.end);
                 Ok(stmt)
             }
@@ -688,9 +685,58 @@ impl Parser {
     }
 
     fn parse_let(&mut self) -> Result<Stmt, TlError> {
+        self.parse_let_with_pub(false)
+    }
+
+    fn parse_let_with_pub(&mut self, is_public: bool) -> Result<Stmt, TlError> {
         let start = self.peek_span().start;
         self.advance(); // consume 'let'
         let mutable = self.match_token(&Token::Mut);
+        // Check for destructuring patterns: let { x, y } = expr or let [a, b] = expr
+        // Also Ident::Variant for enum destructure
+        match self.peek() {
+            Token::LBrace | Token::LBracket => {
+                let pattern = self.parse_pattern()?;
+                self.expect(&Token::Assign)?;
+                let value = self.parse_expression()?;
+                let end = self.previous_span().end;
+                return Ok(make_stmt(StmtKind::LetDestructure {
+                    pattern, mutable, value, is_public,
+                }, start, end));
+            }
+            Token::Ident(_) => {
+                // Lookahead: if Ident::ColonColon, it's enum destructure
+                if self.pos + 1 < self.tokens.len()
+                    && matches!(self.tokens[self.pos + 1].token, Token::ColonColon)
+                {
+                    let pattern = self.parse_pattern()?;
+                    self.expect(&Token::Assign)?;
+                    let value = self.parse_expression()?;
+                    let end = self.previous_span().end;
+                    return Ok(make_stmt(StmtKind::LetDestructure {
+                        pattern, mutable, value, is_public,
+                    }, start, end));
+                }
+                // Also check for Named struct: Ident { ... }
+                if self.pos + 1 < self.tokens.len()
+                    && matches!(self.tokens[self.pos + 1].token, Token::LBrace)
+                {
+                    if self.pos + 2 < self.tokens.len() {
+                        let third = &self.tokens[self.pos + 2].token;
+                        if matches!(third, Token::Ident(_) | Token::RBrace) {
+                            let pattern = self.parse_pattern()?;
+                            self.expect(&Token::Assign)?;
+                            let value = self.parse_expression()?;
+                            let end = self.previous_span().end;
+                            return Ok(make_stmt(StmtKind::LetDestructure {
+                                pattern, mutable, value, is_public,
+                            }, start, end));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
         let name = self.expect_ident()?;
         let type_ann = if self.match_token(&Token::Colon) {
             Some(self.parse_type()?)
@@ -700,7 +746,7 @@ impl Parser {
         self.expect(&Token::Assign)?;
         let value = self.parse_expression()?;
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::Let { name, mutable, type_ann, value, is_public: false }, start, end))
+        Ok(make_stmt(StmtKind::Let { name, mutable, type_ann, value, is_public }, start, end))
     }
 
     fn parse_fn_decl(&mut self) -> Result<Stmt, TlError> {
@@ -1081,6 +1127,215 @@ impl Parser {
     }
 
     /// Lookahead: is next `{ ident :` (struct init) vs `{ stmt` (block)?
+    // ── Pattern Matching ─────────────────────────────────────
+
+    /// Parse a match arm: `pattern [if guard] => body`
+    fn parse_match_arm(&mut self) -> Result<MatchArm, TlError> {
+        let pattern = self.parse_pattern()?;
+        let guard = if self.match_token(&Token::If) {
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+        self.expect(&Token::FatArrow)?;
+        let body = self.parse_expression()?;
+        Ok(MatchArm { pattern, guard, body })
+    }
+
+    /// Parse a case arm: `condition => body` or `_ => body` (default).
+    /// Case arms use boolean expressions as conditions, not patterns.
+    /// We represent them as MatchArm with Wildcard pattern + guard.
+    fn parse_case_arm(&mut self) -> Result<MatchArm, TlError> {
+        // Wildcard / default case
+        if self.check(&Token::Underscore) {
+            self.advance();
+            self.expect(&Token::FatArrow)?;
+            let body = self.parse_expression()?;
+            return Ok(MatchArm { pattern: Pattern::Wildcard, guard: None, body });
+        }
+        // Otherwise, parse expression as guard condition
+        let condition = self.parse_expression()?;
+        self.expect(&Token::FatArrow)?;
+        let body = self.parse_expression()?;
+        Ok(MatchArm { pattern: Pattern::Wildcard, guard: Some(condition), body })
+    }
+
+    /// Parse a pattern (for match arms and let-destructuring).
+    fn parse_pattern(&mut self) -> Result<Pattern, TlError> {
+        let pat = self.parse_single_pattern()?;
+        // Check for OR pattern: pat1 | pat2 | pat3
+        // Must be `|` without `>` (to distinguish from `|>` pipe)
+        if self.check(&Token::Or) {
+            let mut patterns = vec![pat];
+            while self.check(&Token::Or) {
+                self.advance(); // consume 'or'
+                patterns.push(self.parse_single_pattern()?);
+            }
+            Ok(Pattern::Or(patterns))
+        } else {
+            Ok(pat)
+        }
+    }
+
+    /// Parse a single (non-OR) pattern.
+    fn parse_single_pattern(&mut self) -> Result<Pattern, TlError> {
+        let token = self.peek().clone();
+        match token {
+            // Wildcard: _
+            Token::Underscore => {
+                self.advance();
+                Ok(Pattern::Wildcard)
+            }
+            // Literal patterns
+            Token::Int(n) => {
+                self.advance();
+                Ok(Pattern::Literal(Expr::Int(n)))
+            }
+            Token::Float(n) => {
+                self.advance();
+                Ok(Pattern::Literal(Expr::Float(n)))
+            }
+            Token::String(s) => {
+                self.advance();
+                Ok(Pattern::Literal(Expr::String(s)))
+            }
+            Token::True => {
+                self.advance();
+                Ok(Pattern::Literal(Expr::Bool(true)))
+            }
+            Token::False => {
+                self.advance();
+                Ok(Pattern::Literal(Expr::Bool(false)))
+            }
+            Token::None_ => {
+                self.advance();
+                Ok(Pattern::Literal(Expr::None))
+            }
+            // Negative literal: -1, -3.14
+            Token::Minus => {
+                self.advance();
+                match self.peek().clone() {
+                    Token::Int(n) => {
+                        self.advance();
+                        Ok(Pattern::Literal(Expr::Int(-n)))
+                    }
+                    Token::Float(n) => {
+                        self.advance();
+                        Ok(Pattern::Literal(Expr::Float(-n)))
+                    }
+                    _ => Err(TlError::Parser(ParserError {
+                        message: "Expected number after '-' in pattern".to_string(),
+                        span: self.peek_span(),
+                        hint: None,
+                    })),
+                }
+            }
+            // List pattern: [a, b, ...rest]
+            Token::LBracket => {
+                self.advance(); // consume '['
+                let mut elements = Vec::new();
+                let mut rest = None;
+                while !self.check(&Token::RBracket) && !self.is_at_end() {
+                    // Check for rest pattern: ...name
+                    if self.check(&Token::DotDotDot) {
+                        self.advance(); // consume '...'
+                        let name = self.expect_ident()?;
+                        rest = Some(name);
+                        self.match_token(&Token::Comma); // optional trailing comma
+                        break;
+                    }
+                    elements.push(self.parse_pattern()?);
+                    if !self.match_token(&Token::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&Token::RBracket)?;
+                Ok(Pattern::List { elements, rest })
+            }
+            // Struct pattern: { x, y } or { x: pat, y }
+            Token::LBrace => {
+                self.advance(); // consume '{'
+                let mut fields = Vec::new();
+                while !self.check(&Token::RBrace) && !self.is_at_end() {
+                    let name = self.expect_ident()?;
+                    let sub_pat = if self.match_token(&Token::Colon) {
+                        Some(self.parse_pattern()?)
+                    } else {
+                        None
+                    };
+                    fields.push(StructPatternField { name, pattern: sub_pat });
+                    if !self.match_token(&Token::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&Token::RBrace)?;
+                Ok(Pattern::Struct { name: None, fields })
+            }
+            // Identifier-based patterns: binding, or Enum::Variant
+            Token::Ident(name) => {
+                // Check for Ident::Ident (enum variant pattern)
+                if self.pos + 1 < self.tokens.len()
+                    && matches!(self.tokens[self.pos + 1].token, Token::ColonColon)
+                {
+                    let type_name = name.clone();
+                    self.advance(); // consume type name
+                    self.advance(); // consume '::'
+                    let variant = self.expect_ident()?;
+                    // Optional args: Variant(pat1, pat2)
+                    let mut args = Vec::new();
+                    if self.match_token(&Token::LParen) {
+                        while !self.check(&Token::RParen) && !self.is_at_end() {
+                            args.push(self.parse_pattern()?);
+                            if !self.match_token(&Token::Comma) {
+                                break;
+                            }
+                        }
+                        self.expect(&Token::RParen)?;
+                    }
+                    return Ok(Pattern::Enum { type_name, variant, args });
+                }
+                // Check for Named struct pattern: Name { x, y }
+                if self.pos + 1 < self.tokens.len()
+                    && matches!(self.tokens[self.pos + 1].token, Token::LBrace)
+                {
+                    // Lookahead: check if this is ident { ident [,:|} ] — struct pattern
+                    // vs ident { expr } — block (but blocks aren't patterns)
+                    if self.pos + 2 < self.tokens.len() {
+                        let third = &self.tokens[self.pos + 2].token;
+                        if matches!(third, Token::Ident(_) | Token::RBrace) {
+                            let struct_name = name.clone();
+                            self.advance(); // consume name
+                            self.advance(); // consume '{'
+                            let mut fields = Vec::new();
+                            while !self.check(&Token::RBrace) && !self.is_at_end() {
+                                let fname = self.expect_ident()?;
+                                let sub_pat = if self.match_token(&Token::Colon) {
+                                    Some(self.parse_pattern()?)
+                                } else {
+                                    None
+                                };
+                                fields.push(StructPatternField { name: fname, pattern: sub_pat });
+                                if !self.match_token(&Token::Comma) {
+                                    break;
+                                }
+                            }
+                            self.expect(&Token::RBrace)?;
+                            return Ok(Pattern::Struct { name: Some(struct_name), fields });
+                        }
+                    }
+                }
+                // Simple binding
+                self.advance();
+                Ok(Pattern::Binding(name))
+            }
+            _ => Err(TlError::Parser(ParserError {
+                message: format!("Expected pattern, found `{}`", self.peek()),
+                span: self.peek_span(),
+                hint: None,
+            })),
+        }
+    }
+
     fn is_struct_init_ahead(&self) -> bool {
         // Check: LBrace Ident Colon
         if self.pos + 2 < self.tokens.len() {
@@ -1160,11 +1415,9 @@ impl Parser {
                 self.expect(&Token::LBrace)?;
                 let mut arms = Vec::new();
                 while !self.check(&Token::RBrace) && !self.is_at_end() {
-                    let pattern = self.parse_expression()?;
-                    self.expect(&Token::FatArrow)?;
-                    let body = self.parse_expression()?;
+                    let arm = self.parse_case_arm()?;
                     self.match_token(&Token::Comma); // optional trailing comma
-                    arms.push((pattern, body));
+                    arms.push(arm);
                 }
                 self.expect(&Token::RBrace)?;
                 Ok(Expr::Case { arms })
@@ -1175,11 +1428,9 @@ impl Parser {
                 self.expect(&Token::LBrace)?;
                 let mut arms = Vec::new();
                 while !self.check(&Token::RBrace) && !self.is_at_end() {
-                    let pattern = self.parse_expression()?;
-                    self.expect(&Token::FatArrow)?;
-                    let body = self.parse_expression()?;
+                    let arm = self.parse_match_arm()?;
                     self.match_token(&Token::Comma); // optional trailing comma
-                    arms.push((pattern, body));
+                    arms.push(arm);
                 }
                 self.expect(&Token::RBrace)?;
                 Ok(Expr::Match {
@@ -1763,7 +2014,10 @@ fn expr_contains_yield(expr: &Expr) -> bool {
         Expr::Range { start, end } => expr_contains_yield(start) || expr_contains_yield(end),
         Expr::Await(e) => expr_contains_yield(e),
         Expr::NamedArg { value, .. } => expr_contains_yield(value),
-        Expr::Case { arms } | Expr::Match { arms, .. } => arms.iter().any(|(a, b)| expr_contains_yield(a) || expr_contains_yield(b)),
+        Expr::Case { arms } | Expr::Match { arms, .. } => arms.iter().any(|arm| {
+            (arm.guard.as_ref().is_some_and(|g| expr_contains_yield(g)))
+                || expr_contains_yield(&arm.body)
+        }),
         Expr::StructInit { fields, .. } => fields.iter().any(|(_, e)| expr_contains_yield(e)),
         Expr::EnumVariant { args, .. } => args.iter().any(expr_contains_yield),
         _ => false,
@@ -2570,6 +2824,221 @@ mod tests {
             assert_eq!(type_params, &vec!["T".to_string()]);
         } else {
             panic!("Expected ImplBlock");
+        }
+    }
+
+    // ── Phase 17: Pattern Matching ──
+
+    #[test]
+    fn test_parse_match_wildcard() {
+        let program = parse("match x { _ => 1 }").unwrap();
+        if let StmtKind::Expr(Expr::Match { arms, .. }) = &program.statements[0].kind {
+            assert!(matches!(arms[0].pattern, Pattern::Wildcard));
+        } else {
+            panic!("Expected match expression");
+        }
+    }
+
+    #[test]
+    fn test_parse_match_literal() {
+        let program = parse("match x { 1 => \"one\", 2 => \"two\", _ => \"other\" }").unwrap();
+        if let StmtKind::Expr(Expr::Match { arms, .. }) = &program.statements[0].kind {
+            assert_eq!(arms.len(), 3);
+            assert!(matches!(arms[0].pattern, Pattern::Literal(Expr::Int(1))));
+            assert!(matches!(arms[1].pattern, Pattern::Literal(Expr::Int(2))));
+            assert!(matches!(arms[2].pattern, Pattern::Wildcard));
+        } else {
+            panic!("Expected match expression");
+        }
+    }
+
+    #[test]
+    fn test_parse_match_binding() {
+        let program = parse("match x { val => val + 1 }").unwrap();
+        if let StmtKind::Expr(Expr::Match { arms, .. }) = &program.statements[0].kind {
+            if let Pattern::Binding(name) = &arms[0].pattern {
+                assert_eq!(name, "val");
+            } else {
+                panic!("Expected binding pattern");
+            }
+        } else {
+            panic!("Expected match expression");
+        }
+    }
+
+    #[test]
+    fn test_parse_match_enum_variant() {
+        let program = parse("match x { Color::Red => 1, Color::Blue => 2 }").unwrap();
+        if let StmtKind::Expr(Expr::Match { arms, .. }) = &program.statements[0].kind {
+            if let Pattern::Enum { type_name, variant, args } = &arms[0].pattern {
+                assert_eq!(type_name, "Color");
+                assert_eq!(variant, "Red");
+                assert!(args.is_empty());
+            } else {
+                panic!("Expected enum pattern");
+            }
+        } else {
+            panic!("Expected match expression");
+        }
+    }
+
+    #[test]
+    fn test_parse_match_enum_with_args() {
+        let program = parse("match x { Shape::Circle(r) => r, Shape::Rect(w, h) => w * h }").unwrap();
+        if let StmtKind::Expr(Expr::Match { arms, .. }) = &program.statements[0].kind {
+            if let Pattern::Enum { variant, args, .. } = &arms[0].pattern {
+                assert_eq!(variant, "Circle");
+                assert_eq!(args.len(), 1);
+                assert!(matches!(args[0], Pattern::Binding(_)));
+            } else {
+                panic!("Expected enum pattern with args");
+            }
+        } else {
+            panic!("Expected match expression");
+        }
+    }
+
+    #[test]
+    fn test_parse_match_guard() {
+        let program = parse("match x { n if n > 0 => \"pos\", _ => \"other\" }").unwrap();
+        if let StmtKind::Expr(Expr::Match { arms, .. }) = &program.statements[0].kind {
+            assert!(arms[0].guard.is_some());
+            assert!(matches!(arms[0].pattern, Pattern::Binding(_)));
+            assert!(arms[1].guard.is_none());
+        } else {
+            panic!("Expected match expression");
+        }
+    }
+
+    #[test]
+    fn test_parse_match_or_pattern() {
+        let program = parse("match x { 1 or 2 or 3 => \"small\", _ => \"big\" }").unwrap();
+        if let StmtKind::Expr(Expr::Match { arms, .. }) = &program.statements[0].kind {
+            if let Pattern::Or(pats) = &arms[0].pattern {
+                assert_eq!(pats.len(), 3);
+            } else {
+                panic!("Expected OR pattern");
+            }
+        } else {
+            panic!("Expected match expression");
+        }
+    }
+
+    #[test]
+    fn test_parse_list_pattern() {
+        let program = parse("match x { [a, b] => a + b, _ => 0 }").unwrap();
+        if let StmtKind::Expr(Expr::Match { arms, .. }) = &program.statements[0].kind {
+            if let Pattern::List { elements, rest } = &arms[0].pattern {
+                assert_eq!(elements.len(), 2);
+                assert!(rest.is_none());
+            } else {
+                panic!("Expected list pattern");
+            }
+        } else {
+            panic!("Expected match expression");
+        }
+    }
+
+    #[test]
+    fn test_parse_list_rest_pattern() {
+        let program = parse("match x { [head, ...tail] => head, _ => 0 }").unwrap();
+        if let StmtKind::Expr(Expr::Match { arms, .. }) = &program.statements[0].kind {
+            if let Pattern::List { elements, rest } = &arms[0].pattern {
+                assert_eq!(elements.len(), 1);
+                assert_eq!(rest.as_deref(), Some("tail"));
+            } else {
+                panic!("Expected list pattern with rest");
+            }
+        } else {
+            panic!("Expected match expression");
+        }
+    }
+
+    #[test]
+    fn test_parse_struct_pattern() {
+        let program = parse("match p { Point { x, y } => x + y, _ => 0 }").unwrap();
+        if let StmtKind::Expr(Expr::Match { arms, .. }) = &program.statements[0].kind {
+            if let Pattern::Struct { name, fields } = &arms[0].pattern {
+                assert_eq!(name.as_deref(), Some("Point"));
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0].name, "x");
+                assert_eq!(fields[1].name, "y");
+            } else {
+                panic!("Expected struct pattern");
+            }
+        } else {
+            panic!("Expected match expression");
+        }
+    }
+
+    #[test]
+    fn test_parse_negative_literal_pattern() {
+        let program = parse("match x { -5 => \"neg five\", _ => \"other\" }").unwrap();
+        if let StmtKind::Expr(Expr::Match { arms, .. }) = &program.statements[0].kind {
+            if let Pattern::Literal(Expr::Int(-5)) = &arms[0].pattern {
+                // ok
+            } else {
+                panic!("Expected negative literal pattern, got {:?}", arms[0].pattern);
+            }
+        } else {
+            panic!("Expected match expression");
+        }
+    }
+
+    #[test]
+    fn test_parse_let_destructure_list() {
+        let program = parse("let [a, b, c] = [1, 2, 3]").unwrap();
+        if let StmtKind::LetDestructure { pattern, .. } = &program.statements[0].kind {
+            if let Pattern::List { elements, rest } = pattern {
+                assert_eq!(elements.len(), 3);
+                assert!(rest.is_none());
+            } else {
+                panic!("Expected list pattern");
+            }
+        } else {
+            panic!("Expected LetDestructure");
+        }
+    }
+
+    #[test]
+    fn test_parse_let_destructure_struct() {
+        let program = parse("let { x, y } = point").unwrap();
+        if let StmtKind::LetDestructure { pattern, .. } = &program.statements[0].kind {
+            if let Pattern::Struct { name, fields } = pattern {
+                assert!(name.is_none());
+                assert_eq!(fields.len(), 2);
+            } else {
+                panic!("Expected struct pattern");
+            }
+        } else {
+            panic!("Expected LetDestructure");
+        }
+    }
+
+    #[test]
+    fn test_parse_case_with_match_arm() {
+        let program = parse("case { x > 10 => \"big\", _ => \"small\" }").unwrap();
+        if let StmtKind::Expr(Expr::Case { arms }) = &program.statements[0].kind {
+            assert_eq!(arms.len(), 2);
+            // First arm: Wildcard + guard
+            assert!(matches!(arms[0].pattern, Pattern::Wildcard));
+            assert!(arms[0].guard.is_some());
+            // Second arm: Wildcard, no guard (default)
+            assert!(matches!(arms[1].pattern, Pattern::Wildcard));
+            assert!(arms[1].guard.is_none());
+        } else {
+            panic!("Expected case expression");
+        }
+    }
+
+    #[test]
+    fn test_parse_backward_compat_match() {
+        // Existing match syntax should still work
+        let program = parse("match x { 1 => \"one\", 2 => \"two\", _ => \"other\" }").unwrap();
+        if let StmtKind::Expr(Expr::Match { arms, .. }) = &program.statements[0].kind {
+            assert_eq!(arms.len(), 3);
+        } else {
+            panic!("Expected match expression");
         }
     }
 }

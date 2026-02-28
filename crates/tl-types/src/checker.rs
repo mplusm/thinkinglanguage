@@ -5,7 +5,7 @@
 // and checks annotations. Gradual: unannotated code = `any`, always passes.
 
 use std::collections::HashSet;
-use tl_ast::{Expr, Program, Stmt, StmtKind};
+use tl_ast::{Expr, MatchArm, Pattern, Program, Stmt, StmtKind};
 use tl_errors::Span;
 
 use crate::convert::{convert_type_expr, convert_type_expr_with_params};
@@ -358,15 +358,21 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::Match { subject, arms } => {
                 self.mark_used_in_expr(subject);
-                for (p, b) in arms {
-                    self.mark_used_in_expr(p);
-                    self.mark_used_in_expr(b);
+                for arm in arms {
+                    self.mark_used_in_pattern(&arm.pattern);
+                    if let Some(guard) = &arm.guard {
+                        self.mark_used_in_expr(guard);
+                    }
+                    self.mark_used_in_expr(&arm.body);
                 }
             }
             Expr::Case { arms } => {
-                for (p, b) in arms {
-                    self.mark_used_in_expr(p);
-                    self.mark_used_in_expr(b);
+                for arm in arms {
+                    self.mark_used_in_pattern(&arm.pattern);
+                    if let Some(guard) = &arm.guard {
+                        self.mark_used_in_expr(guard);
+                    }
+                    self.mark_used_in_expr(&arm.body);
                 }
             }
             Expr::Await(inner) | Expr::Try(inner) => self.mark_used_in_expr(inner),
@@ -376,12 +382,41 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    fn mark_used_in_pattern(&mut self, pattern: &Pattern) {
+        match pattern {
+            Pattern::Literal(expr) => self.mark_used_in_expr(expr),
+            Pattern::Enum { args, .. } => {
+                for arg in args {
+                    self.mark_used_in_pattern(arg);
+                }
+            }
+            Pattern::Struct { fields, .. } => {
+                for f in fields {
+                    if let Some(p) = &f.pattern {
+                        self.mark_used_in_pattern(p);
+                    }
+                }
+            }
+            Pattern::List { elements, .. } => {
+                for e in elements {
+                    self.mark_used_in_pattern(e);
+                }
+            }
+            Pattern::Or(pats) => {
+                for p in pats {
+                    self.mark_used_in_pattern(p);
+                }
+            }
+            Pattern::Wildcard | Pattern::Binding(_) => {}
+        }
+    }
+
     fn mark_used_in_stmt(&mut self, stmt: &Stmt) {
         match &stmt.kind {
             StmtKind::Expr(e) | StmtKind::Throw(e) | StmtKind::Return(Some(e)) => {
                 self.mark_used_in_expr(e);
             }
-            StmtKind::Let { value, .. } => self.mark_used_in_expr(value),
+            StmtKind::Let { value, .. } | StmtKind::LetDestructure { value, .. } => self.mark_used_in_expr(value),
             _ => {}
         }
     }
@@ -401,6 +436,9 @@ impl<'a> TypeChecker<'a> {
                 if let Expr::StructInit { name: sname, fields } = value {
                     self.check_struct_init(sname, fields, stmt.span);
                 }
+
+                // Check match exhaustiveness in value expression
+                self.check_match_exhaustiveness_in_expr(value, stmt.span);
 
                 let inferred = infer_expr(value, &self.env);
                 if let Some(ann) = type_ann {
@@ -446,6 +484,11 @@ impl<'a> TypeChecker<'a> {
                 // Track defined variable for unused-var checking
                 let depth = self.current_scope_depth();
                 self.defined_vars.push((name.clone(), stmt.span, depth));
+            }
+
+            StmtKind::LetDestructure { value, pattern, .. } => {
+                self.mark_used_in_expr(value);
+                self.mark_used_in_pattern(pattern);
             }
 
             StmtKind::FnDecl {
@@ -668,6 +711,9 @@ impl<'a> TypeChecker<'a> {
                 if let Expr::Assign { target, value } = expr {
                     self.check_assignment(target, value, stmt.span);
                 }
+
+                // Check match exhaustiveness
+                self.check_match_exhaustiveness_in_expr(expr, stmt.span);
 
                 let _ = infer_expr(expr, &self.env);
             }
@@ -907,6 +953,23 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Check match expressions for exhaustiveness warnings.
+    fn check_match_exhaustiveness_in_expr(&mut self, expr: &Expr, span: Span) {
+        if let Expr::Match { subject, arms } = expr {
+            let subject_ty = infer_expr(subject, &self.env);
+            let missing = check_match_exhaustiveness_patterns(&subject_ty, arms, &self.env);
+            if !missing.is_empty() {
+                self.warnings.push(TypeError {
+                    message: format!("Non-exhaustive match: missing {}", missing.join(", ")),
+                    span,
+                    expected: None,
+                    found: None,
+                    hint: Some("Add missing patterns or a wildcard `_` arm".to_string()),
+                });
+            }
+        }
+    }
+
     /// Emit warnings for unused variables.
     fn check_unused_vars(&mut self) {
         for (name, span, _depth) in &self.defined_vars {
@@ -980,6 +1043,51 @@ pub fn check_match_exhaustiveness(
     }
 
     missing
+}
+
+/// Check match arms for exhaustiveness using Pattern types.
+/// Returns a list of missing variant names, or empty if exhaustive.
+pub fn check_match_exhaustiveness_patterns(
+    subject_type: &Type,
+    arms: &[MatchArm],
+    env: &TypeEnv,
+) -> Vec<String> {
+    // If any arm is a wildcard or binding without guard, it's a catch-all
+    let has_catch_all = arms.iter().any(|arm| {
+        arm.guard.is_none() && matches!(arm.pattern, Pattern::Wildcard | Pattern::Binding(_))
+    });
+    if has_catch_all {
+        return vec![];
+    }
+
+    // Extract variant names from patterns
+    let mut covered: Vec<&str> = Vec::new();
+    for arm in arms {
+        collect_pattern_variants(&arm.pattern, &mut covered);
+    }
+
+    check_match_exhaustiveness(subject_type, &covered, env)
+}
+
+/// Collect variant names covered by a pattern.
+fn collect_pattern_variants<'a>(pattern: &'a Pattern, variants: &mut Vec<&'a str>) {
+    match pattern {
+        Pattern::Wildcard | Pattern::Binding(_) => {
+            variants.push("_");
+        }
+        Pattern::Literal(Expr::None) => {
+            variants.push("none");
+        }
+        Pattern::Enum { variant, .. } => {
+            variants.push(variant.as_str());
+        }
+        Pattern::Or(pats) => {
+            for p in pats {
+                collect_pattern_variants(p, variants);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]
@@ -1412,5 +1520,89 @@ mod tests {
         let result = parse_and_check("let _x = 1\nlet _x = 2");
         let shadow: Vec<_> = result.warnings.iter().filter(|w| w.message.contains("shadows")).collect();
         assert!(shadow.is_empty(), "_-prefixed shadow should not warn: {:?}", result.warnings);
+    }
+
+    // ── Phase 17: Pattern Matching ──
+
+    #[test]
+    fn test_match_exhaustiveness_patterns_with_wildcard() {
+        let env = TypeEnv::new();
+        let ty = Type::Result(Box::new(Type::Int), Box::new(Type::String));
+        let arms = vec![
+            MatchArm { pattern: Pattern::Enum { type_name: "Result".into(), variant: "Ok".into(), args: vec![Pattern::Binding("v".into())] }, guard: None, body: Expr::Ident("v".into()) },
+            MatchArm { pattern: Pattern::Wildcard, guard: None, body: Expr::None },
+        ];
+        let missing = check_match_exhaustiveness_patterns(&ty, &arms, &env);
+        assert!(missing.is_empty(), "Wildcard should make match exhaustive");
+    }
+
+    #[test]
+    fn test_match_exhaustiveness_patterns_missing_variant() {
+        let mut env = TypeEnv::new();
+        env.define_enum("Color".into(), vec![
+            ("Red".into(), vec![]),
+            ("Green".into(), vec![]),
+            ("Blue".into(), vec![]),
+        ]);
+        let ty = Type::Enum("Color".into());
+        let arms = vec![
+            MatchArm { pattern: Pattern::Enum { type_name: "Color".into(), variant: "Red".into(), args: vec![] }, guard: None, body: Expr::Int(1) },
+            MatchArm { pattern: Pattern::Enum { type_name: "Color".into(), variant: "Green".into(), args: vec![] }, guard: None, body: Expr::Int(2) },
+        ];
+        let missing = check_match_exhaustiveness_patterns(&ty, &arms, &env);
+        assert_eq!(missing, vec!["Blue"]);
+    }
+
+    #[test]
+    fn test_match_exhaustiveness_patterns_all_variants() {
+        let mut env = TypeEnv::new();
+        env.define_enum("Color".into(), vec![
+            ("Red".into(), vec![]),
+            ("Green".into(), vec![]),
+            ("Blue".into(), vec![]),
+        ]);
+        let ty = Type::Enum("Color".into());
+        let arms = vec![
+            MatchArm { pattern: Pattern::Enum { type_name: "Color".into(), variant: "Red".into(), args: vec![] }, guard: None, body: Expr::Int(1) },
+            MatchArm { pattern: Pattern::Enum { type_name: "Color".into(), variant: "Green".into(), args: vec![] }, guard: None, body: Expr::Int(2) },
+            MatchArm { pattern: Pattern::Enum { type_name: "Color".into(), variant: "Blue".into(), args: vec![] }, guard: None, body: Expr::Int(3) },
+        ];
+        let missing = check_match_exhaustiveness_patterns(&ty, &arms, &env);
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn test_match_exhaustiveness_binding_is_catchall() {
+        let env = TypeEnv::new();
+        let ty = Type::Result(Box::new(Type::Int), Box::new(Type::String));
+        let arms = vec![
+            MatchArm { pattern: Pattern::Binding("x".into()), guard: None, body: Expr::Ident("x".into()) },
+        ];
+        let missing = check_match_exhaustiveness_patterns(&ty, &arms, &env);
+        assert!(missing.is_empty(), "Binding pattern should be a catch-all");
+    }
+
+    #[test]
+    fn test_match_exhaustiveness_or_pattern() {
+        let mut env = TypeEnv::new();
+        env.define_enum("Dir".into(), vec![
+            ("North".into(), vec![]),
+            ("South".into(), vec![]),
+            ("East".into(), vec![]),
+            ("West".into(), vec![]),
+        ]);
+        let ty = Type::Enum("Dir".into());
+        let arms = vec![
+            MatchArm { pattern: Pattern::Or(vec![
+                Pattern::Enum { type_name: "Dir".into(), variant: "North".into(), args: vec![] },
+                Pattern::Enum { type_name: "Dir".into(), variant: "South".into(), args: vec![] },
+            ]), guard: None, body: Expr::String("vertical".into()) },
+            MatchArm { pattern: Pattern::Or(vec![
+                Pattern::Enum { type_name: "Dir".into(), variant: "East".into(), args: vec![] },
+                Pattern::Enum { type_name: "Dir".into(), variant: "West".into(), args: vec![] },
+            ]), guard: None, body: Expr::String("horizontal".into()) },
+        ];
+        let missing = check_match_exhaustiveness_patterns(&ty, &arms, &env);
+        assert!(missing.is_empty(), "OR patterns should cover all variants");
     }
 }

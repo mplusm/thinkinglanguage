@@ -228,8 +228,8 @@ pub fn infer_expr(expr: &Expr, env: &TypeEnv) -> Type {
 
         // Match/Case
         Expr::Match { arms, .. } | Expr::Case { arms } => {
-            if let Some((_, body)) = arms.first() {
-                infer_expr(body, env)
+            if let Some(arm) = arms.first() {
+                infer_expr(&arm.body, env)
             } else {
                 Type::Any
             }

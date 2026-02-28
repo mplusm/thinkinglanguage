@@ -1041,8 +1041,119 @@ impl Interpreter {
                 self.method_table.insert(type_name.clone(), method_map);
                 Ok(Signal::None)
             }
+            StmtKind::LetDestructure { pattern, value, .. } => {
+                let val = self.eval_expr(value)?;
+                let bindings = self.match_pattern(pattern, &val).unwrap_or_default();
+                for (name, bval) in bindings {
+                    self.env.set(name, bval);
+                }
+                Ok(Signal::None)
+            }
             StmtKind::Break => Ok(Signal::Break),
             StmtKind::Continue => Ok(Signal::Continue),
+        }
+    }
+
+    /// Match a pattern against a value. Returns Some(bindings) if matched, None if not.
+    fn match_pattern(&self, pattern: &Pattern, value: &Value) -> Option<Vec<(String, Value)>> {
+        match pattern {
+            Pattern::Wildcard => Some(vec![]),
+            Pattern::Binding(name) => Some(vec![(name.clone(), value.clone())]),
+            Pattern::Literal(expr) => {
+                // Compare the literal expression value against the subject
+                let pat_val = match expr {
+                    Expr::Int(n) => Value::Int(*n),
+                    Expr::Float(n) => Value::Float(*n),
+                    Expr::String(s) => Value::String(s.clone()),
+                    Expr::Bool(b) => Value::Bool(*b),
+                    Expr::None => Value::None,
+                    _ => return None,
+                };
+                if values_equal(value, &pat_val) {
+                    Some(vec![])
+                } else {
+                    None
+                }
+            }
+            Pattern::Enum { type_name: _, variant, args } => {
+                if let Value::EnumInstance { variant: sv, fields, .. } = value {
+                    if variant == sv {
+                        let mut bindings = vec![];
+                        for (i, arg_pat) in args.iter().enumerate() {
+                            let field_val = fields.get(i).cloned().unwrap_or(Value::None);
+                            match self.match_pattern(arg_pat, &field_val) {
+                                Some(sub_bindings) => bindings.extend(sub_bindings),
+                                None => return None,
+                            }
+                        }
+                        return Some(bindings);
+                    }
+                }
+                None
+            }
+            Pattern::Struct { name: struct_name, fields } => {
+                // Check it's a struct instance
+                if let Value::StructInstance { type_name, fields: sfields } = value {
+                    if let Some(expected) = struct_name {
+                        if expected != type_name {
+                            return None;
+                        }
+                    }
+                    let mut bindings = vec![];
+                    for field in fields {
+                        let field_val = sfields.get(&field.name)
+                            .cloned()
+                            .unwrap_or(Value::None);
+                        match &field.pattern {
+                            None => {
+                                // Shorthand: { x } binds x
+                                bindings.push((field.name.clone(), field_val));
+                            }
+                            Some(sub_pat) => {
+                                match self.match_pattern(sub_pat, &field_val) {
+                                    Some(sub_bindings) => bindings.extend(sub_bindings),
+                                    None => return None,
+                                }
+                            }
+                        }
+                    }
+                    return Some(bindings);
+                }
+                None
+            }
+            Pattern::List { elements, rest } => {
+                if let Value::List(items) = value {
+                    if rest.is_some() {
+                        if items.len() < elements.len() {
+                            return None;
+                        }
+                    } else if items.len() != elements.len() {
+                        return None;
+                    }
+                    let mut bindings = vec![];
+                    for (i, elem_pat) in elements.iter().enumerate() {
+                        let item_val = items.get(i).cloned().unwrap_or(Value::None);
+                        match self.match_pattern(elem_pat, &item_val) {
+                            Some(sub_bindings) => bindings.extend(sub_bindings),
+                            None => return None,
+                        }
+                    }
+                    if let Some(rest_name) = rest {
+                        let rest_items = items[elements.len()..].to_vec();
+                        bindings.push((rest_name.clone(), Value::List(rest_items)));
+                    }
+                    return Some(bindings);
+                }
+                None
+            }
+            Pattern::Or(patterns) => {
+                for sub_pat in patterns {
+                    if let Some(bindings) = self.match_pattern(sub_pat, value) {
+                        return Some(bindings);
+                    }
+                }
+                None
+            }
         }
     }
 
@@ -1214,14 +1325,18 @@ impl Interpreter {
             }
 
             Expr::Case { arms } => {
-                for (pattern, body) in arms {
-                    // Wildcard _ always matches
-                    if matches!(pattern, Expr::Ident(s) if s == "_") {
-                        return self.eval_expr(body);
-                    }
-                    let val = self.eval_expr(pattern)?;
-                    if val.is_truthy() {
-                        return self.eval_expr(body);
+                for arm in arms {
+                    match &arm.pattern {
+                        Pattern::Wildcard | Pattern::Binding(_) => {
+                            return self.eval_expr(&arm.body);
+                        }
+                        Pattern::Literal(expr) => {
+                            let val = self.eval_expr(expr)?;
+                            if val.is_truthy() {
+                                return self.eval_expr(&arm.body);
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 Ok(Value::None)
@@ -1229,72 +1344,23 @@ impl Interpreter {
 
             Expr::Match { subject, arms } => {
                 let subject_val = self.eval_expr(subject)?;
-                for (pattern, body) in arms {
-                    // Wildcard _ always matches
-                    if matches!(pattern, Expr::Ident(s) if s == "_") {
-                        return self.eval_expr(body);
-                    }
-                    // Enum variant pattern: Enum::Variant or Enum::Variant(a, b, c)
-                    if let Expr::EnumVariant { enum_name: _, variant, args: pat_args } = pattern {
-                        if let Value::EnumInstance { variant: sv, fields, .. } = &subject_val {
-                            if variant == sv {
-                                // Bind destructured fields
-                                self.env.push_scope();
-                                for (i, pat_arg) in pat_args.iter().enumerate() {
-                                    if let Expr::Ident(binding) = pat_arg {
-                                        if binding != "_" {
-                                            if let Some(val) = fields.get(i) {
-                                                self.env.set(binding.clone(), val.clone());
-                                            }
-                                        }
-                                    }
-                                }
-                                let result = self.eval_expr(body);
+                for arm in arms {
+                    if let Some(bindings) = self.match_pattern(&arm.pattern, &subject_val) {
+                        self.env.push_scope();
+                        for (name, val) in &bindings {
+                            self.env.set(name.clone(), val.clone());
+                        }
+                        // Check guard
+                        if let Some(guard) = &arm.guard {
+                            let guard_val = self.eval_expr(guard)?;
+                            if !guard_val.is_truthy() {
                                 self.env.pop_scope();
-                                return result;
+                                continue;
                             }
                         }
-                        continue;
-                    }
-                    // Call pattern (enum variant with args as call syntax)
-                    if let Expr::Call { function, args: pat_args } = pattern {
-                        if let Expr::EnumVariant { variant, .. } = function.as_ref() {
-                            if let Value::EnumInstance { variant: sv, fields, .. } = &subject_val {
-                                if variant == sv {
-                                    self.env.push_scope();
-                                    for (i, pat_arg) in pat_args.iter().enumerate() {
-                                        if let Expr::Ident(binding) = pat_arg {
-                                            if binding != "_" {
-                                                if let Some(val) = fields.get(i) {
-                                                    self.env.set(binding.clone(), val.clone());
-                                                }
-                                            }
-                                        }
-                                    }
-                                    let result = self.eval_expr(body);
-                                    self.env.pop_scope();
-                                    return result;
-                                }
-                            }
-                            continue;
-                        }
-                    }
-                    let pattern_val = self.eval_expr(pattern)?;
-                    let matched = match (&subject_val, &pattern_val) {
-                        (Value::Int(a), Value::Int(b)) => a == b,
-                        (Value::Float(a), Value::Float(b)) => a == b,
-                        (Value::String(a), Value::String(b)) => a == b,
-                        (Value::Bool(a), Value::Bool(b)) => a == b,
-                        (Value::None, Value::None) => true,
-                        // Match enum unit variants
-                        (Value::EnumInstance { type_name: at, variant: av, fields: af },
-                         Value::EnumInstance { type_name: bt, variant: bv, fields: bf }) => {
-                            at == bt && av == bv && af.is_empty() && bf.is_empty()
-                        }
-                        _ => false,
-                    };
-                    if matched {
-                        return self.eval_expr(body);
+                        let result = self.eval_expr(&arm.body);
+                        self.env.pop_scope();
+                        return result;
                     }
                 }
                 Ok(Value::None)
@@ -7325,5 +7391,153 @@ print(s.contains("b"))"#);
         interp.execute(&program).unwrap();
 
         assert_eq!(interp.output, vec!["77"]);
+    }
+
+    // ── Phase 17: Pattern Matching & Destructuring ──
+
+    #[test]
+    fn test_interp_match_binding() {
+        let output = run_output("let x = 42\nprint(match x { val => val + 1 })");
+        assert_eq!(output, vec!["43"]);
+    }
+
+    #[test]
+    fn test_interp_match_guard() {
+        let output = run_output("let x = 5\nprint(match x { n if n > 0 => \"pos\", n if n < 0 => \"neg\", _ => \"zero\" })");
+        assert_eq!(output, vec!["pos"]);
+    }
+
+    #[test]
+    fn test_interp_match_guard_negative() {
+        let output = run_output("let x = -3\nprint(match x { n if n > 0 => \"pos\", n if n < 0 => \"neg\", _ => \"zero\" })");
+        assert_eq!(output, vec!["neg"]);
+    }
+
+    #[test]
+    fn test_interp_match_guard_zero() {
+        let output = run_output("let x = 0\nprint(match x { n if n > 0 => \"pos\", n if n < 0 => \"neg\", _ => \"zero\" })");
+        assert_eq!(output, vec!["zero"]);
+    }
+
+    #[test]
+    fn test_interp_match_enum_destructure() {
+        let src = r#"
+enum Shape { Circle(r), Rect(w, h) }
+let s = Shape::Circle(5)
+print(match s { Shape::Circle(r) => r * r, Shape::Rect(w, h) => w * h, _ => 0 })
+"#;
+        let output = run_output(src);
+        assert_eq!(output, vec!["25"]);
+    }
+
+    #[test]
+    fn test_interp_match_enum_rect() {
+        let src = r#"
+enum Shape { Circle(r), Rect(w, h) }
+let s = Shape::Rect(3, 4)
+print(match s { Shape::Circle(r) => r * r, Shape::Rect(w, h) => w * h, _ => 0 })
+"#;
+        let output = run_output(src);
+        assert_eq!(output, vec!["12"]);
+    }
+
+    #[test]
+    fn test_interp_match_or_pattern() {
+        let output = run_output("let x = 2\nprint(match x { 1 or 2 or 3 => \"small\", _ => \"big\" })");
+        assert_eq!(output, vec!["small"]);
+    }
+
+    #[test]
+    fn test_interp_match_or_pattern_no_match() {
+        let output = run_output("let x = 10\nprint(match x { 1 or 2 or 3 => \"small\", _ => \"big\" })");
+        assert_eq!(output, vec!["big"]);
+    }
+
+    #[test]
+    fn test_interp_match_struct_pattern() {
+        let src = r#"
+struct Point { x: int64, y: int64 }
+let p = Point { x: 10, y: 20 }
+print(match p { Point { x, y } => x + y, _ => 0 })
+"#;
+        let output = run_output(src);
+        assert_eq!(output, vec!["30"]);
+    }
+
+    #[test]
+    fn test_interp_match_list_pattern() {
+        let src = r#"
+let lst = [10, 20, 30]
+print(match lst { [a, b, c] => a + b + c, _ => 0 })
+"#;
+        let output = run_output(src);
+        assert_eq!(output, vec!["60"]);
+    }
+
+    #[test]
+    fn test_interp_match_list_rest() {
+        let src = r#"
+let lst = [1, 2, 3, 4, 5]
+print(match lst { [head, ...tail] => head, _ => 0 })
+"#;
+        let output = run_output(src);
+        assert_eq!(output, vec!["1"]);
+    }
+
+    #[test]
+    fn test_interp_match_empty_list() {
+        let src = r#"
+let lst = []
+print(match lst { [] => "empty", _ => "nonempty" })
+"#;
+        let output = run_output(src);
+        assert_eq!(output, vec!["empty"]);
+    }
+
+    #[test]
+    fn test_interp_let_destructure_list() {
+        let output = run_output("let [a, b, c] = [10, 20, 30]\nprint(a + b + c)");
+        assert_eq!(output, vec!["60"]);
+    }
+
+    #[test]
+    fn test_interp_let_destructure_list_rest() {
+        let output = run_output("let [head, ...tail] = [1, 2, 3, 4]\nprint(head)\nprint(len(tail))");
+        assert_eq!(output, vec!["1", "3"]);
+    }
+
+    #[test]
+    fn test_interp_let_destructure_struct() {
+        let src = r#"
+struct Point { x: int64, y: int64 }
+let p = Point { x: 5, y: 10 }
+let Point { x, y } = p
+print(x + y)
+"#;
+        let output = run_output(src);
+        assert_eq!(output, vec!["15"]);
+    }
+
+    #[test]
+    fn test_interp_match_guard_enum() {
+        let src = r#"
+enum Result { Ok(v), Err(e) }
+let r = Result::Ok(42)
+print(match r { Result::Ok(v) if v > 100 => "big", Result::Ok(v) => v, Result::Err(e) => e, _ => "other" })
+"#;
+        let output = run_output(src);
+        assert_eq!(output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_interp_match_negative_literal() {
+        let output = run_output("let x = -5\nprint(match x { -5 => \"neg five\", _ => \"other\" })");
+        assert_eq!(output, vec!["neg five"]);
+    }
+
+    #[test]
+    fn test_interp_case_with_pattern() {
+        let output = run_output("let x = 15\nprint(case { x > 10 => \"big\", x > 0 => \"small\", _ => \"other\" })");
+        assert_eq!(output, vec!["big"]);
     }
 }

@@ -288,6 +288,13 @@ impl Prototype {
 
                 // Phase 10: type system
                 Op::TryPropagate => format!("R{a} = try R{b}"),
+
+                // Phase 17: pattern matching
+                Op::ExtractField => format!("R{a} = R{b}[{c}]"),
+                Op::ExtractNamedField => {
+                    let field_name = self.format_constant(c as usize);
+                    format!("R{a} = R{b}.{field_name}")
+                }
             };
 
             out.push_str(&format!(

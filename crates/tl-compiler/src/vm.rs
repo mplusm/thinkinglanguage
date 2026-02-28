@@ -905,6 +905,10 @@ impl Vm {
                         (VmValue::EnumInstance(subj), VmValue::EnumInstance(pat)) => {
                             subj.type_name == pat.type_name && subj.variant == pat.variant
                         }
+                        // Struct instance matching by type name
+                        (VmValue::StructInstance(s), VmValue::String(name)) => {
+                            s.type_name.as_ref() == name.as_ref()
+                        }
                         _ => false,
                     };
                     self.stack[base + c as usize] = VmValue::Bool(matched);
@@ -1251,6 +1255,61 @@ impl Vm {
                             self.stack[base + a as usize] = src;
                         }
                     }
+                }
+                Op::ExtractField => {
+                    // A = dest, B = source reg, C = field index
+                    // If C has high bit set (C | 0x80), extract rest (sublist from index C & 0x7F)
+                    let source = self.stack[base + b as usize].clone();
+                    let is_rest = (c & 0x80) != 0;
+                    let idx = (c & 0x7F) as usize;
+                    let val = if is_rest {
+                        // Extract rest as sublist from index idx..
+                        match &source {
+                            VmValue::List(l) => {
+                                if idx < l.len() {
+                                    VmValue::List(l[idx..].to_vec())
+                                } else {
+                                    VmValue::List(vec![])
+                                }
+                            }
+                            _ => VmValue::List(vec![]),
+                        }
+                    } else {
+                        match &source {
+                            VmValue::EnumInstance(ei) => {
+                                ei.fields.get(idx).cloned().unwrap_or(VmValue::None)
+                            }
+                            VmValue::List(l) => {
+                                l.get(idx).cloned().unwrap_or(VmValue::None)
+                            }
+                            _ => VmValue::None,
+                        }
+                    };
+                    self.stack[base + a as usize] = val;
+                }
+                Op::ExtractNamedField => {
+                    // A = dest, B = source reg, C = field name constant index
+                    let source = self.stack[base + b as usize].clone();
+                    let field_name = match &self.frames[frame_idx].prototype.constants[c as usize] {
+                        Constant::String(s) => s.clone(),
+                        _ => return Err(runtime_err("ExtractNamedField: expected string constant")),
+                    };
+                    let val = match &source {
+                        VmValue::StructInstance(s) => {
+                            s.fields.iter()
+                                .find(|(k, _): &&(Arc<str>, VmValue)| k.as_ref() == field_name.as_ref())
+                                .map(|(_, v)| v.clone())
+                                .unwrap_or(VmValue::None)
+                        }
+                        VmValue::Map(m) => {
+                            m.iter()
+                                .find(|(k, _): &&(Arc<str>, VmValue)| k.as_ref() == field_name.as_ref())
+                                .map(|(_, v)| v.clone())
+                                .unwrap_or(VmValue::None)
+                        }
+                        _ => VmValue::None,
+                    };
+                    self.stack[base + a as usize] = val;
                 }
             }
             Ok(None)
@@ -5225,6 +5284,209 @@ mod tests {
     fn test_vm_match() {
         let output = run_output("let x = 2\nprint(match x { 1 => \"one\", 2 => \"two\", _ => \"other\" })");
         assert_eq!(output, vec!["two"]);
+    }
+
+    #[test]
+    fn test_vm_match_wildcard() {
+        let output = run_output("print(match 99 { 1 => \"one\", _ => \"other\" })");
+        assert_eq!(output, vec!["other"]);
+    }
+
+    #[test]
+    fn test_vm_match_binding() {
+        let output = run_output("print(match 42 { val => val + 1 })");
+        assert_eq!(output, vec!["43"]);
+    }
+
+    #[test]
+    fn test_vm_match_guard() {
+        let output = run_output("let x = 5\nprint(match x { n if n > 0 => \"pos\", n if n < 0 => \"neg\", _ => \"zero\" })");
+        assert_eq!(output, vec!["pos"]);
+    }
+
+    #[test]
+    fn test_vm_match_guard_negative() {
+        let output = run_output("let x = -3\nprint(match x { n if n > 0 => \"pos\", n if n < 0 => \"neg\", _ => \"zero\" })");
+        assert_eq!(output, vec!["neg"]);
+    }
+
+    #[test]
+    fn test_vm_match_guard_zero() {
+        let output = run_output("let x = 0\nprint(match x { n if n > 0 => \"pos\", n if n < 0 => \"neg\", _ => \"zero\" })");
+        assert_eq!(output, vec!["zero"]);
+    }
+
+    #[test]
+    fn test_vm_match_enum_destructure() {
+        let output = run_output(r#"
+enum Shape { Circle(int64), Rect(int64, int64) }
+let s = Shape::Circle(5)
+print(match s { Shape::Circle(r) => r, Shape::Rect(w, h) => w * h, _ => 0 })
+"#);
+        assert_eq!(output, vec!["5"]);
+    }
+
+    #[test]
+    fn test_vm_match_enum_destructure_rect() {
+        let output = run_output(r#"
+enum Shape { Circle(int64), Rect(int64, int64) }
+let s = Shape::Rect(3, 4)
+print(match s { Shape::Circle(r) => r, Shape::Rect(w, h) => w * h, _ => 0 })
+"#);
+        assert_eq!(output, vec!["12"]);
+    }
+
+    #[test]
+    fn test_vm_match_enum_wildcard_field() {
+        let output = run_output(r#"
+enum Pair { Two(int64, int64) }
+let p = Pair::Two(10, 20)
+print(match p { Pair::Two(_, y) => y, _ => 0 })
+"#);
+        assert_eq!(output, vec!["20"]);
+    }
+
+    #[test]
+    fn test_vm_match_enum_guard() {
+        let output = run_output(r#"
+enum Result { Ok(int64), Err(string) }
+let r = Result::Ok(150)
+print(match r { Result::Ok(v) if v > 100 => "big", Result::Ok(v) => "small", Result::Err(e) => e, _ => "unknown" })
+"#);
+        assert_eq!(output, vec!["big"]);
+    }
+
+    #[test]
+    fn test_vm_match_or_pattern() {
+        let output = run_output("let x = 2\nprint(match x { 1 or 2 or 3 => \"small\", _ => \"big\" })");
+        assert_eq!(output, vec!["small"]);
+    }
+
+    #[test]
+    fn test_vm_match_or_pattern_no_match() {
+        let output = run_output("let x = 10\nprint(match x { 1 or 2 or 3 => \"small\", _ => \"big\" })");
+        assert_eq!(output, vec!["big"]);
+    }
+
+    #[test]
+    fn test_vm_match_string() {
+        let output = run_output(r#"let s = "hello"
+print(match s { "hi" => 1, "hello" => 2, _ => 0 })"#);
+        assert_eq!(output, vec!["2"]);
+    }
+
+    #[test]
+    fn test_vm_match_bool() {
+        let output = run_output("print(match true { true => \"yes\", false => \"no\" })");
+        assert_eq!(output, vec!["yes"]);
+    }
+
+    #[test]
+    fn test_vm_match_none() {
+        let output = run_output("print(match none { none => \"nothing\", _ => \"something\" })");
+        assert_eq!(output, vec!["nothing"]);
+    }
+
+    #[test]
+    fn test_vm_let_destructure_list() {
+        let output = run_output("let [a, b, c] = [1, 2, 3]\nprint(a)\nprint(b)\nprint(c)");
+        assert_eq!(output, vec!["1", "2", "3"]);
+    }
+
+    #[test]
+    fn test_vm_let_destructure_list_rest() {
+        let output = run_output("let [head, ...tail] = [1, 2, 3, 4]\nprint(head)\nprint(len(tail))");
+        assert_eq!(output, vec!["1", "3"]);
+    }
+
+    #[test]
+    fn test_vm_let_destructure_struct() {
+        let output = run_output(r#"
+struct Point { x: int64, y: int64 }
+let p = Point { x: 10, y: 20 }
+let Point { x, y } = p
+print(x)
+print(y)
+"#);
+        assert_eq!(output, vec!["10", "20"]);
+    }
+
+    #[test]
+    fn test_vm_let_destructure_struct_anon() {
+        let output = run_output(r#"
+struct Point { x: int64, y: int64 }
+let p = Point { x: 10, y: 20 }
+let { x, y } = p
+print(x)
+print(y)
+"#);
+        assert_eq!(output, vec!["10", "20"]);
+    }
+
+    #[test]
+    fn test_vm_match_struct_pattern() {
+        let output = run_output(r#"
+struct Point { x: int64, y: int64 }
+let p = Point { x: 1, y: 2 }
+print(match p { Point { x, y } => x + y, _ => 0 })
+"#);
+        assert_eq!(output, vec!["3"]);
+    }
+
+    #[test]
+    fn test_vm_match_list_pattern() {
+        let output = run_output(r#"
+let lst = [1, 2, 3]
+print(match lst { [a, b, c] => a + b + c, _ => 0 })
+"#);
+        assert_eq!(output, vec!["6"]);
+    }
+
+    #[test]
+    fn test_vm_match_list_rest_pattern() {
+        let output = run_output(r#"
+let lst = [10, 20, 30, 40]
+print(match lst { [head, ...rest] => head, _ => 0 })
+"#);
+        assert_eq!(output, vec!["10"]);
+    }
+
+    #[test]
+    fn test_vm_match_list_empty() {
+        let output = run_output(r#"
+let lst = []
+print(match lst { [] => "empty", _ => "nonempty" })
+"#);
+        assert_eq!(output, vec!["empty"]);
+    }
+
+    #[test]
+    fn test_vm_match_list_length_mismatch() {
+        let output = run_output(r#"
+let lst = [1, 2, 3]
+print(match lst { [a, b] => "two", [a, b, c] => "three", _ => "other" })
+"#);
+        assert_eq!(output, vec!["three"]);
+    }
+
+    #[test]
+    fn test_vm_match_negative_literal() {
+        let output = run_output("print(match -1 { -1 => \"neg one\", 0 => \"zero\", _ => \"other\" })");
+        assert_eq!(output, vec!["neg one"]);
+    }
+
+    #[test]
+    fn test_vm_case_with_pattern() {
+        let output = run_output(r#"
+let x = 5
+let result = case {
+    x > 10 => "big",
+    x > 0 => "positive",
+    _ => "other"
+}
+print(result)
+"#);
+        assert_eq!(output, vec!["positive"]);
     }
 
     #[test]

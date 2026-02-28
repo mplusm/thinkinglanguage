@@ -230,6 +230,8 @@ pub enum Token {
     Question,
 
     // Range
+    #[token("...")]
+    DotDotDot,
     #[token("..")]
     DotDot,
 

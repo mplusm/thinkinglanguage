@@ -1888,6 +1888,41 @@ New file: crates/tl-cli/src/package.rs
 Tests: 780 existing + 48 new = 828 passed, 1 ignored
 ```
 
+### Phase 17: Pattern Matching & Destructuring ✅
+
+**Goal:** Proper pattern matching with dedicated Pattern AST, destructuring, guards, and exhaustiveness checking
+
+```
+Deliverables:
+  ✅ Pattern AST: Wildcard, Literal, Binding, Enum, Struct, List, Or
+  ✅ MatchArm struct with guard clause support (pattern [if guard] => body)
+  ✅ StructPatternField with optional sub-patterns
+  ✅ Parser: parse_pattern(), parse_single_pattern(), parse_match_arm(), parse_case_arm()
+  ✅ Negative literal patterns (-5, -3.14)
+  ✅ OR patterns (1 or 2 or 3 => ...)
+  ✅ Rest patterns in lists ([head, ...tail])
+  ✅ Named struct patterns (Point { x, y })
+  ✅ Anonymous struct patterns ({ x, y })
+  ✅ Enum destructuring with field extraction (Shape::Circle(r) => r * r)
+  ✅ Guard clauses (n if n > 0 => "positive")
+  ✅ Let destructuring: let [a, b, c] = list, let { x, y } = struct, let Enum::Variant(v) = expr
+  ✅ New opcodes: ExtractField (62), ExtractNamedField (63)
+  ✅ VM execution for all pattern types
+  ✅ Interpreter match_pattern() helper for all pattern types
+  ✅ Exhaustiveness checking with Pattern types (check_match_exhaustiveness_patterns)
+  ✅ Non-exhaustive match warnings for enums/Result/Option
+  ✅ Type checker: mark_used_in_pattern(), LetDestructure handling
+  ✅ Formatter: format_pattern(), MatchArm formatting with guards
+  ✅ DotDotDot token for rest patterns (...)
+  ✅ Case expression uses parse_case_arm() (condition as guard, not pattern)
+  ✅ Both VM and interpreter backends produce identical results
+
+New AST types: Pattern, StructPatternField, MatchArm, StmtKind::LetDestructure
+New token: DotDotDot
+New opcodes: ExtractField (62), ExtractNamedField (63)
+Tests: 828 existing + 63 new = 891 passed, 1 ignored
+```
+
 ### Future: Advanced Compiler (Deferred)
 
 **Goal:** Production-grade compilation and memory management

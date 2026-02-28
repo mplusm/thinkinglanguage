@@ -223,6 +223,14 @@ pub enum StmtKind {
         methods: Vec<Stmt>,
     },
 
+    /// `let { x, y } = expr` or `let [a, b] = expr`
+    LetDestructure {
+        pattern: Pattern,
+        mutable: bool,
+        value: Expr,
+        is_public: bool,
+    },
+
     /// `break`
     Break,
 
@@ -246,6 +254,53 @@ pub enum WindowSpec {
     Sliding(String, String),
     /// `session(gap_duration)` — session windows based on activity gap
     Session(String),
+}
+
+/// A pattern for match arms and let-destructuring.
+/// Identifiers in pattern position are bindings (create new variables),
+/// not value references. Use literals, enum variants, or guards for comparison.
+#[derive(Debug, Clone)]
+pub enum Pattern {
+    /// `_` — matches anything, binds nothing
+    Wildcard,
+    /// Literal value: 1, "hi", true, none
+    Literal(Expr),
+    /// Binding: `x` — matches anything, binds to name
+    Binding(String),
+    /// Enum variant: `Color::Red(r, g, b)` or `None`
+    Enum {
+        type_name: String,
+        variant: String,
+        args: Vec<Pattern>,
+    },
+    /// Struct pattern: `Point { x, y }` or `{ x, y }`
+    Struct {
+        name: Option<String>,
+        fields: Vec<StructPatternField>,
+    },
+    /// List pattern: `[a, b, ...rest]`
+    List {
+        elements: Vec<Pattern>,
+        rest: Option<String>,
+    },
+    /// OR pattern: `A | B | C`
+    Or(Vec<Pattern>),
+}
+
+/// A field in a struct destructuring pattern.
+#[derive(Debug, Clone)]
+pub struct StructPatternField {
+    pub name: String,
+    /// None = shorthand `{ x }` means `{ x: x }`
+    pub pattern: Option<Pattern>,
+}
+
+/// A match arm: `pattern [if guard] => body`
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub guard: Option<Expr>,
+    pub body: Expr,
 }
 
 /// Expressions
@@ -318,13 +373,13 @@ pub enum Expr {
 
     /// case { pattern => expr, ... }
     Case {
-        arms: Vec<(Expr, Expr)>,
+        arms: Vec<MatchArm>,
     },
 
     /// match expr { pattern => expr, ... }
     Match {
         subject: Box<Expr>,
-        arms: Vec<(Expr, Expr)>,
+        arms: Vec<MatchArm>,
     },
 
     /// Closure: (params) => expr
