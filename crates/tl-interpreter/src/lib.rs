@@ -666,6 +666,34 @@ impl Environment {
         global.insert("race_all".to_string(), Value::Builtin("race_all".to_string()));
         global.insert("async_map".to_string(), Value::Builtin("async_map".to_string()));
         global.insert("async_filter".to_string(), Value::Builtin("async_filter".to_string()));
+        // Phase 27: Data Error Hierarchy
+        global.insert("is_error".to_string(), Value::Builtin("is_error".to_string()));
+        global.insert("error_type".to_string(), Value::Builtin("error_type".to_string()));
+        global.insert("DataError".to_string(), Value::EnumDef {
+            name: "DataError".to_string(),
+            variants: vec![
+                ("ParseError".to_string(), 2),
+                ("SchemaError".to_string(), 3),
+                ("ValidationError".to_string(), 2),
+                ("NotFound".to_string(), 1),
+            ],
+        });
+        global.insert("NetworkError".to_string(), Value::EnumDef {
+            name: "NetworkError".to_string(),
+            variants: vec![
+                ("ConnectionError".to_string(), 2),
+                ("TimeoutError".to_string(), 1),
+                ("HttpError".to_string(), 2),
+            ],
+        });
+        global.insert("ConnectorError".to_string(), Value::EnumDef {
+            name: "ConnectorError".to_string(),
+            variants: vec![
+                ("AuthError".to_string(), 2),
+                ("QueryError".to_string(), 2),
+                ("ConfigError".to_string(), 2),
+            ],
+        });
 
         Self {
             scopes: vec![global],
@@ -4610,6 +4638,24 @@ impl Interpreter {
             "async_read_file" | "async_write_file" | "async_http_get" | "async_http_post" |
             "async_sleep" | "select" | "race_all" | "async_map" | "async_filter" => {
                 Err(runtime_err(format!("{name}: async builtins require the 'async-runtime' feature")))
+            }
+
+            // Phase 27: Data Error Hierarchy builtins
+            "is_error" => {
+                if args.is_empty() { return Err(runtime_err_s("is_error() expects 1 argument")); }
+                let is_err = matches!(&args[0], Value::EnumInstance { type_name, .. } if
+                    type_name == "DataError" ||
+                    type_name == "NetworkError" ||
+                    type_name == "ConnectorError"
+                );
+                Ok(Value::Bool(is_err))
+            }
+            "error_type" => {
+                if args.is_empty() { return Err(runtime_err_s("error_type() expects 1 argument")); }
+                match &args[0] {
+                    Value::EnumInstance { type_name, .. } => Ok(Value::String(type_name.clone())),
+                    _ => Ok(Value::None),
+                }
             }
 
             _ => Err(runtime_err(format!("Unknown builtin: {name}"))),
@@ -9263,5 +9309,77 @@ print(hi())
 print(bye())
 "#);
         assert_eq!(output, vec!["Hello World", "Goodbye Alice"]);
+    }
+
+    // ── Phase 27: Data Error Hierarchy tests ──
+
+    #[test]
+    fn test_interp_data_error_construct_and_throw() {
+        let output = run_output(r#"
+try {
+    throw DataError::ParseError("bad format", "file.csv")
+} catch e {
+    print(match e { DataError::ParseError(msg, _) => msg, _ => "no match" })
+    print(match e { DataError::ParseError(_, src) => src, _ => "no match" })
+}
+"#);
+        assert_eq!(output, vec!["bad format", "file.csv"]);
+    }
+
+    #[test]
+    fn test_interp_network_error_construct() {
+        let output = run_output(r#"
+let err = NetworkError::ConnectionError("refused", "localhost")
+print(match err { NetworkError::ConnectionError(msg, _) => msg, _ => "no match" })
+print(match err { NetworkError::ConnectionError(_, host) => host, _ => "no match" })
+"#);
+        assert_eq!(output, vec!["refused", "localhost"]);
+    }
+
+    #[test]
+    fn test_interp_connector_error_construct() {
+        let output = run_output(r#"
+let err = ConnectorError::QueryError("syntax error", "mysql")
+print(match err { ConnectorError::QueryError(msg, _) => msg, _ => "no match" })
+print(match err { ConnectorError::QueryError(_, conn) => conn, _ => "no match" })
+"#);
+        assert_eq!(output, vec!["syntax error", "mysql"]);
+    }
+
+    #[test]
+    fn test_interp_is_error_builtin() {
+        let output = run_output(r#"
+let e1 = DataError::NotFound("users")
+let e2 = NetworkError::TimeoutError("slow")
+let e3 = 42
+print(is_error(e1))
+print(is_error(e2))
+print(is_error(e3))
+"#);
+        assert_eq!(output, vec!["true", "true", "false"]);
+    }
+
+    #[test]
+    fn test_interp_error_type_builtin() {
+        let output = run_output(r#"
+let e = ConnectorError::AuthError("bad key", "redis")
+print(error_type(e))
+print(error_type("not an error"))
+"#);
+        assert_eq!(output, vec!["ConnectorError", "none"]);
+    }
+
+    #[test]
+    fn test_interp_throw_catch_preserves_enum() {
+        let output = run_output(r#"
+try {
+    throw DataError::SchemaError("mismatch", "int", "string")
+} catch e {
+    print(match e { DataError::SchemaError(msg, _, _) => msg, _ => "no match" })
+    print(match e { DataError::SchemaError(_, exp, _) => exp, _ => "no match" })
+    print(match e { DataError::SchemaError(_, _, found) => found, _ => "no match" })
+}
+"#);
+        assert_eq!(output, vec!["mismatch", "int", "string"]);
     }
 }

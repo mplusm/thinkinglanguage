@@ -561,6 +561,9 @@ pub enum BuiltinId {
     AsyncMap = 170,
     AsyncFilter = 171,
     RaceAll = 172,
+    // Phase 27: Data Error Hierarchy
+    IsError = 173,
+    ErrorType = 174,
 }
 
 impl BuiltinId {
@@ -745,6 +748,9 @@ impl BuiltinId {
             "async_map" => Some(BuiltinId::AsyncMap),
             "async_filter" => Some(BuiltinId::AsyncFilter),
             "race_all" => Some(BuiltinId::RaceAll),
+            // Phase 27: Data Error Hierarchy
+            "is_error" => Some(BuiltinId::IsError),
+            "error_type" => Some(BuiltinId::ErrorType),
             _ => None,
         }
     }
@@ -930,6 +936,9 @@ impl BuiltinId {
             BuiltinId::AsyncMap => "async_map",
             BuiltinId::AsyncFilter => "async_filter",
             BuiltinId::RaceAll => "race_all",
+            // Phase 27
+            BuiltinId::IsError => "is_error",
+            BuiltinId::ErrorType => "error_type",
         }
     }
 }

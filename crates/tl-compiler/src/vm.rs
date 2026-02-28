@@ -408,11 +408,13 @@ pub struct Vm {
     /// Tokio runtime for async builtins (lazily initialized)
     #[cfg(feature = "async-runtime")]
     runtime: Option<Arc<tokio::runtime::Runtime>>,
+    /// Stashed thrown value for structured error preservation in try/catch
+    thrown_value: Option<VmValue>,
 }
 
 impl Vm {
     pub fn new() -> Self {
-        Vm {
+        let mut vm = Vm {
             stack: Vec::with_capacity(256),
             frames: Vec::new(),
             globals: HashMap::new(),
@@ -432,7 +434,35 @@ impl Vm {
             security_policy: None,
             #[cfg(feature = "async-runtime")]
             runtime: None,
-        }
+            thrown_value: None,
+        };
+        // Phase 27: Register built-in error enum definitions
+        vm.globals.insert("DataError".into(), VmValue::EnumDef(Arc::new(VmEnumDef {
+            name: Arc::from("DataError"),
+            variants: vec![
+                (Arc::from("ParseError"), 2),
+                (Arc::from("SchemaError"), 3),
+                (Arc::from("ValidationError"), 2),
+                (Arc::from("NotFound"), 1),
+            ],
+        })));
+        vm.globals.insert("NetworkError".into(), VmValue::EnumDef(Arc::new(VmEnumDef {
+            name: Arc::from("NetworkError"),
+            variants: vec![
+                (Arc::from("ConnectionError"), 2),
+                (Arc::from("TimeoutError"), 1),
+                (Arc::from("HttpError"), 2),
+            ],
+        })));
+        vm.globals.insert("ConnectorError".into(), VmValue::EnumDef(Arc::new(VmEnumDef {
+            name: Arc::from("ConnectorError"),
+            variants: vec![
+                (Arc::from("AuthError"), 2),
+                (Arc::from("QueryError"), 2),
+                (Arc::from("ConfigError"), 2),
+            ],
+        })));
+        vm
     }
 
     /// Lazily initialize and return the tokio runtime.
@@ -537,6 +567,9 @@ impl Vm {
                         // Put error value in catch scope's first local
                         // The compiler emits LoadNone for the catch var at catch_ip; we need to
                         // identify the register, set the error value, and skip past the LoadNone
+                        let catch_val = self.thrown_value.take().unwrap_or_else(|| {
+                            VmValue::String(Arc::from(err_msg.as_str()))
+                        });
                         let cbase = self.frames[fidx].base;
                         let current_ip = self.frames[fidx].ip;
                         if current_ip < self.frames[fidx].prototype.code.len() {
@@ -547,7 +580,7 @@ impl Vm {
                                 // Skip the LoadNone and write error value directly
                                 self.frames[fidx].ip += 1;
                                 self.ensure_stack(cbase + catch_reg as usize + 1);
-                                self.stack[cbase + catch_reg as usize] = VmValue::String(Arc::from(err_msg.as_str()));
+                                self.stack[cbase + catch_reg as usize] = catch_val;
                             }
                         }
                         continue;
@@ -1189,6 +1222,7 @@ impl Vm {
                 Op::Throw => {
                     // a = value register
                     let val = self.stack[base + a as usize].clone();
+                    self.thrown_value = Some(val.clone());
                     let err_msg = format!("{val}");
                     return Err(runtime_err(err_msg));
                 }
@@ -2075,8 +2109,18 @@ impl Vm {
                     VmValue::String(s) => s.to_string(),
                     _ => return Err(runtime_err("read_csv() path must be a string")),
                 };
-                let df = self.engine().read_csv(&path).map_err(|e| runtime_err(e))?;
-                Ok(VmValue::Table(VmTable { df }))
+                match self.engine().read_csv(&path) {
+                    Ok(df) => Ok(VmValue::Table(VmTable { df })),
+                    Err(e) => {
+                        let msg = e.to_string();
+                        self.thrown_value = Some(VmValue::EnumInstance(Arc::new(VmEnumInstance {
+                            type_name: Arc::from("DataError"),
+                            variant: Arc::from("ParseError"),
+                            fields: vec![VmValue::String(Arc::from(msg.as_str())), VmValue::String(Arc::from(path.as_str()))],
+                        })));
+                        Err(runtime_err(msg))
+                    }
+                }
             }
             BuiltinId::ReadParquet => {
                 if args.len() != 1 { return Err(runtime_err("read_parquet() expects 1 argument (path)")); }
@@ -2084,8 +2128,18 @@ impl Vm {
                     VmValue::String(s) => s.to_string(),
                     _ => return Err(runtime_err("read_parquet() path must be a string")),
                 };
-                let df = self.engine().read_parquet(&path).map_err(|e| runtime_err(e))?;
-                Ok(VmValue::Table(VmTable { df }))
+                match self.engine().read_parquet(&path) {
+                    Ok(df) => Ok(VmValue::Table(VmTable { df })),
+                    Err(e) => {
+                        let msg = e.to_string();
+                        self.thrown_value = Some(VmValue::EnumInstance(Arc::new(VmEnumInstance {
+                            type_name: Arc::from("DataError"),
+                            variant: Arc::from("ParseError"),
+                            fields: vec![VmValue::String(Arc::from(msg.as_str())), VmValue::String(Arc::from(path.as_str()))],
+                        })));
+                        Err(runtime_err(msg))
+                    }
+                }
             }
             BuiltinId::WriteCsv => {
                 if args.len() != 2 { return Err(runtime_err("write_csv() expects 2 arguments (table, path)")); }
@@ -2097,8 +2151,18 @@ impl Vm {
                     VmValue::String(s) => s.to_string(),
                     _ => return Err(runtime_err("write_csv() path must be a string")),
                 };
-                self.engine().write_csv(df, &path).map_err(|e| runtime_err(e))?;
-                Ok(VmValue::None)
+                match self.engine().write_csv(df, &path) {
+                    Ok(_) => Ok(VmValue::None),
+                    Err(e) => {
+                        let msg = e.to_string();
+                        self.thrown_value = Some(VmValue::EnumInstance(Arc::new(VmEnumInstance {
+                            type_name: Arc::from("DataError"),
+                            variant: Arc::from("ParseError"),
+                            fields: vec![VmValue::String(Arc::from(msg.as_str())), VmValue::String(Arc::from(path.as_str()))],
+                        })));
+                        Err(runtime_err(msg))
+                    }
+                }
             }
             BuiltinId::WriteParquet => {
                 if args.len() != 2 { return Err(runtime_err("write_parquet() expects 2 arguments (table, path)")); }
@@ -2110,8 +2174,18 @@ impl Vm {
                     VmValue::String(s) => s.to_string(),
                     _ => return Err(runtime_err("write_parquet() path must be a string")),
                 };
-                self.engine().write_parquet(df, &path).map_err(|e| runtime_err(e))?;
-                Ok(VmValue::None)
+                match self.engine().write_parquet(df, &path) {
+                    Ok(_) => Ok(VmValue::None),
+                    Err(e) => {
+                        let msg = e.to_string();
+                        self.thrown_value = Some(VmValue::EnumInstance(Arc::new(VmEnumInstance {
+                            type_name: Arc::from("DataError"),
+                            variant: Arc::from("ParseError"),
+                            fields: vec![VmValue::String(Arc::from(msg.as_str())), VmValue::String(Arc::from(path.as_str()))],
+                        })));
+                        Err(runtime_err(msg))
+                    }
+                }
             }
             BuiltinId::Collect => {
                 if args.len() != 1 { return Err(runtime_err("collect() expects 1 argument (table)")); }
@@ -2185,9 +2259,18 @@ impl Vm {
                     VmValue::String(s) => s.to_string(),
                     _ => return Err(runtime_err("postgres() table_name must be a string")),
                 };
-                let df = self.engine().read_postgres(&conn_str, &table_name)
-                    .map_err(|e| runtime_err(e))?;
-                Ok(VmValue::Table(VmTable { df }))
+                match self.engine().read_postgres(&conn_str, &table_name) {
+                    Ok(df) => Ok(VmValue::Table(VmTable { df })),
+                    Err(e) => {
+                        let msg = e.to_string();
+                        self.thrown_value = Some(VmValue::EnumInstance(Arc::new(VmEnumInstance {
+                            type_name: Arc::from("ConnectorError"),
+                            variant: Arc::from("QueryError"),
+                            fields: vec![VmValue::String(Arc::from(msg.as_str())), VmValue::String(Arc::from("postgres"))],
+                        })));
+                        Err(runtime_err(msg))
+                    }
+                }
             }
             // ── AI builtins ──
             BuiltinId::Tensor => {
@@ -2509,11 +2592,19 @@ impl Vm {
             BuiltinId::HttpGet => {
                 if args.is_empty() { return Err(runtime_err("http_get() expects a URL")); }
                 if let VmValue::String(url) = &args[0] {
-                    let body = reqwest::blocking::get(url.as_ref())
-                        .map_err(|e| runtime_err(format!("HTTP GET error: {e}")))?
-                        .text()
-                        .map_err(|e| runtime_err(format!("HTTP response error: {e}")))?;
-                    Ok(VmValue::String(Arc::from(body.as_str())))
+                    match reqwest::blocking::get(url.as_ref())
+                        .and_then(|r| r.text()) {
+                        Ok(body) => Ok(VmValue::String(Arc::from(body.as_str()))),
+                        Err(e) => {
+                            let msg = format!("HTTP GET error: {e}");
+                            self.thrown_value = Some(VmValue::EnumInstance(Arc::new(VmEnumInstance {
+                                type_name: Arc::from("NetworkError"),
+                                variant: Arc::from("HttpError"),
+                                fields: vec![VmValue::String(Arc::from(msg.as_str())), VmValue::String(url.clone())],
+                            })));
+                            Err(runtime_err(msg))
+                        }
+                    }
                 } else {
                     Err(runtime_err("http_get() expects a string URL"))
                 }
@@ -2522,15 +2613,23 @@ impl Vm {
                 if args.len() < 2 { return Err(runtime_err("http_post() expects URL and body")); }
                 if let (VmValue::String(url), VmValue::String(body)) = (&args[0], &args[1]) {
                     let client = reqwest::blocking::Client::new();
-                    let resp = client
+                    match client
                         .post(url.as_ref())
                         .header("Content-Type", "application/json")
                         .body(body.to_string())
                         .send()
-                        .map_err(|e| runtime_err(format!("HTTP POST error: {e}")))?
-                        .text()
-                        .map_err(|e| runtime_err(format!("HTTP response error: {e}")))?;
-                    Ok(VmValue::String(Arc::from(resp.as_str())))
+                        .and_then(|r| r.text()) {
+                        Ok(resp) => Ok(VmValue::String(Arc::from(resp.as_str()))),
+                        Err(e) => {
+                            let msg = format!("HTTP POST error: {e}");
+                            self.thrown_value = Some(VmValue::EnumInstance(Arc::new(VmEnumInstance {
+                                type_name: Arc::from("NetworkError"),
+                                variant: Arc::from("HttpError"),
+                                fields: vec![VmValue::String(Arc::from(msg.as_str())), VmValue::String(url.clone())],
+                            })));
+                            Err(runtime_err(msg))
+                        }
+                    }
                 } else {
                     Err(runtime_err("http_post() expects string URL and body"))
                 }
@@ -3949,6 +4048,24 @@ impl Vm {
             BuiltinId::AsyncMap | BuiltinId::AsyncFilter |
             BuiltinId::RaceAll => {
                 Err(runtime_err(format!("{}: async builtins require the 'async-runtime' feature", builtin_id.name())))
+            }
+
+            // Phase 27: Data Error Hierarchy builtins
+            BuiltinId::IsError => {
+                if args.is_empty() { return Err(runtime_err("is_error() expects 1 argument")); }
+                let is_err = matches!(&args[0], VmValue::EnumInstance(e) if
+                    &*e.type_name == "DataError" ||
+                    &*e.type_name == "NetworkError" ||
+                    &*e.type_name == "ConnectorError"
+                );
+                Ok(VmValue::Bool(is_err))
+            }
+            BuiltinId::ErrorType => {
+                if args.is_empty() { return Err(runtime_err("error_type() expects 1 argument")); }
+                match &args[0] {
+                    VmValue::EnumInstance(e) => Ok(VmValue::String(e.type_name.clone())),
+                    _ => Ok(VmValue::None),
+                }
             }
         }
     }
@@ -8471,5 +8588,154 @@ print(hi())
 print(bye())
 "#);
         assert_eq!(output, vec!["Hello World", "Goodbye Alice"]);
+    }
+
+    // ── Phase 27: Data Error Hierarchy tests ──
+
+    #[test]
+    fn test_vm_throw_catch_preserves_enum() {
+        let output = run_output(r#"
+enum Color { Red, Green(x) }
+try {
+    throw Color::Green(42)
+} catch e {
+    match e {
+        Color::Green(x) => print(x),
+        _ => print("no match"),
+    }
+}
+"#);
+        assert_eq!(output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_vm_throw_catch_string_compat() {
+        let output = run_output(r#"
+try {
+    throw "hello error"
+} catch e {
+    print(e)
+}
+"#);
+        assert_eq!(output, vec!["hello error"]);
+    }
+
+    #[test]
+    fn test_vm_runtime_error_still_string() {
+        let output = run_output(r#"
+try {
+    let x = 1 / 0
+} catch e {
+    print(type_of(e))
+}
+"#);
+        assert_eq!(output, vec!["string"]);
+    }
+
+    #[test]
+    fn test_vm_data_error_construct_and_throw() {
+        let output = run_output(r#"
+try {
+    throw DataError::ParseError("bad format", "file.csv")
+} catch e {
+    print(match e { DataError::ParseError(msg, _) => msg, _ => "no match" })
+    print(match e { DataError::ParseError(_, src) => src, _ => "no match" })
+}
+"#);
+        assert_eq!(output, vec!["bad format", "file.csv"]);
+    }
+
+    #[test]
+    fn test_vm_network_error_construct() {
+        let output = run_output(r#"
+let err = NetworkError::TimeoutError("timed out")
+match err {
+    NetworkError::TimeoutError(msg) => print(msg),
+    _ => print("no match"),
+}
+"#);
+        assert_eq!(output, vec!["timed out"]);
+    }
+
+    #[test]
+    fn test_vm_connector_error_construct() {
+        let output = run_output(r#"
+let err = ConnectorError::AuthError("invalid creds", "postgres")
+print(match err { ConnectorError::AuthError(msg, _) => msg, _ => "no match" })
+print(match err { ConnectorError::AuthError(_, conn) => conn, _ => "no match" })
+"#);
+        assert_eq!(output, vec!["invalid creds", "postgres"]);
+    }
+
+    #[test]
+    fn test_vm_is_error_builtin() {
+        let output = run_output(r#"
+let e1 = DataError::NotFound("users")
+let e2 = NetworkError::TimeoutError("slow")
+let e3 = ConnectorError::ConfigError("bad", "redis")
+let e4 = "not an error"
+print(is_error(e1))
+print(is_error(e2))
+print(is_error(e3))
+print(is_error(e4))
+"#);
+        assert_eq!(output, vec!["true", "true", "true", "false"]);
+    }
+
+    #[test]
+    fn test_vm_error_type_builtin() {
+        let output = run_output(r#"
+let e1 = DataError::ParseError("bad", "x.csv")
+let e2 = NetworkError::HttpError("fail", "url")
+let e3 = "not an error"
+print(error_type(e1))
+print(error_type(e2))
+print(error_type(e3))
+"#);
+        assert_eq!(output, vec!["DataError", "NetworkError", "none"]);
+    }
+
+    #[test]
+    fn test_vm_match_error_variants() {
+        let output = run_output(r#"
+fn handle(err) {
+    print(match err {
+        DataError::ParseError(msg, _) => "parse: " + msg,
+        DataError::SchemaError(msg, _, _) => "schema: " + msg,
+        DataError::ValidationError(_, field) => "validation: " + field,
+        DataError::NotFound(name) => "not found: " + name,
+        _ => "unknown"
+    })
+}
+handle(DataError::ParseError("bad csv", "data.csv"))
+handle(DataError::NotFound("users_table"))
+handle(DataError::SchemaError("mismatch", "int", "string"))
+handle(DataError::ValidationError("invalid", "email"))
+"#);
+        assert_eq!(output, vec![
+            "parse: bad csv",
+            "not found: users_table",
+            "schema: mismatch",
+            "validation: email",
+        ]);
+    }
+
+    #[test]
+    fn test_vm_rethrow_structured_error() {
+        let output = run_output(r#"
+try {
+    try {
+        throw DataError::NotFound("config")
+    } catch e {
+        throw e
+    }
+} catch outer {
+    match outer {
+        DataError::NotFound(name) => print("caught: " + name),
+        _ => print("wrong type"),
+    }
+}
+"#);
+        assert_eq!(output, vec!["caught: config"]);
     }
 }
