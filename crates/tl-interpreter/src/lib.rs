@@ -9174,4 +9174,94 @@ print(result)
 "#);
         assert_eq!(output, vec!["[]"]);
     }
+
+    // --- Phase 26: Closure upvalue closing tests (interpreter parity) ---
+
+    #[test]
+    fn test_interp_closure_returned_from_function() {
+        let output = run_output(r#"
+fn make_adder(n) {
+    return (x) => x + n
+}
+let add5 = make_adder(5)
+print(add5(3))
+print(add5(10))
+"#);
+        assert_eq!(output, vec!["8", "15"]);
+    }
+
+    #[test]
+    fn test_interp_closure_factory_multiple_calls() {
+        let output = run_output(r#"
+fn make_adder(n) {
+    return (x) => x + n
+}
+let add2 = make_adder(2)
+let add10 = make_adder(10)
+print(add2(5))
+print(add10(5))
+print(add2(1))
+"#);
+        assert_eq!(output, vec!["7", "15", "3"]);
+    }
+
+    #[test]
+    fn test_interp_closure_returned_in_list() {
+        let output = run_output(r#"
+fn make_ops(n) {
+    let add = (x) => x + n
+    let mul = (x) => x * n
+    return [add, mul]
+}
+let ops = make_ops(3)
+print(ops[0](10))
+print(ops[1](10))
+"#);
+        assert_eq!(output, vec!["13", "30"]);
+    }
+
+    #[test]
+    fn test_interp_nested_closure_return() {
+        let output = run_output(r#"
+fn outer(a) {
+    fn inner(b) {
+        return (x) => x + a + b
+    }
+    return inner(10)
+}
+let f = outer(5)
+print(f(1))
+"#);
+        assert_eq!(output, vec!["16"]);
+    }
+
+    #[test]
+    fn test_interp_multiple_closures_same_local() {
+        let output = run_output(r#"
+fn make_pair(n) {
+    let inc = (x) => x + n
+    let dec = (x) => x - n
+    return [inc, dec]
+}
+let pair = make_pair(7)
+print(pair[0](10))
+print(pair[1](10))
+"#);
+        assert_eq!(output, vec!["17", "3"]);
+    }
+
+    #[test]
+    fn test_interp_closure_captures_multiple_locals() {
+        let output = run_output(r#"
+fn make_greeter(greeting, name) {
+    let sep = " "
+    return () => greeting + sep + name
+}
+let hi = make_greeter("Hello", "World")
+let bye = make_greeter("Goodbye", "Alice")
+print(hi())
+print(bye())
+"#);
+        assert_eq!(output, vec!["Hello World", "Goodbye Alice"]);
+    }
 }
