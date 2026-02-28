@@ -656,6 +656,16 @@ impl Environment {
         global.insert("mask_cc".to_string(), Value::Builtin("mask_cc".to_string()));
         global.insert("redact".to_string(), Value::Builtin("redact".to_string()));
         global.insert("hash".to_string(), Value::Builtin("hash".to_string()));
+        // Phase 25: Async builtins
+        global.insert("async_read_file".to_string(), Value::Builtin("async_read_file".to_string()));
+        global.insert("async_write_file".to_string(), Value::Builtin("async_write_file".to_string()));
+        global.insert("async_http_get".to_string(), Value::Builtin("async_http_get".to_string()));
+        global.insert("async_http_post".to_string(), Value::Builtin("async_http_post".to_string()));
+        global.insert("async_sleep".to_string(), Value::Builtin("async_sleep".to_string()));
+        global.insert("select".to_string(), Value::Builtin("select".to_string()));
+        global.insert("race_all".to_string(), Value::Builtin("race_all".to_string()));
+        global.insert("async_map".to_string(), Value::Builtin("async_map".to_string()));
+        global.insert("async_filter".to_string(), Value::Builtin("async_filter".to_string()));
 
         Self {
             scopes: vec![global],
@@ -732,6 +742,9 @@ pub struct Interpreter {
     pub secret_vault: HashMap<String, String>,
     /// Security policy for sandbox mode (Phase 23)
     pub security_policy: Option<SecurityPolicy>,
+    /// Tokio runtime for async builtins (lazily initialized)
+    #[cfg(feature = "async-runtime")]
+    runtime: Option<Arc<tokio::runtime::Runtime>>,
 }
 
 impl Interpreter {
@@ -751,7 +764,23 @@ impl Interpreter {
             schema_registry: tl_compiler::schema::SchemaRegistry::new(),
             secret_vault: HashMap::new(),
             security_policy: None,
+            #[cfg(feature = "async-runtime")]
+            runtime: None,
         }
+    }
+
+    /// Lazily initialize and return the tokio runtime.
+    #[cfg(feature = "async-runtime")]
+    fn ensure_runtime(&mut self) -> Arc<tokio::runtime::Runtime> {
+        if self.runtime.is_none() {
+            self.runtime = Some(Arc::new(
+                tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .expect("Failed to create tokio runtime")
+            ));
+        }
+        self.runtime.as_ref().unwrap().clone()
     }
 
     /// Get or create the DataEngine (lazy init).
@@ -4278,6 +4307,311 @@ impl Interpreter {
                 Ok(Value::String(result))
             }
 
+            // ── Phase 25: Async builtins ──
+            #[cfg(feature = "async-runtime")]
+            "async_read_file" => {
+                let path = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => return Err(runtime_err_s("async_read_file() expects a string path")),
+                };
+                if let Some(policy) = &self.security_policy {
+                    if !policy.check("file_read") {
+                        return Err(runtime_err_s("async_read_file: file_read not allowed by security policy"));
+                    }
+                }
+                let rt = self.ensure_runtime();
+                let (tx, rx) = mpsc::channel();
+                rt.spawn(async move {
+                    let result = tokio::fs::read_to_string(&path).await;
+                    let _ = tx.send(result
+                        .map(|s| Value::String(s))
+                        .map_err(|e| format!("async_read_file error: {e}")));
+                });
+                Ok(Value::Task(Arc::new(TlTask::new(rx))))
+            }
+            #[cfg(feature = "async-runtime")]
+            "async_write_file" => {
+                let path = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => return Err(runtime_err_s("async_write_file() expects a string path")),
+                };
+                let content = match args.get(1) {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => return Err(runtime_err_s("async_write_file() expects string content")),
+                };
+                if let Some(policy) = &self.security_policy {
+                    if !policy.check("file_write") {
+                        return Err(runtime_err_s("async_write_file: file_write not allowed by security policy"));
+                    }
+                }
+                let rt = self.ensure_runtime();
+                let (tx, rx) = mpsc::channel();
+                rt.spawn(async move {
+                    let result = tokio::fs::write(&path, content.as_bytes()).await;
+                    let _ = tx.send(result
+                        .map(|_| Value::None)
+                        .map_err(|e| format!("async_write_file error: {e}")));
+                });
+                Ok(Value::Task(Arc::new(TlTask::new(rx))))
+            }
+            #[cfg(feature = "async-runtime")]
+            "async_http_get" => {
+                let url = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => return Err(runtime_err_s("async_http_get() expects a string URL")),
+                };
+                if let Some(policy) = &self.security_policy {
+                    if !policy.check("network") {
+                        return Err(runtime_err_s("async_http_get: network not allowed by security policy"));
+                    }
+                }
+                let rt = self.ensure_runtime();
+                let (tx, rx) = mpsc::channel();
+                rt.spawn(async move {
+                    let result: Result<Value, String> = async {
+                        let body = reqwest::get(&url).await
+                            .map_err(|e| format!("async_http_get error: {e}"))?
+                            .text().await
+                            .map_err(|e| format!("async_http_get response error: {e}"))?;
+                        Ok(Value::String(body))
+                    }.await;
+                    let _ = tx.send(result);
+                });
+                Ok(Value::Task(Arc::new(TlTask::new(rx))))
+            }
+            #[cfg(feature = "async-runtime")]
+            "async_http_post" => {
+                let url = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => return Err(runtime_err_s("async_http_post() expects a string URL")),
+                };
+                let body = match args.get(1) {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => return Err(runtime_err_s("async_http_post() expects string body")),
+                };
+                if let Some(policy) = &self.security_policy {
+                    if !policy.check("network") {
+                        return Err(runtime_err_s("async_http_post: network not allowed by security policy"));
+                    }
+                }
+                let rt = self.ensure_runtime();
+                let (tx, rx) = mpsc::channel();
+                rt.spawn(async move {
+                    let result: Result<Value, String> = async {
+                        let resp = reqwest::Client::new()
+                            .post(&url)
+                            .body(body)
+                            .send().await
+                            .map_err(|e| format!("async_http_post error: {e}"))?
+                            .text().await
+                            .map_err(|e| format!("async_http_post response error: {e}"))?;
+                        Ok(Value::String(resp))
+                    }.await;
+                    let _ = tx.send(result);
+                });
+                Ok(Value::Task(Arc::new(TlTask::new(rx))))
+            }
+            #[cfg(feature = "async-runtime")]
+            "async_sleep" => {
+                let ms = match args.first() {
+                    Some(Value::Int(n)) => *n as u64,
+                    _ => return Err(runtime_err_s("async_sleep() expects an integer (milliseconds)")),
+                };
+                let rt = self.ensure_runtime();
+                let (tx, rx) = mpsc::channel();
+                rt.spawn(async move {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(ms)).await;
+                    let _ = tx.send(Ok(Value::None));
+                });
+                Ok(Value::Task(Arc::new(TlTask::new(rx))))
+            }
+            #[cfg(feature = "async-runtime")]
+            "select" => {
+                if args.len() < 2 {
+                    return Err(runtime_err_s("select() expects at least 2 task arguments"));
+                }
+                let mut receivers = Vec::new();
+                for (i, arg) in args.iter().enumerate() {
+                    match arg {
+                        Value::Task(task) => {
+                            let rx = task.receiver.lock().unwrap().take();
+                            match rx {
+                                Some(r) => receivers.push(r),
+                                None => return Err(runtime_err(format!("select: task {} already consumed", i))),
+                            }
+                        }
+                        _ => return Err(runtime_err(format!("select: argument {} is not a task", i))),
+                    }
+                }
+                let (winner_tx, winner_rx) = mpsc::channel::<Result<Value, String>>();
+                for rx in receivers {
+                    let tx = winner_tx.clone();
+                    std::thread::spawn(move || {
+                        if let Ok(result) = rx.recv() {
+                            let _ = tx.send(result);
+                        }
+                    });
+                }
+                drop(winner_tx);
+                Ok(Value::Task(Arc::new(TlTask::new(winner_rx))))
+            }
+            #[cfg(feature = "async-runtime")]
+            "race_all" => {
+                let tasks = match args.first() {
+                    Some(Value::List(list)) => list.clone(),
+                    _ => return Err(runtime_err_s("race_all() expects a list of tasks")),
+                };
+                if tasks.is_empty() {
+                    return Err(runtime_err_s("race_all() expects a non-empty list of tasks"));
+                }
+                let mut receivers = Vec::new();
+                for (i, task_val) in tasks.iter().enumerate() {
+                    match task_val {
+                        Value::Task(task) => {
+                            let rx = task.receiver.lock().unwrap().take();
+                            match rx {
+                                Some(r) => receivers.push(r),
+                                None => return Err(runtime_err(format!("race_all: task {} already consumed", i))),
+                            }
+                        }
+                        _ => return Err(runtime_err(format!("race_all: element {} is not a task", i))),
+                    }
+                }
+                let (winner_tx, winner_rx) = mpsc::channel::<Result<Value, String>>();
+                for rx in receivers {
+                    let tx = winner_tx.clone();
+                    std::thread::spawn(move || {
+                        if let Ok(result) = rx.recv() {
+                            let _ = tx.send(result);
+                        }
+                    });
+                }
+                drop(winner_tx);
+                Ok(Value::Task(Arc::new(TlTask::new(winner_rx))))
+            }
+            #[cfg(feature = "async-runtime")]
+            "async_map" => {
+                let items = match args.first() {
+                    Some(Value::List(list)) => list.clone(),
+                    _ => return Err(runtime_err_s("async_map() expects a list as first argument")),
+                };
+                let (closure_params, closure_body, closure_env) = match args.get(1) {
+                    Some(Value::Closure { params, body, captured_env }) => {
+                        (params.clone(), body.clone(), captured_env.clone())
+                    }
+                    Some(Value::Function { params, body, .. }) => {
+                        (params.clone(), ClosureBody::Block { stmts: body.clone(), expr: None }, self.env.scopes.clone())
+                    }
+                    _ => return Err(runtime_err_s("async_map() expects a function as second argument")),
+                };
+                let method_table = self.method_table.clone();
+                let (tx, rx) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let mut results = Vec::new();
+                    let mut handles = Vec::new();
+                    for item in items {
+                        let params = closure_params.clone();
+                        let body = closure_body.clone();
+                        let env = closure_env.clone();
+                        let mt = method_table.clone();
+                        let handle = std::thread::spawn(move || {
+                            let mut interp = Interpreter::new();
+                            interp.env.scopes = env;
+                            interp.method_table = mt;
+                            interp.env.push_scope();
+                            if let Some(p) = params.first() {
+                                interp.env.set(p.name.clone(), item);
+                            }
+                            let result = interp.eval_closure_body(&body);
+                            interp.env.pop_scope();
+                            result.map_err(|e| format!("{e}"))
+                        });
+                        handles.push(handle);
+                    }
+                    for handle in handles {
+                        match handle.join() {
+                            Ok(Ok(val)) => results.push(val),
+                            Ok(Err(e)) => {
+                                let _ = tx.send(Err(format!("async_map error: {e}")));
+                                return;
+                            }
+                            Err(_) => {
+                                let _ = tx.send(Err("async_map: thread panicked".to_string()));
+                                return;
+                            }
+                        }
+                    }
+                    let _ = tx.send(Ok(Value::List(results)));
+                });
+                Ok(Value::Task(Arc::new(TlTask::new(rx))))
+            }
+            #[cfg(feature = "async-runtime")]
+            "async_filter" => {
+                let items = match args.first() {
+                    Some(Value::List(list)) => list.clone(),
+                    _ => return Err(runtime_err_s("async_filter() expects a list as first argument")),
+                };
+                let (closure_params, closure_body, closure_env) = match args.get(1) {
+                    Some(Value::Closure { params, body, captured_env }) => {
+                        (params.clone(), body.clone(), captured_env.clone())
+                    }
+                    Some(Value::Function { params, body, .. }) => {
+                        (params.clone(), ClosureBody::Block { stmts: body.clone(), expr: None }, self.env.scopes.clone())
+                    }
+                    _ => return Err(runtime_err_s("async_filter() expects a function as second argument")),
+                };
+                let method_table = self.method_table.clone();
+                let items_clone = items.clone();
+                let (tx, rx) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let mut handles = Vec::new();
+                    for item in items {
+                        let params = closure_params.clone();
+                        let body = closure_body.clone();
+                        let env = closure_env.clone();
+                        let mt = method_table.clone();
+                        let handle = std::thread::spawn(move || {
+                            let mut interp = Interpreter::new();
+                            interp.env.scopes = env;
+                            interp.method_table = mt;
+                            interp.env.push_scope();
+                            if let Some(p) = params.first() {
+                                interp.env.set(p.name.clone(), item);
+                            }
+                            let result = interp.eval_closure_body(&body);
+                            interp.env.pop_scope();
+                            result.map_err(|e| format!("{e}"))
+                        });
+                        handles.push(handle);
+                    }
+                    let mut results = Vec::new();
+                    for (i, handle) in handles.into_iter().enumerate() {
+                        match handle.join() {
+                            Ok(Ok(val)) => {
+                                if matches!(&val, Value::Bool(true)) {
+                                    results.push(items_clone[i].clone());
+                                }
+                            }
+                            Ok(Err(e)) => {
+                                let _ = tx.send(Err(format!("async_filter error: {e}")));
+                                return;
+                            }
+                            Err(_) => {
+                                let _ = tx.send(Err("async_filter: thread panicked".to_string()));
+                                return;
+                            }
+                        }
+                    }
+                    let _ = tx.send(Ok(Value::List(results)));
+                });
+                Ok(Value::Task(Arc::new(TlTask::new(rx))))
+            }
+            #[cfg(not(feature = "async-runtime"))]
+            "async_read_file" | "async_write_file" | "async_http_get" | "async_http_post" |
+            "async_sleep" | "select" | "race_all" | "async_map" | "async_filter" => {
+                Err(runtime_err(format!("{name}: async builtins require the 'async-runtime' feature")))
+            }
+
             _ => Err(runtime_err(format!("Unknown builtin: {name}"))),
         }
     }
@@ -6652,6 +6986,15 @@ mod tests {
         interp.output
     }
 
+    fn run_err(source: &str) -> String {
+        let program = parse(source).unwrap();
+        let mut interp = Interpreter::new();
+        match interp.execute(&program) {
+            Err(e) => format!("{e}"),
+            Ok(_) => "no error".to_string(),
+        }
+    }
+
     #[test]
     fn test_arithmetic() {
         assert!(matches!(run("1 + 2").unwrap(), Value::Int(3)));
@@ -8723,5 +9066,112 @@ print(check_permission("file_write"))
 "#);
         // Without sandbox, everything allowed
         assert_eq!(output, vec!["true", "true"]);
+    }
+
+    // ── Phase 25: Async Runtime Tests (feature-gated) ──────────────
+
+    #[cfg(not(feature = "async-runtime"))]
+    #[test]
+    fn test_interp_async_builtins_require_feature() {
+        let err = run_err(r#"let t = async_read_file("test.txt")"#);
+        assert!(err.contains("async"), "Expected async feature error, got: {err}");
+    }
+
+    #[cfg(feature = "async-runtime")]
+    #[test]
+    fn test_interp_async_read_write_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("interp_async.txt");
+        let path_str = path.to_str().unwrap().replace('\\', "/");
+        let source = format!(
+            r#"let wt = async_write_file("{path_str}", "interp async")
+let wr = await(wt)
+let rt = async_read_file("{path_str}")
+let content = await(rt)
+print(content)"#
+        );
+        let output = run_output(&source);
+        assert_eq!(output, vec!["interp async"]);
+    }
+
+    #[cfg(feature = "async-runtime")]
+    #[test]
+    fn test_interp_async_sleep() {
+        let output = run_output(r#"
+let t = async_sleep(10)
+let r = await(t)
+print(r)
+"#);
+        assert_eq!(output, vec!["none"]);
+    }
+
+    #[cfg(feature = "async-runtime")]
+    #[test]
+    fn test_interp_select() {
+        let output = run_output(r#"
+let fast = async_sleep(10)
+let slow = async_sleep(5000)
+let winner = select(fast, slow)
+let r = await(winner)
+print(r)
+"#);
+        assert_eq!(output, vec!["none"]);
+    }
+
+    #[cfg(feature = "async-runtime")]
+    #[test]
+    fn test_interp_race_all() {
+        let output = run_output(r#"
+let t1 = async_sleep(10)
+let t2 = async_sleep(5000)
+let winner = race_all([t1, t2])
+let r = await(winner)
+print(r)
+"#);
+        assert_eq!(output, vec!["none"]);
+    }
+
+    #[cfg(feature = "async-runtime")]
+    #[test]
+    fn test_interp_async_map() {
+        let output = run_output(r#"
+let t = async_map([1, 2, 3], (x) => x * 10)
+let result = await(t)
+print(result)
+"#);
+        assert_eq!(output, vec!["[10, 20, 30]"]);
+    }
+
+    #[cfg(feature = "async-runtime")]
+    #[test]
+    fn test_interp_async_filter() {
+        let output = run_output(r#"
+let t = async_filter([1, 2, 3, 4, 5], (x) => x > 3)
+let result = await(t)
+print(result)
+"#);
+        assert_eq!(output, vec!["[4, 5]"]);
+    }
+
+    #[cfg(feature = "async-runtime")]
+    #[test]
+    fn test_interp_async_map_empty() {
+        let output = run_output(r#"
+let t = async_map([], (x) => x)
+let result = await(t)
+print(result)
+"#);
+        assert_eq!(output, vec!["[]"]);
+    }
+
+    #[cfg(feature = "async-runtime")]
+    #[test]
+    fn test_interp_async_filter_none_match() {
+        let output = run_output(r#"
+let t = async_filter([1, 2, 3], (x) => x > 100)
+let result = await(t)
+print(result)
+"#);
+        assert_eq!(output, vec!["[]"]);
     }
 }

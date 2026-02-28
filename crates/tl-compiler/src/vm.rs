@@ -376,7 +376,7 @@ pub struct Vm {
     /// Call frame stack
     frames: Vec<CallFrame>,
     /// Global variables
-    globals: HashMap<String, VmValue>,
+    pub(crate) globals: HashMap<String, VmValue>,
     /// Data engine (lazily initialized)
     data_engine: Option<DataEngine>,
     /// Captured output (for testing)
@@ -405,6 +405,9 @@ pub struct Vm {
     pub secret_vault: HashMap<String, String>,
     /// Security policy (optional, set via --sandbox)
     pub security_policy: Option<crate::security::SecurityPolicy>,
+    /// Tokio runtime for async builtins (lazily initialized)
+    #[cfg(feature = "async-runtime")]
+    runtime: Option<Arc<tokio::runtime::Runtime>>,
 }
 
 impl Vm {
@@ -427,7 +430,23 @@ impl Vm {
             schema_registry: crate::schema::SchemaRegistry::new(),
             secret_vault: HashMap::new(),
             security_policy: None,
+            #[cfg(feature = "async-runtime")]
+            runtime: None,
         }
+    }
+
+    /// Lazily initialize and return the tokio runtime.
+    #[cfg(feature = "async-runtime")]
+    fn ensure_runtime(&mut self) -> Arc<tokio::runtime::Runtime> {
+        if self.runtime.is_none() {
+            self.runtime = Some(Arc::new(
+                tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .expect("Failed to create tokio runtime")
+            ));
+        }
+        self.runtime.as_ref().unwrap().clone()
     }
 
     fn engine(&mut self) -> &DataEngine {
@@ -1442,7 +1461,7 @@ impl Vm {
     }
 
     /// Execute a closure (no arguments) in this VM. Used by spawn().
-    fn execute_closure(&mut self, proto: &Arc<Prototype>, upvalues: &[UpvalueRef]) -> Result<VmValue, TlError> {
+    pub(crate) fn execute_closure(&mut self, proto: &Arc<Prototype>, upvalues: &[UpvalueRef]) -> Result<VmValue, TlError> {
         let base = self.stack.len();
         self.ensure_stack(base + proto.num_registers as usize + 1);
         self.frames.push(CallFrame {
@@ -1455,7 +1474,7 @@ impl Vm {
     }
 
     /// Execute a closure with arguments in this VM. Used by pmap().
-    fn execute_closure_with_args(&mut self, proto: &Arc<Prototype>, upvalues: &[UpvalueRef], args: &[VmValue]) -> Result<VmValue, TlError> {
+    pub(crate) fn execute_closure_with_args(&mut self, proto: &Arc<Prototype>, upvalues: &[UpvalueRef], args: &[VmValue]) -> Result<VmValue, TlError> {
         let base = self.stack.len();
         self.ensure_stack(base + proto.num_registers as usize + 1);
         for (i, arg) in args.iter().enumerate() {
@@ -3817,13 +3836,60 @@ impl Vm {
                 Ok(VmValue::String(Arc::from(result.as_str())))
             }
 
-            // ── Phase 24: Async builtins (stub — full implementation needs tokio feature) ──
+            // ── Phase 25: Async builtins (tokio-backed when async-runtime feature enabled) ──
+            #[cfg(feature = "async-runtime")]
+            BuiltinId::AsyncReadFile => {
+                let rt = self.ensure_runtime();
+                crate::async_runtime::async_read_file_impl(&rt, &args, &self.security_policy)
+            }
+            #[cfg(feature = "async-runtime")]
+            BuiltinId::AsyncWriteFile => {
+                let rt = self.ensure_runtime();
+                crate::async_runtime::async_write_file_impl(&rt, &args, &self.security_policy)
+            }
+            #[cfg(feature = "async-runtime")]
+            BuiltinId::AsyncHttpGet => {
+                let rt = self.ensure_runtime();
+                crate::async_runtime::async_http_get_impl(&rt, &args, &self.security_policy)
+            }
+            #[cfg(feature = "async-runtime")]
+            BuiltinId::AsyncHttpPost => {
+                let rt = self.ensure_runtime();
+                crate::async_runtime::async_http_post_impl(&rt, &args, &self.security_policy)
+            }
+            #[cfg(feature = "async-runtime")]
+            BuiltinId::AsyncSleep => {
+                let rt = self.ensure_runtime();
+                crate::async_runtime::async_sleep_impl(&rt, &args)
+            }
+            #[cfg(feature = "async-runtime")]
+            BuiltinId::Select => {
+                crate::async_runtime::select_impl(&args)
+            }
+            #[cfg(feature = "async-runtime")]
+            BuiltinId::RaceAll => {
+                crate::async_runtime::race_all_impl(&args)
+            }
+            #[cfg(feature = "async-runtime")]
+            BuiltinId::AsyncMap => {
+                let rt = self.ensure_runtime();
+                let stack_snapshot = self.stack.clone();
+                crate::async_runtime::async_map_impl(&rt, &args, &self.globals, &stack_snapshot)
+            }
+            #[cfg(feature = "async-runtime")]
+            BuiltinId::AsyncFilter => {
+                let rt = self.ensure_runtime();
+                let stack_snapshot = self.stack.clone();
+                crate::async_runtime::async_filter_impl(&rt, &args, &self.globals, &stack_snapshot)
+            }
+
+            #[cfg(not(feature = "async-runtime"))]
             BuiltinId::AsyncReadFile | BuiltinId::AsyncWriteFile |
             BuiltinId::AsyncHttpGet | BuiltinId::AsyncHttpPost |
             BuiltinId::AsyncSleep | BuiltinId::Select |
             BuiltinId::AsyncMap | BuiltinId::AsyncFilter |
             BuiltinId::RaceAll => {
-                Err(runtime_err(format!("{}: async builtins require the 'async' feature", builtin_id.name())))
+                Err(runtime_err(format!("{}: async builtins require the 'async-runtime' feature", builtin_id.name())))
             }
         }
     }
@@ -8096,5 +8162,165 @@ print(len(issues))"#;
         vm.security_policy = Some(crate::security::SecurityPolicy::sandbox());
         vm.execute(&proto).unwrap();
         assert_eq!(vm.output, vec!["false", "true"]);
+    }
+
+    // ── Phase 25: Async Runtime Tests (feature-gated) ──────────────
+
+    #[cfg(feature = "async-runtime")]
+    #[test]
+    fn test_vm_async_read_write_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("async_test.txt");
+        let path_str = path.to_str().unwrap().replace('\\', "/");
+        let source = format!(
+            r#"let wt = async_write_file("{path_str}", "async hello")
+let wr = await(wt)
+let rt = async_read_file("{path_str}")
+let content = await(rt)
+print(content)"#
+        );
+        let output = run_output(&source);
+        assert_eq!(output, vec!["async hello"]);
+    }
+
+    #[cfg(feature = "async-runtime")]
+    #[test]
+    fn test_vm_async_sleep() {
+        let source = r#"
+let t = async_sleep(10)
+let r = await(t)
+print(r)
+"#;
+        let output = run_output(source);
+        assert_eq!(output, vec!["none"]);
+    }
+
+    #[cfg(feature = "async-runtime")]
+    #[test]
+    fn test_vm_select_first_wins() {
+        // select between a fast sleep and a slow sleep — fast one wins
+        let source = r#"
+let fast = async_sleep(10)
+let slow = async_sleep(5000)
+let winner = select(fast, slow)
+let result = await(winner)
+print(result)
+"#;
+        let output = run_output(source);
+        assert_eq!(output, vec!["none"]);
+    }
+
+    #[cfg(feature = "async-runtime")]
+    #[test]
+    fn test_vm_race_all() {
+        let source = r#"
+let t1 = async_sleep(10)
+let t2 = async_sleep(5000)
+let winner = race_all([t1, t2])
+let result = await(winner)
+print(result)
+"#;
+        let output = run_output(source);
+        assert_eq!(output, vec!["none"]);
+    }
+
+    #[cfg(feature = "async-runtime")]
+    #[test]
+    fn test_vm_async_map() {
+        let source = r#"
+let items = [1, 2, 3]
+let t = async_map(items, (x) => x * 10)
+let result = await(t)
+print(result)
+"#;
+        let output = run_output(source);
+        assert_eq!(output, vec!["[10, 20, 30]"]);
+    }
+
+    #[cfg(feature = "async-runtime")]
+    #[test]
+    fn test_vm_async_filter() {
+        let source = r#"
+let items = [1, 2, 3, 4, 5]
+let t = async_filter(items, (x) => x > 3)
+let result = await(t)
+print(result)
+"#;
+        let output = run_output(source);
+        assert_eq!(output, vec!["[4, 5]"]);
+    }
+
+    #[cfg(feature = "async-runtime")]
+    #[test]
+    fn test_vm_async_write_file_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("write_test.txt");
+        let path_str = path.to_str().unwrap().replace('\\', "/");
+        let source = format!(
+            r#"let t = async_write_file("{path_str}", "test data")
+let r = await(t)
+print(r)"#
+        );
+        let output = run_output(&source);
+        assert_eq!(output, vec!["none"]);
+    }
+
+    #[cfg(feature = "async-runtime")]
+    #[test]
+    fn test_vm_async_security_policy_blocks_write() {
+        let source = r#"let t = async_write_file("/tmp/blocked.txt", "data")"#;
+        let program = tl_parser::parse(source).unwrap();
+        let proto = crate::compile(&program).unwrap();
+        let mut vm = Vm::new();
+        vm.security_policy = Some(crate::security::SecurityPolicy::sandbox());
+        let result = vm.execute(&proto);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("file_write not allowed"), "Expected security error, got: {err}");
+    }
+
+    #[cfg(feature = "async-runtime")]
+    #[test]
+    fn test_vm_async_security_policy_allows_read() {
+        // Sandbox allows file_read, so async_read_file should succeed (even if file doesn't exist)
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("readable.txt");
+        std::fs::write(&path, "safe content").unwrap();
+        let path_str = path.to_str().unwrap().replace('\\', "/");
+        let source = format!(
+            r#"let t = async_read_file("{path_str}")
+let r = await(t)
+print(r)"#
+        );
+        let program = tl_parser::parse(&source).unwrap();
+        let proto = crate::compile(&program).unwrap();
+        let mut vm = Vm::new();
+        vm.security_policy = Some(crate::security::SecurityPolicy::sandbox());
+        vm.execute(&proto).unwrap();
+        assert_eq!(vm.output, vec!["safe content"]);
+    }
+
+    #[cfg(feature = "async-runtime")]
+    #[test]
+    fn test_vm_async_map_empty_list() {
+        let source = r#"
+let t = async_map([], (x) => x * 2)
+let result = await(t)
+print(result)
+"#;
+        let output = run_output(source);
+        assert_eq!(output, vec!["[]"]);
+    }
+
+    #[cfg(feature = "async-runtime")]
+    #[test]
+    fn test_vm_async_filter_none_match() {
+        let source = r#"
+let t = async_filter([1, 2, 3], (x) => x > 100)
+let result = await(t)
+print(result)
+"#;
+        let output = run_output(source);
+        assert_eq!(output, vec!["[]"]);
     }
 }

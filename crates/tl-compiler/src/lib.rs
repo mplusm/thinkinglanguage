@@ -16,6 +16,8 @@ pub mod schema;
 pub mod security;
 #[cfg(feature = "python")]
 pub mod python;
+#[cfg(feature = "async-runtime")]
+pub mod async_runtime;
 
 pub use compiler::{compile, compile_with_source};
 pub use vm::Vm;

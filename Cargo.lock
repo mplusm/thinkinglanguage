@@ -5138,6 +5138,7 @@ dependencies = [
  "tl-package",
  "tl-parser",
  "tl-stream",
+ "tokio",
 ]
 
 [[package]]
@@ -5188,6 +5189,7 @@ dependencies = [
  "tl-package",
  "tl-parser",
  "tl-stream",
+ "tokio",
 ]
 
 [[package]]
