@@ -104,6 +104,13 @@ pub enum StmtKind {
         body: Vec<Stmt>,
     },
 
+    /// `parallel for name in iter { body }`
+    ParallelFor {
+        name: String,
+        iter: Expr,
+        body: Vec<Stmt>,
+    },
+
     /// `schema Name { field: type, ... }`
     Schema {
         name: String,
@@ -531,6 +538,8 @@ impl std::fmt::Display for BinOp {
 pub enum UnaryOp {
     Neg,
     Not,
+    /// `&expr` — read-only reference
+    Ref,
 }
 
 /// Function parameter

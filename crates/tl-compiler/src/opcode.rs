@@ -191,6 +191,14 @@ pub enum Op {
     /// ExtractNamedField: A = dest, B = source reg, C = field name constant index
     /// Extracts a named field from a struct into dest.
     ExtractNamedField = 63,
+
+    // ── Phase 28: Ownership & Move Semantics ──
+    /// LoadMoved: A = Moved tombstone
+    LoadMoved = 64,
+    /// MakeRef: A = Ref(B) — wrap value in read-only reference
+    MakeRef = 65,
+    /// ParallelFor: A = list reg, B = body prototype constant, C = unused
+    ParallelFor = 66,
 }
 
 impl Op {
@@ -261,6 +269,9 @@ impl Op {
             Op::TryPropagate => "TryPropagate",
             Op::ExtractField => "ExtractField",
             Op::ExtractNamedField => "ExtractNamedField",
+            Op::LoadMoved => "LoadMoved",
+            Op::MakeRef => "MakeRef",
+            Op::ParallelFor => "ParallelFor",
         }
     }
 }

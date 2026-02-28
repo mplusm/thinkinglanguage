@@ -297,6 +297,10 @@ pub enum Value {
     /// An opaque Python object (feature-gated)
     #[cfg(feature = "python")]
     PyObject(Arc<InterpPyObjectWrapper>),
+    /// Tombstone for a value consumed by pipe-move
+    Moved,
+    /// Read-only reference wrapper
+    Ref(Arc<Value>),
 }
 
 impl fmt::Display for Value {
@@ -383,6 +387,8 @@ impl fmt::Display for Value {
             Value::Secret(_) => write!(f, "***"),
             #[cfg(feature = "python")]
             Value::PyObject(w) => write!(f, "{w}"),
+            Value::Moved => write!(f, "<moved>"),
+            Value::Ref(inner) => write!(f, "{inner}"),
         }
     }
 }
@@ -401,6 +407,8 @@ impl Value {
             Value::None => false,
             #[cfg(feature = "python")]
             Value::PyObject(_) => true,
+            Value::Moved => false,
+            Value::Ref(inner) => inner.is_truthy(),
             _ => true,
         }
     }
@@ -442,6 +450,8 @@ impl Value {
             Value::Secret(_) => "secret",
             #[cfg(feature = "python")]
             Value::PyObject(_) => "pyobject",
+            Value::Moved => "<moved>",
+            Value::Ref(inner) => inner.type_name(),
         }
     }
 }
@@ -945,7 +955,8 @@ impl Interpreter {
                 }
                 Ok(Signal::None)
             }
-            StmtKind::For { name, iter, body } => {
+            StmtKind::For { name, iter, body }
+            | StmtKind::ParallelFor { name, iter, body } => {
                 let iter_val = self.eval_expr(iter)?;
                 // Handle generator iteration
                 if let Value::Generator(ref g) = iter_val {
@@ -1456,13 +1467,21 @@ impl Interpreter {
             Expr::Bool(b) => Ok(Value::Bool(*b)),
             Expr::None => Ok(Value::None),
 
-            Expr::Ident(name) => self.env.get(name).cloned().ok_or_else(|| {
-                TlError::Runtime(RuntimeError {
-                    message: format!("Undefined variable: `{name}`"),
-                    span: None,
-                    stack_trace: vec![],
-                    })
-            }),
+            Expr::Ident(name) => {
+                let val = self.env.get(name).cloned().ok_or_else(|| {
+                    TlError::Runtime(RuntimeError {
+                        message: format!("Undefined variable: `{name}`"),
+                        span: None,
+                        stack_trace: vec![],
+                        })
+                })?;
+                if matches!(val, Value::Moved) {
+                    return Err(runtime_err(format!(
+                        "Use of moved value `{name}`. It was consumed by a pipe (|>) operation. Use .clone() to keep a copy."
+                    )));
+                }
+                Ok(val)
+            }
 
             Expr::BinOp { left, op, right } => {
                 let l = self.eval_expr(left)?;
@@ -1483,6 +1502,7 @@ impl Interpreter {
                         ))),
                     },
                     UnaryOp::Not => Ok(Value::Bool(!val.is_truthy())),
+                    UnaryOp::Ref => Ok(Value::Ref(Arc::new(val))),
                 }
             }
 
@@ -1539,6 +1559,10 @@ impl Interpreter {
                 // Table-aware pipe: if left is a Table, dispatch to table operations
                 if let Value::Table(ref tl_table) = left_val {
                     return self.eval_table_pipe(tl_table.df.clone(), right);
+                }
+                // Mark the source variable as moved (consumed by pipe)
+                if let Expr::Ident(name) = left.as_ref() {
+                    self.env.set(name.clone(), Value::Moved);
                 }
                 // Regular pipe: left_val becomes the first argument to the right-side call
                 match right.as_ref() {
@@ -4663,7 +4687,60 @@ impl Interpreter {
     }
 
     /// Call a method on an object via dot notation
+    /// Deep-clone a Value, recursively copying containers.
+    fn deep_clone_interp_value(&self, val: &Value) -> Result<Value, TlError> {
+        match val {
+            Value::List(items) => {
+                let cloned: Result<Vec<_>, _> = items.iter().map(|v| self.deep_clone_interp_value(v)).collect();
+                Ok(Value::List(cloned?))
+            }
+            Value::Map(pairs) => {
+                let cloned: Result<Vec<_>, _> = pairs.iter()
+                    .map(|(k, v)| Ok((k.clone(), self.deep_clone_interp_value(v)?)))
+                    .collect();
+                Ok(Value::Map(cloned?))
+            }
+            Value::Set(items) => {
+                let cloned: Result<Vec<_>, _> = items.iter().map(|v| self.deep_clone_interp_value(v)).collect();
+                Ok(Value::Set(cloned?))
+            }
+            Value::StructInstance { type_name, fields } => {
+                let mut cloned_fields = HashMap::new();
+                for (k, v) in fields {
+                    cloned_fields.insert(k.clone(), self.deep_clone_interp_value(v)?);
+                }
+                Ok(Value::StructInstance {
+                    type_name: type_name.clone(),
+                    fields: cloned_fields,
+                })
+            }
+            Value::EnumInstance { type_name, variant, fields } => {
+                let cloned_fields: Result<Vec<_>, _> = fields.iter().map(|v| self.deep_clone_interp_value(v)).collect();
+                Ok(Value::EnumInstance {
+                    type_name: type_name.clone(),
+                    variant: variant.clone(),
+                    fields: cloned_fields?,
+                })
+            }
+            Value::Ref(inner) => self.deep_clone_interp_value(inner),
+            Value::Moved => Err(runtime_err("Cannot clone a moved value".to_string())),
+            Value::Task(_) => Err(runtime_err("Cannot clone a task".to_string())),
+            Value::Channel(_) => Err(runtime_err("Cannot clone a channel".to_string())),
+            Value::Generator(_) => Err(runtime_err("Cannot clone a generator".to_string())),
+            other => Ok(other.clone()),
+        }
+    }
+
     fn call_method(&mut self, obj: &Value, method: &str, args: &[Value]) -> Result<Value, TlError> {
+        // Universal .clone() method — deep copy any value
+        if method == "clone" {
+            return self.deep_clone_interp_value(obj);
+        }
+        // Unwrap Ref for method dispatch — methods can be called through references
+        let obj = match obj {
+            Value::Ref(inner) => inner.as_ref(),
+            other => other,
+        };
         // String methods
         if let Value::String(s) = obj {
             return match method {
@@ -6203,7 +6280,8 @@ impl Interpreter {
                 }
                 Ok(GenSignal::None)
             }
-            StmtKind::For { name, iter, body } => {
+            StmtKind::For { name, iter, body }
+            | StmtKind::ParallelFor { name, iter, body } => {
                 let iter_val = self.eval_expr_gen(iter, yield_tx, resume_rx)?;
                 let items = match iter_val {
                     Value::List(items) => items,
@@ -9381,5 +9459,96 @@ try {
 }
 "#);
         assert_eq!(output, vec!["mismatch", "int", "string"]);
+    }
+
+    // ── Phase 28: Ownership & Move Semantics ──
+
+    #[test]
+    fn test_interp_pipe_moves_value() {
+        let err = run_err(r#"
+fn identity(v) { v }
+let x = [1, 2, 3]
+x |> identity()
+print(x)
+"#);
+        assert!(err.contains("moved"), "Error should mention 'moved': {err}");
+    }
+
+    #[test]
+    fn test_interp_clone_before_pipe() {
+        let output = run_output(r#"
+fn identity(v) { v }
+let x = [1, 2, 3]
+x.clone() |> identity()
+print(x)
+"#);
+        assert_eq!(output, vec!["[1, 2, 3]"]);
+    }
+
+    #[test]
+    fn test_interp_clone_list_deep() {
+        let output = run_output(r#"
+let original = [1, 2, 3]
+let copy = original.clone()
+copy[0] = 99
+print(original)
+print(copy)
+"#);
+        assert_eq!(output, vec!["[1, 2, 3]", "[99, 2, 3]"]);
+    }
+
+    #[test]
+    fn test_interp_ref_creates_reference() {
+        let output = run_output(r#"
+let x = 42
+let r = &x
+print(r)
+"#);
+        assert_eq!(output, vec!["42"]);
+    }
+
+    #[test]
+    fn test_interp_parallel_for_basic() {
+        let output = run_output(r#"
+let items = [10, 20, 30]
+parallel for item in items {
+    print(item)
+}
+"#);
+        assert_eq!(output, vec!["10", "20", "30"]);
+    }
+
+    #[test]
+    fn test_interp_reassign_after_move() {
+        let output = run_output(r#"
+fn f(x) { x }
+let x = 1
+x |> f()
+let x = 2
+print(x)
+"#);
+        assert_eq!(output, vec!["2"]);
+    }
+
+    #[test]
+    fn test_interp_clone_map() {
+        let output = run_output(r#"
+let m = map_from("a", 1, "b", 2)
+let m2 = m.clone()
+print(m)
+print(m2)
+"#);
+        assert_eq!(output, vec!["{a: 1, b: 2}", "{a: 1, b: 2}"]);
+    }
+
+    #[test]
+    fn test_interp_pipe_chain() {
+        let output = run_output(r#"
+fn double(x) { x * 2 }
+fn add_one(x) { x + 1 }
+let result = 5 |> double() |> add_one()
+print(result)
+"#);
+        assert_eq!(output, vec!["11"]);
     }
 }

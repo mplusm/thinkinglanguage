@@ -429,6 +429,7 @@ fn infer_unaryop(op: &UnaryOp, expr: &Expr, env: &TypeEnv) -> Type {
             _ => Type::Any,
         },
         UnaryOp::Not => Type::Bool,
+        UnaryOp::Ref => Type::Ref(Box::new(inner_ty)),
     }
 }
 

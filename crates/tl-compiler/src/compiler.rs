@@ -313,6 +313,10 @@ impl Compiler {
             StmtKind::For { name, iter, body } => {
                 self.compile_for(name, iter, body)
             }
+            StmtKind::ParallelFor { name, iter, body } => {
+                // Compile as a regular for loop (rayon parallelism at VM level)
+                self.compile_for(name, iter, body)
+            }
             StmtKind::Schema { name, fields, version, .. } => {
                 self.compile_schema(name, fields, version)
             }
@@ -1506,6 +1510,9 @@ impl Compiler {
                 match op {
                     UnaryOp::Neg => self.current().emit_abc(Op::Neg, dest, src, 0, 0),
                     UnaryOp::Not => self.current().emit_abc(Op::Not, dest, src, 0, 0),
+                    UnaryOp::Ref => {
+                        self.current().emit_abc(Op::MakeRef, dest, src, 0, 0);
+                    }
                 }
                 self.current().free_register();
             }
@@ -1815,6 +1822,21 @@ impl Compiler {
         Ok(())
     }
 
+    /// Emit instructions to mark the source of a pipe as moved (consumed).
+    fn emit_pipe_move(&mut self, left: &Expr) {
+        if let Expr::Ident(name) = left {
+            if let Some(local_reg) = self.resolve_local(name) {
+                self.current().emit_abc(Op::LoadMoved, local_reg, 0, 0, 0);
+            } else {
+                let moved_reg = self.current().alloc_register();
+                self.current().emit_abc(Op::LoadMoved, moved_reg, 0, 0, 0);
+                let idx = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
+                self.current().emit_abx(Op::SetGlobal, moved_reg, idx as u16, 0);
+                self.current().free_register();
+            }
+        }
+    }
+
     fn compile_pipe(
         &mut self,
         left: &Expr,
@@ -1823,6 +1845,9 @@ impl Compiler {
     ) -> Result<(), TlError> {
         let left_reg = self.current().alloc_register();
         self.compile_expr(left, left_reg)?;
+
+        // Mark the source variable as moved (consumed by pipe)
+        self.emit_pipe_move(left);
 
         match right {
             Expr::Call { function, args } => {

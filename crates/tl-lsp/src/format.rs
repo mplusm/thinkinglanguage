@@ -237,6 +237,19 @@ impl Formatter {
                 self.push_indent();
                 self.output.push_str("}\n");
             }
+            StmtKind::ParallelFor { name, iter, body } => {
+                self.push_indent();
+                self.output.push_str("parallel for ");
+                self.output.push_str(name);
+                self.output.push_str(" in ");
+                self.output.push_str(&self.format_expr(iter));
+                self.output.push_str(" {\n");
+                self.indent += 1;
+                self.format_body(body);
+                self.indent -= 1;
+                self.push_indent();
+                self.output.push_str("}\n");
+            }
             StmtKind::StructDecl { name, type_params, fields, is_public } => {
                 self.push_indent();
                 if *is_public { self.output.push_str("pub "); }
@@ -645,6 +658,7 @@ impl Formatter {
                 match op {
                     UnaryOp::Neg => format!("-{}", self.format_expr(expr)),
                     UnaryOp::Not => format!("not {}", self.format_expr(expr)),
+                    UnaryOp::Ref => format!("&{}", self.format_expr(expr)),
                 }
             }
             Expr::Call { function, args } => {

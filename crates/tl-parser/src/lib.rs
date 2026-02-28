@@ -223,6 +223,19 @@ impl Parser {
             Token::Mod => self.parse_mod(false),
             Token::Test => self.parse_test(),
             Token::Migrate => self.parse_migrate(),
+            Token::Parallel => {
+                let start = self.peek_span().start;
+                self.advance(); // consume 'parallel'
+                self.expect(&Token::For)?;
+                let name = self.expect_ident()?;
+                self.expect(&Token::In)?;
+                let iter = self.parse_expression()?;
+                self.expect(&Token::LBrace)?;
+                let body = self.parse_block_body()?;
+                self.expect(&Token::RBrace)?;
+                let end = self.previous_span().end;
+                Ok(make_stmt(StmtKind::ParallelFor { name, iter, body }, start, end))
+            }
             Token::Break => {
                 let start = self.peek_span().start;
                 self.advance();
@@ -1249,6 +1262,13 @@ impl Parser {
             let expr = self.parse_unary()?;
             return Ok(Expr::UnaryOp {
                 op: UnaryOp::Neg,
+                expr: Box::new(expr),
+            });
+        }
+        if self.match_token(&Token::Ampersand) {
+            let expr = self.parse_unary()?;
+            return Ok(Expr::UnaryOp {
+                op: UnaryOp::Ref,
                 expr: Box::new(expr),
             });
         }

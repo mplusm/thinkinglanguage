@@ -632,12 +632,18 @@ impl Vm {
                     self.stack[base + a as usize] = VmValue::Bool(false);
                 }
                 Op::Move => {
-                    let val = self.stack[base + b as usize].clone();
-                    self.stack[base + a as usize] = val;
+                    let val = &self.stack[base + b as usize];
+                    if matches!(val, VmValue::Moved) {
+                        return Err(runtime_err("Use of moved value. It was consumed by a pipe (|>) operation. Use .clone() to keep a copy.".to_string()));
+                    }
+                    self.stack[base + a as usize] = val.clone();
                 }
                 Op::GetLocal => {
-                    let val = self.stack[base + b as usize].clone();
-                    self.stack[base + a as usize] = val;
+                    let val = &self.stack[base + b as usize];
+                    if matches!(val, VmValue::Moved) {
+                        return Err(runtime_err("Use of moved value. It was consumed by a pipe (|>) operation. Use .clone() to keep a copy.".to_string()));
+                    }
+                    self.stack[base + a as usize] = val.clone();
                 }
                 Op::SetLocal => {
                     let val = self.stack[base + a as usize].clone();
@@ -648,6 +654,9 @@ impl Vm {
                     let val = self.globals.get(name.as_ref())
                         .cloned()
                         .unwrap_or(VmValue::None);
+                    if matches!(val, VmValue::Moved) {
+                        return Err(runtime_err(format!("Use of moved value `{name}`. It was consumed by a pipe (|>) operation. Use .clone() to keep a copy.")));
+                    }
                     self.stack[base + a as usize] = val;
                 }
                 Op::SetGlobal => {
@@ -824,7 +833,11 @@ impl Vm {
                     self.stack[base + a as usize] = VmValue::List(items);
                 }
                 Op::GetIndex => {
-                    let obj = &self.stack[base + b as usize];
+                    let raw_obj = &self.stack[base + b as usize];
+                    let obj = match raw_obj {
+                        VmValue::Ref(inner) => inner.as_ref(),
+                        other => other,
+                    };
                     let idx = &self.stack[base + c as usize];
                     let result = match (obj, idx) {
                         (VmValue::List(items), VmValue::Int(i)) => {
@@ -851,6 +864,9 @@ impl Vm {
                     self.stack[base + a as usize] = result;
                 }
                 Op::SetIndex => {
+                    if matches!(&self.stack[base + b as usize], VmValue::Ref(_)) {
+                        return Err(runtime_err("Cannot mutate a borrowed reference".to_string()));
+                    }
                     let val = self.stack[base + a as usize].clone();
                     let idx_val = self.stack[base + c as usize].clone();
                     match idx_val {
@@ -1001,7 +1017,11 @@ impl Vm {
                 Op::GetMember => {
                     // a = dest, b = object reg, c = field name constant
                     let field_name = self.get_string_constant(frame_idx, c as u16)?;
-                    let obj = self.stack[base + b as usize].clone();
+                    let raw_obj = self.stack[base + b as usize].clone();
+                    let obj = match &raw_obj {
+                        VmValue::Ref(inner) => inner.as_ref().clone(),
+                        _ => raw_obj,
+                    };
                     let result = match &obj {
                         VmValue::StructInstance(inst) => {
                             inst.fields.iter()
@@ -1136,6 +1156,9 @@ impl Vm {
                 }
 
                 Op::SetMember => {
+                    if matches!(&self.stack[base + a as usize], VmValue::Ref(_)) {
+                        return Err(runtime_err("Cannot mutate a borrowed reference".to_string()));
+                    }
                     // a = object reg, b = field name constant, c = value reg
                     let field_name = self.get_string_constant(frame_idx, b as u16)?;
                     let val = self.stack[base + c as usize].clone();
@@ -1394,6 +1417,19 @@ impl Vm {
                         _ => VmValue::None,
                     };
                     self.stack[base + a as usize] = val;
+                }
+
+                // Phase 28: Ownership & Move Semantics
+                Op::LoadMoved => {
+                    self.stack[base + a as usize] = VmValue::Moved;
+                }
+                Op::MakeRef => {
+                    let val = self.stack[base + b as usize].clone();
+                    self.stack[base + a as usize] = VmValue::Ref(Arc::new(val));
+                }
+                Op::ParallelFor => {
+                    // Currently compiled as regular ForIter, this opcode is reserved
+                    // for future rayon-backed parallel iteration.
                 }
             }
             Ok(None)
@@ -1817,7 +1853,14 @@ impl Vm {
 
     fn call_builtin(&mut self, id: u8, args_base: usize, arg_count: usize) -> Result<VmValue, TlError> {
         let args: Vec<VmValue> = (0..arg_count)
-            .map(|i| self.stack[args_base + i].clone())
+            .map(|i| {
+                let val = &self.stack[args_base + i];
+                // Unwrap Ref transparently for builtin calls
+                match val {
+                    VmValue::Ref(inner) => inner.as_ref().clone(),
+                    other => other.clone(),
+                }
+            })
             .collect();
 
         let builtin_id: BuiltinId = unsafe { std::mem::transmute(id) };
@@ -4691,7 +4734,59 @@ impl Vm {
     }
 
     /// Dispatch a method call on an object.
+    /// Deep-clone a VmValue, recursively copying containers.
+    fn deep_clone_value(&self, val: &VmValue) -> Result<VmValue, TlError> {
+        match val {
+            VmValue::List(items) => {
+                let cloned: Result<Vec<_>, _> = items.iter().map(|v| self.deep_clone_value(v)).collect();
+                Ok(VmValue::List(cloned?))
+            }
+            VmValue::Map(pairs) => {
+                let cloned: Result<Vec<_>, _> = pairs.iter()
+                    .map(|(k, v)| Ok((k.clone(), self.deep_clone_value(v)?)))
+                    .collect();
+                Ok(VmValue::Map(cloned?))
+            }
+            VmValue::Set(items) => {
+                let cloned: Result<Vec<_>, _> = items.iter().map(|v| self.deep_clone_value(v)).collect();
+                Ok(VmValue::Set(cloned?))
+            }
+            VmValue::StructInstance(inst) => {
+                let cloned_fields: Result<Vec<_>, _> = inst.fields.iter()
+                    .map(|(k, v)| Ok((k.clone(), self.deep_clone_value(v)?)))
+                    .collect();
+                Ok(VmValue::StructInstance(Arc::new(VmStructInstance {
+                    type_name: inst.type_name.clone(),
+                    fields: cloned_fields?,
+                })))
+            }
+            VmValue::EnumInstance(e) => {
+                let cloned_fields: Result<Vec<_>, _> = e.fields.iter().map(|v| self.deep_clone_value(v)).collect();
+                Ok(VmValue::EnumInstance(Arc::new(VmEnumInstance {
+                    type_name: e.type_name.clone(),
+                    variant: e.variant.clone(),
+                    fields: cloned_fields?,
+                })))
+            }
+            VmValue::Ref(inner) => self.deep_clone_value(inner),
+            VmValue::Moved => Err(runtime_err("Cannot clone a moved value".to_string())),
+            VmValue::Task(_) => Err(runtime_err("Cannot clone a task".to_string())),
+            VmValue::Channel(_) => Err(runtime_err("Cannot clone a channel".to_string())),
+            VmValue::Generator(_) => Err(runtime_err("Cannot clone a generator".to_string())),
+            other => Ok(other.clone()),
+        }
+    }
+
     fn dispatch_method(&mut self, obj: VmValue, method: &str, args: &[VmValue]) -> Result<VmValue, TlError> {
+        // Universal .clone() method — deep copy any value
+        if method == "clone" {
+            return self.deep_clone_value(&obj);
+        }
+        // Unwrap Ref for method dispatch — methods can be called through references
+        let obj = match obj {
+            VmValue::Ref(inner) => inner.as_ref().clone(),
+            other => other,
+        };
         match &obj {
             VmValue::String(s) => self.dispatch_string_method(s.clone(), method, args),
             VmValue::List(items) => self.dispatch_list_method(items.clone(), method, args),
@@ -8737,5 +8832,194 @@ try {
 }
 "#);
         assert_eq!(output, vec!["caught: config"]);
+    }
+
+    // ── Phase 28: Ownership & Move Semantics ──
+
+    #[test]
+    fn test_vm_pipe_moves_value() {
+        // x |> f() should consume x — accessing x after pipe gives error
+        let result = run(r#"
+fn identity(v) { v }
+let x = [1, 2, 3]
+x |> identity()
+print(x)
+"#);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("moved"), "Error should mention 'moved': {err}");
+    }
+
+    #[test]
+    fn test_vm_clone_before_pipe() {
+        // x.clone() |> f() should not consume x
+        let output = run_output(r#"
+fn identity(v) { v }
+let x = [1, 2, 3]
+x.clone() |> identity()
+print(x)
+"#);
+        assert_eq!(output, vec!["[1, 2, 3]"]);
+    }
+
+    #[test]
+    fn test_vm_clone_list_deep() {
+        // Mutating a cloned list should not affect the original
+        let output = run_output(r#"
+let original = [1, 2, 3]
+let copy = original.clone()
+copy[0] = 99
+print(original)
+print(copy)
+"#);
+        assert_eq!(output, vec!["[1, 2, 3]", "[99, 2, 3]"]);
+    }
+
+    #[test]
+    fn test_vm_clone_map() {
+        let output = run_output(r#"
+let m = map_from("a", 1, "b", 2)
+let m2 = m.clone()
+m2["a"] = 99
+print(m)
+print(m2)
+"#);
+        assert_eq!(output, vec!["{a: 1, b: 2}", "{a: 99, b: 2}"]);
+    }
+
+    #[test]
+    fn test_vm_clone_struct() {
+        let output = run_output(r#"
+struct Point { x: int64, y: int64 }
+let p = Point { x: 1, y: 2 }
+let p2 = p.clone()
+print(p)
+print(p2)
+"#);
+        assert_eq!(output, vec!["Point { x: 1, y: 2 }", "Point { x: 1, y: 2 }"]);
+    }
+
+    #[test]
+    fn test_vm_ref_read_only() {
+        // &x should be readable but not mutable
+        let result = run(r#"
+let x = [1, 2, 3]
+let r = &x
+r[0] = 99
+"#);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Cannot mutate a borrowed reference"), "Error should mention reference: {err}");
+    }
+
+    #[test]
+    fn test_vm_ref_transparent_read() {
+        // Reading through a ref should work transparently
+        let output = run_output(r#"
+let x = [1, 2, 3]
+let r = &x
+print(len(r))
+"#);
+        assert_eq!(output, vec!["3"]);
+    }
+
+    #[test]
+    fn test_vm_parallel_for_basic() {
+        // parallel for should iterate all elements (runs sequentially in VM)
+        let output = run_output(r#"
+let items = [10, 20, 30]
+parallel for item in items {
+    print(item)
+}
+"#);
+        assert_eq!(output, vec!["10", "20", "30"]);
+    }
+
+    #[test]
+    fn test_vm_moved_value_clear_error() {
+        // Error message should mention .clone()
+        let result = run(r#"
+fn f(x) { x }
+let data = "hello"
+data |> f()
+print(data)
+"#);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("clone()"), "Error should suggest .clone(): {err}");
+    }
+
+    #[test]
+    fn test_vm_reassign_after_move() {
+        // After moving, reassigning the variable should work
+        let output = run_output(r#"
+fn f(x) { x }
+let x = 1
+x |> f()
+let x = 2
+print(x)
+"#);
+        assert_eq!(output, vec!["2"]);
+    }
+
+    #[test]
+    fn test_vm_pipe_chain_move() {
+        // Chained pipes should work — intermediate values don't need explicit binding
+        let output = run_output(r#"
+fn double(x) { x * 2 }
+fn add_one(x) { x + 1 }
+let result = 5 |> double() |> add_one()
+print(result)
+"#);
+        assert_eq!(output, vec!["11"]);
+    }
+
+    #[test]
+    fn test_vm_string_clone() {
+        // .clone() on string values
+        let output = run_output(r#"
+let s = "hello"
+let s2 = s.clone()
+print(s)
+print(s2)
+"#);
+        assert_eq!(output, vec!["hello", "hello"]);
+    }
+
+    #[test]
+    fn test_vm_ref_method_dispatch() {
+        // Methods should be callable through references
+        let output = run_output(r#"
+let s = "hello world"
+let r = &s
+print(r.len())
+"#);
+        assert_eq!(output, vec!["11"]);
+    }
+
+    #[test]
+    fn test_vm_ref_member_access() {
+        // Member access through ref should work
+        let output = run_output(r#"
+struct Point { x: int64, y: int64 }
+let p = Point { x: 10, y: 20 }
+let r = &p
+print(r.x)
+"#);
+        assert_eq!(output, vec!["10"]);
+    }
+
+    #[test]
+    fn test_vm_ref_set_member_blocked() {
+        // Setting a member through a ref should fail
+        let result = run(r#"
+struct Point { x: int64, y: int64 }
+let p = Point { x: 10, y: 20 }
+let r = &p
+r.x = 99
+"#);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Cannot mutate a borrowed reference"), "Error: {err}");
     }
 }

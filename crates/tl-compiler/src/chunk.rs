@@ -295,6 +295,14 @@ impl Prototype {
                     let field_name = self.format_constant(c as usize);
                     format!("R{a} = R{b}.{field_name}")
                 }
+
+                // Phase 28: ownership & move semantics
+                Op::LoadMoved => format!("R{a} = <moved>"),
+                Op::MakeRef => format!("R{a} = &R{b}"),
+                Op::ParallelFor => {
+                    let body = self.format_constant(b as usize);
+                    format!("parallel_for R{a}, {body}")
+                }
             };
 
             out.push_str(&format!(

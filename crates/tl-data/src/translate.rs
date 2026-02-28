@@ -80,6 +80,7 @@ pub fn translate_expr(ast: &AstExpr, ctx: &TranslateContext) -> Result<Expr, Str
             match op {
                 UnaryOp::Neg => Ok(Expr::Negative(Box::new(e))),
                 UnaryOp::Not => Ok(e.not()),
+                UnaryOp::Ref => Ok(e), // References are transparent in DataFusion expressions
             }
         }
 

@@ -69,6 +69,7 @@ pub fn check_program(program: &Program, config: &CheckerConfig) -> CheckResult {
         imported_names: Vec::new(),
         used_imports: HashSet::new(),
         in_async_fn: false,
+        consumed_vars: std::collections::HashMap::new(),
     };
 
     // First pass: register all top-level functions and types
@@ -108,6 +109,8 @@ struct TypeChecker<'a> {
     used_imports: HashSet<String>,
     /// Whether the current function is async (for await checking)
     in_async_fn: bool,
+    /// Variables consumed by pipe-move: name -> span where consumed
+    consumed_vars: std::collections::HashMap<String, Span>,
 }
 
 /// Check if a name follows snake_case convention.
@@ -294,6 +297,16 @@ impl<'a> TypeChecker<'a> {
                 if self.imported_names.iter().any(|(n, _)| n == name) {
                     self.used_imports.insert(name.clone());
                 }
+                // Check for use-after-move
+                if self.consumed_vars.contains_key(name) {
+                    self.errors.push(TypeError {
+                        message: format!("Use of moved value `{name}`. It was consumed by a pipe (|>) operation. Use .clone() to keep a copy."),
+                        span: Span::new(0, 0),
+                        expected: None,
+                        found: None,
+                        hint: Some(format!("Use `{name}.clone() |> ...` to keep a copy")),
+                    });
+                }
             }
             Expr::BinOp { left, right, .. } => {
                 self.mark_used_in_expr(left);
@@ -324,6 +337,10 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::Pipe { left, right } => {
                 self.mark_used_in_expr(left);
+                // Mark left-side identifier as consumed by pipe-move
+                if let Expr::Ident(name) = left.as_ref() {
+                    self.consumed_vars.insert(name.clone(), Span::new(0, 0));
+                }
                 self.mark_used_in_expr(right);
             }
             Expr::Closure { body, .. } => {
@@ -342,6 +359,10 @@ impl<'a> TypeChecker<'a> {
             Expr::Assign { target, value } => {
                 self.mark_used_in_expr(target);
                 self.mark_used_in_expr(value);
+                // Clear move state on reassignment
+                if let Expr::Ident(name) = target.as_ref() {
+                    self.consumed_vars.remove(name);
+                }
             }
             Expr::StructInit { name, fields } => {
                 self.used_vars.insert(name.clone());
@@ -482,6 +503,9 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     self.env.define(name.clone(), inferred);
                 }
+
+                // Clear move state on reassignment
+                self.consumed_vars.remove(name);
 
                 // Lint: naming convention — variables should be snake_case
                 if !is_snake_case(name) {
@@ -705,7 +729,8 @@ impl<'a> TypeChecker<'a> {
                 self.env.pop_scope();
             }
 
-            StmtKind::For { name, iter, body } => {
+            StmtKind::For { name, iter, body }
+            | StmtKind::ParallelFor { name, iter, body } => {
                 self.mark_used_in_expr(iter);
                 let iter_ty = infer_expr(iter, &self.env);
                 let elem_ty = match &iter_ty {

@@ -67,6 +67,8 @@ pub enum Type {
     Var(u32),
     /// An opaque Python object
     PyObject,
+    /// Read-only reference type
+    Ref(Box<Type>),
     /// Poison type — suppresses further errors
     Error,
 }
@@ -110,6 +112,7 @@ impl fmt::Display for Type {
             Type::TypeParam(name) => write!(f, "{name}"),
             Type::Var(id) => write!(f, "?T{id}"),
             Type::PyObject => write!(f, "pyobject"),
+            Type::Ref(t) => write!(f, "&{t}"),
             Type::Error => write!(f, "<error>"),
         }
     }
