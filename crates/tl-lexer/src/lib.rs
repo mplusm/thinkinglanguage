@@ -10,8 +10,17 @@ use tl_errors::Span;
 /// All tokens in the ThinkingLanguage grammar.
 #[derive(Logos, Debug, Clone, PartialEq)]
 #[logos(skip r"[ \t]+")]        // Skip whitespace (not newlines — they're significant)
-#[logos(skip r"//[^\n]*")]      // Skip line comments
+#[logos(skip r"//[^\n]*")]      // Skip line comments (doc comments /// and //! matched by token rules with higher priority)
 pub enum Token {
+    // ── Doc Comments ────────────────────────────────────────
+    /// `/// doc text` — documentation comment for the following item
+    #[regex(r"///[^\n]*", |lex| lex.slice()[3..].to_string(), priority = 5)]
+    DocComment(String),
+
+    /// `//! module doc text` — inner documentation comment for the enclosing module
+    #[regex(r"//![^\n]*", |lex| lex.slice()[3..].to_string(), priority = 5)]
+    InnerDocComment(String),
+
     // ── Literals ─────────────────────────────────────────────
 
     /// Integer literal: 42, 1_000_000
@@ -299,6 +308,8 @@ impl std::fmt::Display for Token {
             Token::Comma => write!(f, ","),
             Token::Colon => write!(f, ":"),
             Token::Newline => write!(f, "\\n"),
+            Token::DocComment(s) => write!(f, "///{s}"),
+            Token::InnerDocComment(s) => write!(f, "//!{s}"),
             tok => write!(f, "{tok:?}"),
         }
     }
@@ -396,12 +407,20 @@ pub fn tokenize_with_trivia(source: &str) -> Vec<TriviaOrToken> {
             }
             if i < bytes.len() { i += 1; }
         } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' {
-            let start = i;
-            while i < bytes.len() && bytes[i] != b'\n' {
-                i += 1;
+            // Skip doc comments (/// and //!) — they're tokens, not trivia
+            if i + 2 < bytes.len() && (bytes[i + 2] == b'/' || bytes[i + 2] == b'!') {
+                // This is a doc comment token — skip past it (logos handles it)
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            } else {
+                let start = i;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                let text = source[start..i].to_string();
+                comments.push((text, Span::new(start, i)));
             }
-            let text = source[start..i].to_string();
-            comments.push((text, Span::new(start, i)));
         } else {
             i += 1;
         }
@@ -654,6 +673,31 @@ mod tests {
         let items = tokenize_with_trivia("let x = 5\nlet y = 10");
         let newline_count = items.iter().filter(|it| matches!(it, TriviaOrToken::Trivia(Trivia::Newline, _))).count();
         assert!(newline_count >= 1, "Newlines should be preserved");
+    }
+
+    // Phase 19: Doc comment tests
+
+    #[test]
+    fn test_doc_comment_token() {
+        let tokens = tokenize("/// Adds two numbers\nfn add() {}").unwrap();
+        assert!(matches!(&tokens[0].token, Token::DocComment(s) if s == " Adds two numbers"),
+            "/// should produce DocComment token, got {:?}", tokens[0].token);
+        assert!(matches!(&tokens[1].token, Token::Fn));
+    }
+
+    #[test]
+    fn test_inner_doc_comment_token() {
+        let tokens = tokenize("//! Module docs\nfn foo() {}").unwrap();
+        assert!(matches!(&tokens[0].token, Token::InnerDocComment(s) if s == " Module docs"),
+            "//! should produce InnerDocComment token, got {:?}", tokens[0].token);
+    }
+
+    #[test]
+    fn test_regular_comment_still_skipped() {
+        let tokens = tokenize("// regular comment\nlet x = 5").unwrap();
+        // Should only have: let, x, =, 5, EOF  (comment skipped)
+        assert_eq!(tokens.len(), 5, "Regular comments should still be skipped");
+        assert!(matches!(&tokens[0].token, Token::Let));
     }
 
     #[test]

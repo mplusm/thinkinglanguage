@@ -1336,7 +1336,10 @@ tl deploy pipeline.tl --target docker   # Generate Dockerfile
 tl deploy pipeline.tl --target k8s      # Generate K8s manifests
 tl lint                                  # Lint source code
 tl fmt                                   # Format source code
-tl doc                                   # Generate documentation
+tl doc file.tl                           # Generate HTML documentation
+tl doc file.tl --format markdown         # Generate Markdown documentation
+tl doc file.tl --format json             # Generate JSON documentation
+tl doc src/ --public-only                # Document public items in directory
 
 # Data Tools
 tl inspect data.parquet          # Preview data file
@@ -1837,8 +1840,15 @@ Deliverables (implemented):
   ✅ tl lint — linter with naming conventions, shadowing, empty body warnings
   ✅ Lexer trivia extension — tokenize_with_trivia() for comment-preserving formatting
 
+Phase 19: Documentation Generation ✅
+  ✅ Doc comment syntax — `///` and `//!` tokens, parsed and attached to AST
+  ✅ Doc comment extraction — structured ParsedDoc with @param, @returns, @example, @deprecated
+  ✅ tl doc — HTML, Markdown, JSON output formats
+  ✅ Project-level docs — directory traversal, cross-reference linking
+  ✅ LSP hover integration — doc comments shown in hover tooltips
+  ✅ Formatter preservation — doc comments round-trip through formatting
+
 Deferred:
-  — tl doc — documentation generator (needs doc-comment syntax first)
   — tl explain — query plan viewer (niche, low priority)
   — Inline type hints (LSP inlay hints — can add once hover works)
 
@@ -2512,9 +2522,14 @@ This section defines the core grammar formally. Full grammar will be in a separa
 (* ThinkingLanguage — Core Grammar (EBNF)                       *)
 (* ============================================================ *)
 
-program           = { declaration } ;
+(* --- Comments & Documentation --- *)
+line_comment      = "//" { any_char } NEWLINE ;
+doc_comment       = "///" { any_char } NEWLINE ;
+inner_doc_comment = "//!" { any_char } NEWLINE ;
 
-declaration       = schema_decl
+program           = { inner_doc_comment } { declaration } ;
+
+declaration       = { doc_comment } ( schema_decl
                   | struct_decl
                   | source_decl
                   | transform_decl
@@ -2524,7 +2539,7 @@ declaration       = schema_decl
                   | fn_decl
                   | let_binding
                   | use_decl
-                  | enum_decl ;
+                  | enum_decl ) ;
 
 (* --- Use / Import --- *)
 use_decl          = "use" module_path [ ".{" ident_list "}" ] ;

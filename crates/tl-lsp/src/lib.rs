@@ -4,6 +4,7 @@
 pub mod ast_util;
 pub mod completion;
 pub mod diagnostics;
+pub mod doc;
 pub mod document;
 pub mod format;
 pub mod goto_def;

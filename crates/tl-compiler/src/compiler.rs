@@ -679,13 +679,13 @@ impl Compiler {
         let body_stmts = match body {
             ClosureBody::Expr(e) => {
                 // Single-expression closure: wrap in return
-                vec![Stmt { kind: StmtKind::Return(Some(e.as_ref().clone())), span: Span::new(0, 0) }]
+                vec![Stmt { kind: StmtKind::Return(Some(e.as_ref().clone())), span: Span::new(0, 0), doc_comment: None }]
             }
             ClosureBody::Block { stmts, expr } => {
                 // Block closure: compile stmts, then return tail expr (if any)
                 let mut all = stmts.clone();
                 if let Some(e) = expr {
-                    all.push(Stmt { kind: StmtKind::Return(Some(e.as_ref().clone())), span: Span::new(0, 0) });
+                    all.push(Stmt { kind: StmtKind::Return(Some(e.as_ref().clone())), span: Span::new(0, 0), doc_comment: None });
                 }
                 all
             }

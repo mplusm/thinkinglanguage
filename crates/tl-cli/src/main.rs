@@ -43,7 +43,7 @@ impl TlHelper {
             "struct", "enum", "impl", "try", "catch", "throw", "import", "test", "break", "continue",
             "and", "or", "not", "mut", "await", "yield", "match", "schema", "pipeline", "stream",
             "source", "sink", "use", "pub", "mod", "trait", "where", "type", "check", "lsp", "fmt", "lint",
-            "add", "remove", "install", "update", "publish", "search",
+            "add", "remove", "install", "update", "publish", "search", "doc",
             // Builtin functions
             "print", "println", "len", "str", "int", "float", "abs", "min", "max", "range",
             "push", "type_of", "map", "filter", "reduce", "sum", "any", "all",
@@ -308,6 +308,20 @@ enum Commands {
         /// Package name (updates all if omitted)
         name: Option<String>,
     },
+    /// Generate documentation for a .tl file
+    Doc {
+        /// Path to the .tl file or directory
+        path: String,
+        /// Output format: "html", "markdown", or "json"
+        #[arg(long, default_value = "html")]
+        format: String,
+        /// Output file path (defaults to stdout)
+        #[arg(long, short)]
+        output: Option<String>,
+        /// Only include public items
+        #[arg(long)]
+        public_only: bool,
+    },
     /// Publish a package to the registry (not yet available)
     Publish,
     /// Search for packages in the registry (not yet available)
@@ -397,6 +411,7 @@ fn main() {
         Some(Commands::Fmt { path, check }) => run_fmt(&path, check),
         Some(Commands::Lint { path, strict }) => run_lint(&path, strict),
         Some(Commands::Build { backend, dump_bytecode, no_check, strict }) => run_build(&backend, dump_bytecode, no_check, strict),
+        Some(Commands::Doc { path, format, output, public_only }) => run_doc(&path, &format, output.as_deref(), public_only),
         Some(Commands::Add { name, version, git, branch, path }) => {
             package::cmd_add(&name, version.as_deref(), git.as_deref(), branch.as_deref(), path.as_deref());
         }
@@ -986,7 +1001,7 @@ fn run_tests(path: &str, backend: &str) {
         for stmt in &program.statements {
             if let tl_ast::StmtKind::Test { name, body } = &stmt.kind {
                 total += 1;
-                let test_program = tl_ast::Program { statements: body.clone() };
+                let test_program = tl_ast::Program { statements: body.clone(), module_doc: None };
 
                 let result = match backend {
                     "vm" => {
@@ -1168,6 +1183,127 @@ fn run_lint(path: &str, strict: bool) {
         eprintln!("{warning_count} warning(s)");
     } else {
         eprintln!("No lint issues found.");
+    }
+}
+
+fn run_doc(path: &str, format: &str, output: Option<&str>, public_only: bool) {
+    let path_obj = Path::new(path);
+
+    if path_obj.is_dir() {
+        // Project-level documentation: walk directory for .tl files
+        run_doc_project(path, format, output, public_only);
+        return;
+    }
+
+    let source = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading file '{path}': {e}");
+            process::exit(1);
+        }
+    };
+
+    let program = match parse(&source) {
+        Ok(p) => p,
+        Err(TlError::Parser(ref e)) => {
+            report_parser_error(&source, path, e);
+            process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            process::exit(1);
+        }
+    };
+
+    let docs = if public_only {
+        tl_lsp::doc::extract_public_docs(&program, Some(path))
+    } else {
+        tl_lsp::doc::extract_docs(&program, Some(path))
+    };
+
+    let result = match format {
+        "html" => tl_lsp::doc::generate_html(&docs),
+        "markdown" | "md" => tl_lsp::doc::generate_markdown(&docs),
+        "json" => tl_lsp::doc::generate_json(&docs),
+        _ => {
+            eprintln!("Unknown format '{format}'. Use 'html', 'markdown', or 'json'.");
+            process::exit(1);
+        }
+    };
+
+    write_doc_output(&result, output);
+}
+
+fn run_doc_project(dir: &str, format: &str, output: Option<&str>, public_only: bool) {
+    let mut modules = Vec::new();
+
+    fn collect_tl_files(dir: &Path, files: &mut Vec<PathBuf>) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    collect_tl_files(&path, files);
+                } else if path.extension().is_some_and(|e| e == "tl") {
+                    files.push(path);
+                }
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    collect_tl_files(Path::new(dir), &mut files);
+    files.sort();
+
+    for file in &files {
+        let source = match fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Warning: cannot read '{}': {e}", file.display());
+                continue;
+            }
+        };
+        let program = match parse(&source) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Warning: parse error in '{}': {e}", file.display());
+                continue;
+            }
+        };
+        let rel_path = file.strip_prefix(dir).unwrap_or(file);
+        let module = if public_only {
+            tl_lsp::doc::extract_public_docs(&program, Some(&rel_path.display().to_string()))
+        } else {
+            tl_lsp::doc::extract_docs(&program, Some(&rel_path.display().to_string()))
+        };
+        modules.push(module);
+    }
+
+    let project = tl_lsp::doc::ProjectDoc { modules };
+    let result = match format {
+        "html" => tl_lsp::doc::generate_project_html(&project),
+        "markdown" | "md" => tl_lsp::doc::generate_project_markdown(&project),
+        "json" => tl_lsp::doc::generate_project_json(&project),
+        _ => {
+            eprintln!("Unknown format '{format}'. Use 'html', 'markdown', or 'json'.");
+            process::exit(1);
+        }
+    };
+
+    write_doc_output(&result, output);
+}
+
+fn write_doc_output(content: &str, output: Option<&str>) {
+    match output {
+        Some(out_path) => {
+            if let Err(e) = fs::write(out_path, content) {
+                eprintln!("Error writing to '{out_path}': {e}");
+                process::exit(1);
+            }
+            eprintln!("Documentation written to {out_path}");
+        }
+        None => {
+            print!("{content}");
+        }
     }
 }
 

@@ -65,6 +65,16 @@ impl Formatter {
     }
 
     fn format_program(&mut self, program: &Program) {
+        // Emit module-level doc comments
+        if let Some(ref doc) = program.module_doc {
+            for line in doc.lines() {
+                self.output.push_str("//! ");
+                self.output.push_str(line);
+                self.output.push('\n');
+            }
+            self.output.push('\n');
+        }
+
         let stmts = &program.statements;
         for (i, stmt) in stmts.iter().enumerate() {
             self.emit_comments_before(stmt.span.start);
@@ -99,6 +109,15 @@ impl Formatter {
     }
 
     fn format_stmt(&mut self, stmt: &Stmt) {
+        // Emit doc comments before the statement
+        if let Some(ref doc) = stmt.doc_comment {
+            for line in doc.lines() {
+                self.push_indent();
+                self.output.push_str("/// ");
+                self.output.push_str(line);
+                self.output.push('\n');
+            }
+        }
         match &stmt.kind {
             StmtKind::Let { name, mutable, type_ann, value, is_public } => {
                 self.push_indent();
@@ -931,5 +950,37 @@ mod tests {
         let source = "fn {{{}}}}";
         let result = Formatter::format(source);
         assert!(result.is_err(), "Parse error should return Err");
+    }
+
+    // Phase 19: Doc comment formatting tests
+
+    #[test]
+    fn test_format_doc_comment_preserved() {
+        let source = "/// Adds two numbers\nfn add(a, b) { a + b }";
+        let result = Formatter::format(source).unwrap();
+        assert!(result.contains("/// Adds two numbers"), "Doc comment should be preserved: {result}");
+        assert!(result.contains("fn add"), "Function should follow doc: {result}");
+    }
+
+    #[test]
+    fn test_format_doc_comment_roundtrip() {
+        let source = "/// First line\n/// Second line\nfn foo() {\n    42\n}\n";
+        let first = Formatter::format(source).unwrap();
+        let second = Formatter::format(&first).unwrap();
+        assert_eq!(first, second, "Doc comment formatting should be idempotent");
+    }
+
+    #[test]
+    fn test_format_module_doc_preserved() {
+        let source = "//! Module description\nfn foo() {}";
+        let result = Formatter::format(source).unwrap();
+        assert!(result.contains("//! Module description"), "Module doc should be preserved: {result}");
+    }
+
+    #[test]
+    fn test_format_doc_comment_indented_in_impl() {
+        let source = "struct Foo {}\nimpl Foo {\n/// Method doc\nfn bar(self) { 42 }\n}";
+        let result = Formatter::format(source).unwrap();
+        assert!(result.contains("    /// Method doc"), "Doc comment in impl should be indented: {result}");
     }
 }

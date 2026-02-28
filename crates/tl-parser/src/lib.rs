@@ -15,7 +15,7 @@ use tl_lexer::{SpannedToken, Token};
 
 /// Helper to create a Stmt with span from start position to previous token
 fn make_stmt(kind: StmtKind, start: usize, end: usize) -> Stmt {
-    Stmt { kind, span: Span::new(start, end) }
+    Stmt { kind, span: Span::new(start, end), doc_comment: None }
 }
 
 pub struct Parser {
@@ -30,11 +30,42 @@ impl Parser {
 
     /// Parse a complete program
     pub fn parse_program(&mut self) -> Result<Program, TlError> {
+        // Collect module-level //! doc comments at the start
+        let module_doc = self.consume_inner_doc_comments();
+
         let mut statements = Vec::new();
         while !self.is_at_end() {
             statements.push(self.parse_statement()?);
         }
-        Ok(Program { statements })
+        Ok(Program { statements, module_doc })
+    }
+
+    /// Consume consecutive `///` doc comment tokens and join them
+    fn consume_doc_comments(&mut self) -> Option<String> {
+        let mut lines = Vec::new();
+        while let Token::DocComment(text) = self.peek().clone() {
+            lines.push(text.trim().to_string());
+            self.advance();
+        }
+        if lines.is_empty() {
+            None
+        } else {
+            Some(lines.join("\n"))
+        }
+    }
+
+    /// Consume consecutive `//!` inner doc comment tokens and join them
+    fn consume_inner_doc_comments(&mut self) -> Option<String> {
+        let mut lines = Vec::new();
+        while let Token::InnerDocComment(text) = self.peek().clone() {
+            lines.push(text.trim().to_string());
+            self.advance();
+        }
+        if lines.is_empty() {
+            None
+        } else {
+            Some(lines.join("\n"))
+        }
     }
 
     // ── Helpers ──────────────────────────────────────────────
@@ -117,6 +148,20 @@ impl Parser {
     // ── Statement Parsing ────────────────────────────────────
 
     fn parse_statement(&mut self) -> Result<Stmt, TlError> {
+        // Consume any doc comments before the statement
+        let doc = self.consume_doc_comments();
+        // Skip any inner doc comments that appear mid-file
+        while matches!(self.peek(), Token::InnerDocComment(_)) {
+            self.advance();
+        }
+        let mut stmt = self.parse_statement_inner()?;
+        if doc.is_some() && stmt.doc_comment.is_none() {
+            stmt.doc_comment = doc;
+        }
+        Ok(stmt)
+    }
+
+    fn parse_statement_inner(&mut self) -> Result<Stmt, TlError> {
         match self.peek() {
             Token::Let => self.parse_let(),
             Token::Type => self.parse_type_alias(false),
@@ -1756,8 +1801,11 @@ impl Parser {
             self.expect(&Token::LBrace)?;
             let mut methods = Vec::new();
             while !self.check(&Token::RBrace) && !self.is_at_end() {
+                let doc = self.consume_doc_comments();
                 if self.check(&Token::Fn) {
-                    methods.push(self.parse_fn_decl()?);
+                    let mut method = self.parse_fn_decl()?;
+                    method.doc_comment = doc;
+                    methods.push(method);
                 } else {
                     return Err(TlError::Parser(ParserError {
                         message: "Expected `fn` in impl block".to_string(),
@@ -1780,8 +1828,11 @@ impl Parser {
         self.expect(&Token::LBrace)?;
         let mut methods = Vec::new();
         while !self.check(&Token::RBrace) && !self.is_at_end() {
+            let doc = self.consume_doc_comments();
             if self.check(&Token::Fn) {
-                methods.push(self.parse_fn_decl()?);
+                let mut method = self.parse_fn_decl()?;
+                method.doc_comment = doc;
+                methods.push(method);
             } else {
                 return Err(TlError::Parser(ParserError {
                     message: "Expected `fn` in impl block".to_string(),
@@ -1823,6 +1874,8 @@ impl Parser {
         self.expect(&Token::LBrace)?;
         let mut methods = Vec::new();
         while !self.check(&Token::RBrace) && !self.is_at_end() {
+            // Skip doc comments before trait methods
+            let _doc = self.consume_doc_comments();
             if self.check(&Token::Fn) {
                 self.advance(); // consume 'fn'
                 let method_name = self.expect_ident()?;
@@ -3246,5 +3299,84 @@ mod tests {
         } else {
             panic!("Expected call with closure arg");
         }
+    }
+
+    // ── Phase 19: Doc comment parsing tests ─────────────────────
+
+    #[test]
+    fn test_doc_comment_on_fn() {
+        let program = parse("/// Adds two numbers\nfn add(a, b) { a + b }").unwrap();
+        assert_eq!(program.statements[0].doc_comment.as_deref(), Some("Adds two numbers"));
+    }
+
+    #[test]
+    fn test_doc_comment_on_struct() {
+        let program = parse("/// A 2D point\nstruct Point { x: int, y: int }").unwrap();
+        assert_eq!(program.statements[0].doc_comment.as_deref(), Some("A 2D point"));
+    }
+
+    #[test]
+    fn test_doc_comment_on_enum() {
+        let program = parse("/// Color values\nenum Color { Red, Green, Blue }").unwrap();
+        assert_eq!(program.statements[0].doc_comment.as_deref(), Some("Color values"));
+    }
+
+    #[test]
+    fn test_doc_comment_on_trait() {
+        let program = parse("/// Display trait\ntrait Display { fn show(self) -> string }").unwrap();
+        assert_eq!(program.statements[0].doc_comment.as_deref(), Some("Display trait"));
+    }
+
+    #[test]
+    fn test_doc_comment_on_pub_fn() {
+        let program = parse("/// Public function\npub fn greet() { print(\"hi\") }").unwrap();
+        assert_eq!(program.statements[0].doc_comment.as_deref(), Some("Public function"));
+    }
+
+    #[test]
+    fn test_multiline_doc_comment() {
+        let source = "/// First line\n/// Second line\n/// Third line\nfn foo() {}";
+        let program = parse(source).unwrap();
+        assert_eq!(
+            program.statements[0].doc_comment.as_deref(),
+            Some("First line\nSecond line\nThird line")
+        );
+    }
+
+    #[test]
+    fn test_no_doc_comment() {
+        let program = parse("fn foo() {}").unwrap();
+        assert!(program.statements[0].doc_comment.is_none());
+    }
+
+    #[test]
+    fn test_inner_doc_comment_module() {
+        let source = "//! This module does stuff\n//! More info\nfn foo() {}";
+        let program = parse(source).unwrap();
+        assert_eq!(
+            program.module_doc.as_deref(),
+            Some("This module does stuff\nMore info")
+        );
+    }
+
+    #[test]
+    fn test_doc_comment_not_on_expr() {
+        // Doc comments before expressions still get attached (parser is lenient)
+        let source = "/// Some doc\n42";
+        let program = parse(source).unwrap();
+        // The doc attaches to the expression statement
+        assert_eq!(program.statements[0].doc_comment.as_deref(), Some("Some doc"));
+    }
+
+    #[test]
+    fn test_doc_comment_on_let() {
+        let program = parse("/// The answer\nlet x = 42").unwrap();
+        assert_eq!(program.statements[0].doc_comment.as_deref(), Some("The answer"));
+    }
+
+    #[test]
+    fn test_doc_comment_on_schema() {
+        let program = parse("/// User schema\nschema User { name: string, age: int }").unwrap();
+        assert_eq!(program.statements[0].doc_comment.as_deref(), Some("User schema"));
     }
 }

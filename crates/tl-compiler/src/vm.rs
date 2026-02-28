@@ -5087,7 +5087,8 @@ impl Vm {
             AstExpr::Closure { params: _, body: _, .. } => {
                 use crate::compiler;
                 let wrapper = tl_ast::Program {
-                    statements: vec![tl_ast::Stmt { kind: tl_ast::StmtKind::Expr(expr.clone()), span: tl_errors::Span::new(0, 0) }],
+                    statements: vec![tl_ast::Stmt { kind: tl_ast::StmtKind::Expr(expr.clone()), span: tl_errors::Span::new(0, 0), doc_comment: None }],
+                    module_doc: None,
                 };
                 let proto = compiler::compile(&wrapper)?;
                 let mut temp_vm = Vm::new();
@@ -5099,7 +5100,8 @@ impl Vm {
             _ => {
                 // For complex expressions, compile and evaluate
                 let wrapper = tl_ast::Program {
-                    statements: vec![tl_ast::Stmt { kind: tl_ast::StmtKind::Expr(expr.clone()), span: tl_errors::Span::new(0, 0) }],
+                    statements: vec![tl_ast::Stmt { kind: tl_ast::StmtKind::Expr(expr.clone()), span: tl_errors::Span::new(0, 0), doc_comment: None }],
+                    module_doc: None,
                 };
                 use crate::compiler;
                 let proto = compiler::compile(&wrapper)?;

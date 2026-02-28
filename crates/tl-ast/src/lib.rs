@@ -11,6 +11,8 @@ use tl_errors::Span;
 #[derive(Debug, Clone)]
 pub struct Program {
     pub statements: Vec<Stmt>,
+    /// Module-level documentation from `//!` comments at the top of the file
+    pub module_doc: Option<String>,
 }
 
 /// A statement with source location information.
@@ -18,6 +20,8 @@ pub struct Program {
 pub struct Stmt {
     pub kind: StmtKind,
     pub span: Span,
+    /// Documentation comment attached to this statement (from `///` comments)
+    pub doc_comment: Option<String>,
 }
 
 /// A use-import target
