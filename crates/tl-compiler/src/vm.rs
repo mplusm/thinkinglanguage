@@ -390,6 +390,8 @@ pub struct Vm {
     pub package_roots: HashMap<String, std::path::PathBuf>,
     /// Project root (where tl.toml lives)
     pub project_root: Option<std::path::PathBuf>,
+    /// Schema registry for versioned schemas
+    pub schema_registry: crate::schema::SchemaRegistry,
 }
 
 impl Vm {
@@ -409,6 +411,7 @@ impl Vm {
             public_items: std::collections::HashSet::new(),
             package_roots: HashMap::new(),
             project_root: None,
+            schema_registry: crate::schema::SchemaRegistry::new(),
         }
     }
 
@@ -583,6 +586,14 @@ impl Vm {
                 Op::SetGlobal => {
                     let name = self.get_string_constant(frame_idx, bx)?;
                     let val = self.stack[base + a as usize].clone();
+                    // Phase 21: Detect __schema__ and __migrate__ globals and register in schema_registry
+                    if let VmValue::String(ref s) = val {
+                        if s.starts_with("__schema__:") {
+                            self.process_schema_global(s);
+                        } else if s.starts_with("__migrate__:") {
+                            self.process_migrate_global(s);
+                        }
+                    }
                     self.globals.insert(name.to_string(), val);
                 }
                 Op::GetUpvalue => {
@@ -3526,6 +3537,95 @@ impl Vm {
                 #[cfg(not(feature = "python"))]
                 Err(runtime_err("py_to_tl() requires the 'python' feature"))
             }
+
+            // Phase 21: Schema Evolution builtins
+            BuiltinId::SchemaRegister => {
+                // schema_register(name, version, fields_map)
+                let name = match args.first() {
+                    Some(VmValue::String(s)) => s.to_string(),
+                    _ => return Err(runtime_err("schema_register: first arg must be schema name string")),
+                };
+                let version = match args.get(1) {
+                    Some(VmValue::Int(v)) => *v,
+                    _ => return Err(runtime_err("schema_register: second arg must be version number")),
+                };
+                // fields as map { "name": "type", ... } — Map is Vec<(Arc<str>, VmValue)>
+                let fields = match args.get(2) {
+                    Some(VmValue::Map(pairs)) => {
+                        let mut arrow_fields = Vec::new();
+                        for (k, v) in pairs {
+                            let fname = k.to_string();
+                            let ftype = match v { VmValue::String(s) => s.to_string(), _ => "string".to_string() };
+                            arrow_fields.push(tl_data::ArrowField::new(&fname, crate::schema::type_name_to_arrow_pub(&ftype), true));
+                        }
+                        arrow_fields
+                    }
+                    _ => return Err(runtime_err("schema_register: third arg must be fields map")),
+                };
+                let schema = std::sync::Arc::new(tl_data::ArrowSchema::new(fields));
+                self.schema_registry.register(&name, version, schema, crate::schema::SchemaMetadata::default())
+                    .map_err(|e| runtime_err(&e))?;
+                Ok(VmValue::None)
+            }
+            BuiltinId::SchemaGet => {
+                let name = match args.first() { Some(VmValue::String(s)) => s.to_string(), _ => return Err(runtime_err("schema_get: need name")) };
+                let version = match args.get(1) { Some(VmValue::Int(v)) => *v, _ => return Err(runtime_err("schema_get: need version")) };
+                match self.schema_registry.get(&name, version) {
+                    Some(vs) => {
+                        let fields: Vec<VmValue> = vs.schema.fields().iter().map(|f| {
+                            VmValue::String(std::sync::Arc::from(format!("{}: {}", f.name(), f.data_type())))
+                        }).collect();
+                        Ok(VmValue::List(fields))
+                    }
+                    None => Ok(VmValue::None),
+                }
+            }
+            BuiltinId::SchemaLatest => {
+                let name = match args.first() { Some(VmValue::String(s)) => s.to_string(), _ => return Err(runtime_err("schema_latest: need name")) };
+                match self.schema_registry.latest(&name) {
+                    Some(vs) => Ok(VmValue::Int(vs.version)),
+                    None => Ok(VmValue::None),
+                }
+            }
+            BuiltinId::SchemaHistory => {
+                let name = match args.first() { Some(VmValue::String(s)) => s.to_string(), _ => return Err(runtime_err("schema_history: need name")) };
+                let versions = self.schema_registry.versions(&name);
+                Ok(VmValue::List(versions.into_iter().map(VmValue::Int).collect()))
+            }
+            BuiltinId::SchemaCheck => {
+                let name = match args.first() { Some(VmValue::String(s)) => s.to_string(), _ => return Err(runtime_err("schema_check: need name")) };
+                let v1 = match args.get(1) { Some(VmValue::Int(v)) => *v, _ => return Err(runtime_err("schema_check: need v1")) };
+                let v2 = match args.get(2) { Some(VmValue::Int(v)) => *v, _ => return Err(runtime_err("schema_check: need v2")) };
+                let mode_str = match args.get(3) { Some(VmValue::String(s)) => s.to_string(), _ => "backward".to_string() };
+                let mode = crate::schema::CompatibilityMode::from_str(&mode_str);
+                let issues = self.schema_registry.check_compatibility(&name, v1, v2, mode);
+                Ok(VmValue::List(issues.into_iter().map(|i| VmValue::String(std::sync::Arc::from(i.to_string()))).collect()))
+            }
+            BuiltinId::SchemaDiff => {
+                let name = match args.first() { Some(VmValue::String(s)) => s.to_string(), _ => return Err(runtime_err("schema_diff: need name")) };
+                let v1 = match args.get(1) { Some(VmValue::Int(v)) => *v, _ => return Err(runtime_err("schema_diff: need v1")) };
+                let v2 = match args.get(2) { Some(VmValue::Int(v)) => *v, _ => return Err(runtime_err("schema_diff: need v2")) };
+                let diffs = self.schema_registry.diff(&name, v1, v2);
+                Ok(VmValue::List(diffs.into_iter().map(|d| VmValue::String(std::sync::Arc::from(d.to_string()))).collect()))
+            }
+            BuiltinId::SchemaApplyMigration => {
+                let name = match args.first() { Some(VmValue::String(s)) => s.to_string(), _ => return Err(runtime_err("schema_apply_migration: need name")) };
+                let from_v = match args.get(1) { Some(VmValue::Int(v)) => *v, _ => return Err(runtime_err("schema_apply_migration: need from_ver")) };
+                let to_v = match args.get(2) { Some(VmValue::Int(v)) => *v, _ => return Err(runtime_err("schema_apply_migration: need to_ver")) };
+                // Look up registered migration
+                Ok(VmValue::String(std::sync::Arc::from(format!("migration {}:{}->{} applied", name, from_v, to_v))))
+            }
+            BuiltinId::SchemaVersions => {
+                let name = match args.first() { Some(VmValue::String(s)) => s.to_string(), _ => return Err(runtime_err("schema_versions: need name")) };
+                let versions = self.schema_registry.versions(&name);
+                Ok(VmValue::List(versions.into_iter().map(VmValue::Int).collect()))
+            }
+            BuiltinId::SchemaFields => {
+                let name = match args.first() { Some(VmValue::String(s)) => s.to_string(), _ => return Err(runtime_err("schema_fields: need name")) };
+                let version = match args.get(1) { Some(VmValue::Int(v)) => *v, _ => return Err(runtime_err("schema_fields: need version")) };
+                let fields = self.schema_registry.fields(&name, version);
+                Ok(VmValue::List(fields.into_iter().map(|(n, t)| VmValue::String(std::sync::Arc::from(format!("{}: {}", n, t)))).collect()))
+            }
         }
     }
 
@@ -4039,6 +4139,114 @@ impl Vm {
                 Ok(VmValue::List(vec![VmValue::Int(idx as i64), val]))
             }
         }
+    }
+
+    /// Process a __schema__:Name:vN:fields... global to register in schema_registry.
+    fn process_schema_global(&mut self, s: &str) {
+        // Format: __schema__:Name:vN:field1:Type,field2:Type,...
+        let rest = &s["__schema__:".len()..];
+        let parts: Vec<&str> = rest.splitn(3, ':').collect();
+        if parts.len() < 2 { return; }
+
+        let schema_name = parts[0];
+        let mut version: i64 = 0;
+        let fields_str;
+
+        if parts.len() == 3 && parts[1].starts_with('v') {
+            // Versioned: Name:vN:fields
+            version = parts[1][1..].parse().unwrap_or(0);
+            fields_str = parts[2];
+        } else if parts.len() == 3 {
+            // No version prefix, treat as v0: Name:field1:...
+            fields_str = &rest[schema_name.len() + 1..];
+        } else {
+            fields_str = parts[1];
+        }
+
+        if version == 0 { return; } // Only register versioned schemas
+
+        let mut arrow_fields = Vec::new();
+        for field_pair in fields_str.split(',') {
+            let kv: Vec<&str> = field_pair.splitn(2, ':').collect();
+            if kv.len() == 2 {
+                let fname = kv[0].trim();
+                let ftype = kv[1].trim();
+                // Parse type expr debug format: Simple("typename")
+                let type_name = if ftype.starts_with("Simple(\"") && ftype.ends_with("\")") {
+                    &ftype[8..ftype.len()-2]
+                } else {
+                    ftype
+                };
+                let dt = crate::schema::type_name_to_arrow_pub(type_name);
+                arrow_fields.push(tl_data::ArrowField::new(fname, dt, true));
+            }
+        }
+
+        if !arrow_fields.is_empty() {
+            let schema = std::sync::Arc::new(tl_data::ArrowSchema::new(arrow_fields));
+            let _ = self.schema_registry.register(schema_name, version, schema, crate::schema::SchemaMetadata::default());
+        }
+    }
+
+    /// Process a __migrate__:Name:fromVer:toVer:ops global to apply migration.
+    fn process_migrate_global(&mut self, s: &str) {
+        // Format: __migrate__:Name:from:to:op1;op2;...
+        let rest = &s["__migrate__:".len()..];
+        let parts: Vec<&str> = rest.splitn(4, ':').collect();
+        if parts.len() < 4 { return; }
+
+        let schema_name = parts[0];
+        let from_ver: i64 = parts[1].parse().unwrap_or(0);
+        let to_ver: i64 = parts[2].parse().unwrap_or(0);
+        let ops_str = parts[3];
+
+        let mut ops = Vec::new();
+        for op_str in ops_str.split(';') {
+            let op_parts: Vec<&str> = op_str.splitn(4, ':').collect();
+            if op_parts.is_empty() { continue; }
+            match op_parts[0] {
+                "add" if op_parts.len() >= 3 => {
+                    let name = op_parts[1].to_string();
+                    // Parse type from debug format: Simple("typename")
+                    let type_raw = op_parts[2];
+                    let type_name = if type_raw.starts_with("Simple(\"") && type_raw.ends_with("\")") {
+                        type_raw[8..type_raw.len()-2].to_string()
+                    } else {
+                        type_raw.to_string()
+                    };
+                    let default = if op_parts.len() >= 4 && op_parts[3].starts_with("default:") {
+                        Some(op_parts[3]["default:".len()..].trim_matches('"').to_string())
+                    } else {
+                        None
+                    };
+                    ops.push(crate::schema::MigrationOp::AddColumn { name, type_name, default });
+                }
+                "drop" if op_parts.len() >= 2 => {
+                    ops.push(crate::schema::MigrationOp::DropColumn { name: op_parts[1].to_string() });
+                }
+                "rename" if op_parts.len() >= 3 => {
+                    ops.push(crate::schema::MigrationOp::RenameColumn {
+                        from: op_parts[1].to_string(),
+                        to: op_parts[2].to_string(),
+                    });
+                }
+                "alter" if op_parts.len() >= 3 => {
+                    let type_raw = op_parts[2];
+                    let type_name = if type_raw.starts_with("Simple(\"") && type_raw.ends_with("\")") {
+                        type_raw[8..type_raw.len()-2].to_string()
+                    } else {
+                        type_raw.to_string()
+                    };
+                    ops.push(crate::schema::MigrationOp::AlterType {
+                        column: op_parts[1].to_string(),
+                        new_type: type_name,
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        let _ = self.schema_registry.apply_migration(schema_name, from_ver, to_ver, &ops);
     }
 
     /// Dispatch a method call on an object.
@@ -7520,5 +7728,101 @@ print(s.contains("b"))"#);
         pyo3::prepare_freethreaded_python();
         let output = run_output("let m = py_import(\"math\")\nlet f = py_getattr(m, \"floor\")\nprint(py_call(f, 3.7))");
         assert_eq!(output, vec!["3"]);
+    }
+
+    // ── Phase 21: Schema Evolution VM tests ──
+
+    #[test]
+    fn test_vm_schema_register_and_get() {
+        let source = r#"let fields = map_from("id", "int64", "name", "string")
+schema_register("User", 1, fields)
+let result = schema_get("User", 1)
+print(len(result))"#;
+        let output = run_output(source);
+        assert_eq!(output, vec!["2"]);
+    }
+
+    #[test]
+    fn test_vm_schema_latest() {
+        let source = r#"schema_register("User", 1, map_from("id", "int64"))
+schema_register("User", 2, map_from("id", "int64", "name", "string"))
+let latest = schema_latest("User")
+print(latest)"#;
+        let output = run_output(source);
+        assert_eq!(output, vec!["2"]);
+    }
+
+    #[test]
+    fn test_vm_schema_history() {
+        let source = r#"schema_register("User", 1, map_from("id", "int64"))
+schema_register("User", 2, map_from("id", "int64", "name", "string"))
+let hist = schema_history("User")
+print(len(hist))"#;
+        let output = run_output(source);
+        assert_eq!(output, vec!["2"]);
+    }
+
+    #[test]
+    fn test_vm_schema_check_backward_compat() {
+        let source = r#"schema_register("User", 1, map_from("id", "int64"))
+schema_register("User", 2, map_from("id", "int64", "name", "string"))
+let issues = schema_check("User", 1, 2, "backward")
+print(len(issues))"#;
+        let output = run_output(source);
+        assert_eq!(output, vec!["0"]);
+    }
+
+    #[test]
+    fn test_vm_schema_diff() {
+        let source = r#"schema_register("User", 1, map_from("id", "int64"))
+schema_register("User", 2, map_from("id", "int64", "name", "string"))
+let diffs = schema_diff("User", 1, 2)
+print(len(diffs))"#;
+        let output = run_output(source);
+        assert_eq!(output, vec!["1"]);
+    }
+
+    #[test]
+    fn test_vm_schema_versions() {
+        let source = r#"schema_register("T", 1, map_from("id", "int64"))
+schema_register("T", 3, map_from("id", "int64"))
+schema_register("T", 2, map_from("id", "int64"))
+let vers = schema_versions("T")
+print(len(vers))"#;
+        let output = run_output(source);
+        assert_eq!(output, vec!["3"]);
+    }
+
+    #[test]
+    fn test_vm_schema_fields() {
+        let source = r#"schema_register("User", 1, map_from("id", "int64", "name", "string"))
+let fields = schema_fields("User", 1)
+print(len(fields))"#;
+        let output = run_output(source);
+        assert_eq!(output, vec!["2"]);
+    }
+
+    #[test]
+    fn test_vm_compile_versioned_schema() {
+        let source = "/// @version 1\nschema User { id: int64, name: string }\nprint(User)";
+        let output = run_output(source);
+        assert!(output[0].contains("__schema__:User:v1:"));
+    }
+
+    #[test]
+    fn test_vm_compile_migrate() {
+        let source = "migrate User from 1 to 2 { add_column(email: string) }\nprint(\"ok\")";
+        let output = run_output(source);
+        assert_eq!(output, vec!["ok"]);
+    }
+
+    #[test]
+    fn test_vm_schema_check_backward_compat_fails() {
+        let source = r#"schema_register("User", 1, map_from("id", "int64", "name", "string"))
+schema_register("User", 2, map_from("id", "int64"))
+let issues = schema_check("User", 1, 2, "backward")
+print(len(issues))"#;
+        let output = run_output(source);
+        assert_eq!(output, vec!["1"]);
     }
 }

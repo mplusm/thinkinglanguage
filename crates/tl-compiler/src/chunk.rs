@@ -525,6 +525,16 @@ pub enum BuiltinId {
     PyGetAttr = 141,
     PySetAttr = 142,
     PyToTl = 143,
+    // Phase 21: Schema Evolution
+    SchemaRegister = 144,
+    SchemaGet = 145,
+    SchemaLatest = 146,
+    SchemaHistory = 147,
+    SchemaCheck = 148,
+    SchemaDiff = 149,
+    SchemaApplyMigration = 150,
+    SchemaVersions = 151,
+    SchemaFields = 152,
 }
 
 impl BuiltinId {
@@ -676,6 +686,16 @@ impl BuiltinId {
             "py_getattr" => Some(BuiltinId::PyGetAttr),
             "py_setattr" => Some(BuiltinId::PySetAttr),
             "py_to_tl" => Some(BuiltinId::PyToTl),
+            // Phase 21: Schema Evolution
+            "schema_register" => Some(BuiltinId::SchemaRegister),
+            "schema_get" => Some(BuiltinId::SchemaGet),
+            "schema_latest" => Some(BuiltinId::SchemaLatest),
+            "schema_history" => Some(BuiltinId::SchemaHistory),
+            "schema_check" => Some(BuiltinId::SchemaCheck),
+            "schema_diff" => Some(BuiltinId::SchemaDiff),
+            "schema_apply_migration" => Some(BuiltinId::SchemaApplyMigration),
+            "schema_versions" => Some(BuiltinId::SchemaVersions),
+            "schema_fields" => Some(BuiltinId::SchemaFields),
             _ => None,
         }
     }
@@ -828,6 +848,16 @@ impl BuiltinId {
             BuiltinId::PyGetAttr => "py_getattr",
             BuiltinId::PySetAttr => "py_setattr",
             BuiltinId::PyToTl => "py_to_tl",
+            // Phase 21: Schema Evolution
+            BuiltinId::SchemaRegister => "schema_register",
+            BuiltinId::SchemaGet => "schema_get",
+            BuiltinId::SchemaLatest => "schema_latest",
+            BuiltinId::SchemaHistory => "schema_history",
+            BuiltinId::SchemaCheck => "schema_check",
+            BuiltinId::SchemaDiff => "schema_diff",
+            BuiltinId::SchemaApplyMigration => "schema_apply_migration",
+            BuiltinId::SchemaVersions => "schema_versions",
+            BuiltinId::SchemaFields => "schema_fields",
         }
     }
 }

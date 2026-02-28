@@ -168,6 +168,10 @@ pub enum Token {
     #[token("test")]
     Test,
 
+    // Schema evolution
+    #[token("migrate")]
+    Migrate,
+
     // Primitives
     #[token("none")]
     None_,
@@ -723,5 +727,14 @@ mod tests {
             assert_eq!(tt.span.start, rt.span.start, "Token start spans should match");
             assert_eq!(tt.span.end, rt.span.end, "Token end spans should match");
         }
+    }
+
+    // Phase 21: Schema Evolution
+
+    #[test]
+    fn test_migrate_token() {
+        let tokens = tokenize("migrate User from 1 to 2").unwrap();
+        assert!(matches!(tokens[0].token, Token::Migrate));
+        assert!(matches!(&tokens[1].token, Token::Ident(s) if s == "User"));
     }
 }

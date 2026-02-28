@@ -1886,6 +1886,40 @@ BuiltinIds: 138-143 (PyImport, PyCall, PyEval, PyGetAttr, PySetAttr, PyToTl)
 Tests: 996 existing (unchanged) + 44 new (with python feature) = 1040, 1 ignored
 ```
 
+### Phase 21: Schema Evolution & Migration ✅
+
+**Goal:** Track schema versions over time, validate compatibility, and apply migrations declaratively
+
+```
+Phase 21: Schema Evolution & Migration ✅
+  ✅ Schema versioning — @version N in doc comments, auto-registers versioned schemas
+  ✅ Field annotations — @since, @deprecated in field doc comments, default values (= expr)
+  ✅ migrate statement — `migrate Schema from V1 to V2 { add_column(...), drop_column(...), ... }`
+  ✅ MigrateOp — AddColumn, DropColumn, RenameColumn, AlterType, AddConstraint, DropConstraint
+  ✅ Schema registry — runtime versioned schema store with metadata (field_since, field_deprecated, field_defaults)
+  ✅ Compatibility checking — backward, forward, full, none modes
+  ✅ Schema diff — field additions, removals, renames, type changes
+  ✅ Type widening — Int8→Int16→Int32→Int64, Float32→Float64 recognized as safe
+  ✅ schema_register(name, version, fields_map) — register schema from code
+  ✅ schema_get(name, version) — retrieve specific version fields
+  ✅ schema_latest(name) — get latest version number
+  ✅ schema_history(name) — list all version numbers
+  ✅ schema_check(name, v1, v2, mode) — check compatibility, return issues
+  ✅ schema_diff(name, v1, v2) — compute differences between versions
+  ✅ schema_versions(name) — list registered version numbers
+  ✅ schema_fields(name, version) — list field names and types
+  ✅ VM integration — SetGlobal intercepts __schema__/__migrate__ strings for auto-registration
+  ✅ Interpreter integration — schema_registry in Interpreter, Migrate stmt handler
+  ✅ Type inference — schema_register→unit, schema_history→list<int>, schema_check→list<string>
+  ✅ tl migrate CLI — apply, check, diff, history subcommands
+  ✅ CLI tab completion — schema_register, schema_get, schema_latest, schema_history, etc.
+
+New file: crates/tl-compiler/src/schema.rs (SchemaRegistry, VersionedSchema, compat checks)
+New file: crates/tl-compiler/tests/schema_evolution.rs (14 e2e integration tests)
+BuiltinIds: 144-152 (SchemaRegister through SchemaFields)
+Tests: 1046 existing + ~14 new integration = ~1060, 1 ignored
+```
+
 ### Phase 13: Data Quality & Connectors ✅ (Phase 15)
 
 **Goal:** Production data engineering with clean/validate and connectors

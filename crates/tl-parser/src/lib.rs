@@ -155,8 +155,25 @@ impl Parser {
             self.advance();
         }
         let mut stmt = self.parse_statement_inner()?;
-        if doc.is_some() && stmt.doc_comment.is_none() {
-            stmt.doc_comment = doc;
+        if let Some(ref doc_text) = doc {
+            if stmt.doc_comment.is_none() {
+                stmt.doc_comment = doc.clone();
+            }
+            // Extract @version annotation from doc comment and apply to Schema
+            if let StmtKind::Schema { ref mut version, ref mut parent_version, .. } = stmt.kind {
+                for line in doc_text.lines() {
+                    let trimmed = line.trim();
+                    if let Some(rest) = trimmed.strip_prefix("@version") {
+                        if let Ok(v) = rest.trim().parse::<i64>() {
+                            *version = Some(v);
+                        }
+                    } else if let Some(rest) = trimmed.strip_prefix("@evolves") {
+                        if let Ok(v) = rest.trim().parse::<i64>() {
+                            *parent_version = Some(v);
+                        }
+                    }
+                }
+            }
         }
         Ok(stmt)
     }
@@ -187,6 +204,7 @@ impl Parser {
             Token::Pub => self.parse_pub(),
             Token::Mod => self.parse_mod(false),
             Token::Test => self.parse_test(),
+            Token::Migrate => self.parse_migrate(),
             Token::Break => {
                 let start = self.peek_span().start;
                 self.advance();
@@ -386,6 +404,7 @@ impl Parser {
     }
 
     /// Parse `schema Name { field: type, ... }`
+    /// Supports `@version N` in doc comment and field-level `///` doc comments with `= default`
     fn parse_schema(&mut self) -> Result<Stmt, TlError> {
         let start = self.peek_span().start;
         self.advance(); // consume 'schema'
@@ -393,18 +412,141 @@ impl Parser {
         self.expect(&Token::LBrace)?;
         let mut fields = Vec::new();
         while !self.check(&Token::RBrace) && !self.is_at_end() {
+            // Consume field-level doc comments
+            let field_doc = self.consume_doc_comments();
             let field_name = self.expect_ident()?;
             self.expect(&Token::Colon)?;
             let type_ann = self.parse_type()?;
+            // Optional default value: `= expr`
+            let default_value = if self.match_token(&Token::Assign) {
+                Some(self.parse_expression()?)
+            } else {
+                None
+            };
             self.match_token(&Token::Comma); // optional trailing comma
             fields.push(SchemaField {
                 name: field_name,
                 type_ann,
+                doc_comment: field_doc,
+                default_value,
             });
         }
         self.expect(&Token::RBrace)?;
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::Schema { name, fields, is_public: false }, start, end))
+        Ok(make_stmt(StmtKind::Schema { name, fields, is_public: false, version: None, parent_version: None }, start, end))
+    }
+
+    /// Parse `migrate SchemaName from V1 to V2 { ops... }`
+    fn parse_migrate(&mut self) -> Result<Stmt, TlError> {
+        let start = self.peek_span().start;
+        self.advance(); // consume 'migrate'
+        let schema_name = self.expect_ident()?;
+
+        // expect 'from'
+        match self.peek() {
+            Token::Ident(s) if s == "from" => { self.advance(); }
+            _ => return Err(TlError::Parser(ParserError {
+                message: "Expected `from` after schema name in migrate statement".to_string(),
+                span: self.peek_span(),
+                hint: Some("migrate SchemaName from V1 to V2 { ... }".to_string()),
+            })),
+        }
+        let from_version = match self.peek() {
+            Token::Int(n) => { let n = *n; self.advance(); n }
+            _ => return Err(TlError::Parser(ParserError {
+                message: "Expected version number after `from`".to_string(),
+                span: self.peek_span(),
+                hint: None,
+            })),
+        };
+
+        // expect 'to'
+        match self.peek() {
+            Token::Ident(s) if s == "to" => { self.advance(); }
+            _ => return Err(TlError::Parser(ParserError {
+                message: "Expected `to` after from-version in migrate statement".to_string(),
+                span: self.peek_span(),
+                hint: Some("migrate SchemaName from V1 to V2 { ... }".to_string()),
+            })),
+        }
+        let to_version = match self.peek() {
+            Token::Int(n) => { let n = *n; self.advance(); n }
+            _ => return Err(TlError::Parser(ParserError {
+                message: "Expected version number after `to`".to_string(),
+                span: self.peek_span(),
+                hint: None,
+            })),
+        };
+
+        self.expect(&Token::LBrace)?;
+        let mut operations = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            operations.push(self.parse_migrate_op()?);
+        }
+        self.expect(&Token::RBrace)?;
+        let end = self.previous_span().end;
+        Ok(make_stmt(StmtKind::Migrate { schema_name, from_version, to_version, operations }, start, end))
+    }
+
+    /// Parse a single migration operation like `add_column(name: type, default: expr)`
+    fn parse_migrate_op(&mut self) -> Result<MigrateOp, TlError> {
+        let op_name = self.expect_ident()?;
+        self.expect(&Token::LParen)?;
+        let result = match op_name.as_str() {
+            "add_column" => {
+                let name = self.expect_ident()?;
+                self.expect(&Token::Colon)?;
+                let type_ann = self.parse_type()?;
+                let default = if self.match_token(&Token::Comma) {
+                    // Check for `default:` named arg
+                    if matches!(self.peek(), Token::Ident(s) if s == "default") {
+                        self.advance(); // consume 'default'
+                        self.expect(&Token::Colon)?;
+                        Some(self.parse_expression()?)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                MigrateOp::AddColumn { name, type_ann, default }
+            }
+            "drop_column" => {
+                let name = self.expect_ident()?;
+                MigrateOp::DropColumn { name }
+            }
+            "rename_column" => {
+                let from = self.expect_ident()?;
+                self.expect(&Token::Comma)?;
+                let to = self.expect_ident()?;
+                MigrateOp::RenameColumn { from, to }
+            }
+            "alter_type" => {
+                let column = self.expect_ident()?;
+                self.expect(&Token::Comma)?;
+                let new_type = self.parse_type()?;
+                MigrateOp::AlterType { column, new_type }
+            }
+            "add_constraint" => {
+                let column = self.expect_ident()?;
+                self.expect(&Token::Comma)?;
+                let constraint = self.expect_ident()?;
+                MigrateOp::AddConstraint { column, constraint }
+            }
+            "drop_constraint" => {
+                let column = self.expect_ident()?;
+                self.expect(&Token::Comma)?;
+                let constraint = self.expect_ident()?;
+                MigrateOp::DropConstraint { column, constraint }
+            }
+            _ => return Err(TlError::Parser(ParserError {
+                message: format!("Unknown migration operation: `{op_name}`"),
+                span: self.peek_span(),
+                hint: Some("Valid operations: add_column, drop_column, rename_column, alter_type, add_constraint, drop_constraint".to_string()),
+            })),
+        };
+        self.expect(&Token::RParen)?;
+        Ok(result)
     }
 
     /// Parse `model <name> = train <algorithm> { key: value, ... }`
@@ -1733,6 +1875,7 @@ impl Parser {
         self.expect(&Token::LBrace)?;
         let mut fields = Vec::new();
         while !self.check(&Token::RBrace) && !self.is_at_end() {
+            let field_doc = self.consume_doc_comments();
             let field_name = self.expect_ident()?;
             self.expect(&Token::Colon)?;
             let type_ann = self.parse_type()?;
@@ -1740,6 +1883,8 @@ impl Parser {
             fields.push(SchemaField {
                 name: field_name,
                 type_ann,
+                doc_comment: field_doc,
+                default_value: None,
             });
         }
         self.expect(&Token::RBrace)?;
@@ -3378,5 +3523,146 @@ mod tests {
     fn test_doc_comment_on_schema() {
         let program = parse("/// User schema\nschema User { name: string, age: int }").unwrap();
         assert_eq!(program.statements[0].doc_comment.as_deref(), Some("User schema"));
+    }
+
+    // ── Phase 21: Schema Evolution & Migration ──────────────────────
+
+    #[test]
+    fn test_parse_versioned_schema() {
+        let source = "/// User schema\n/// @version 1\nschema User { name: string }";
+        let program = parse(source).unwrap();
+        if let StmtKind::Schema { name, version, .. } = &program.statements[0].kind {
+            assert_eq!(name, "User");
+            assert_eq!(*version, Some(1));
+        } else {
+            panic!("Expected Schema statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_schema_field_doc_comments() {
+        let source = "schema User {\n  /// User's name\n  /// @since 1\n  name: string\n}";
+        let program = parse(source).unwrap();
+        if let StmtKind::Schema { fields, .. } = &program.statements[0].kind {
+            assert_eq!(fields[0].name, "name");
+            assert!(fields[0].doc_comment.is_some());
+            assert!(fields[0].doc_comment.as_ref().unwrap().contains("@since"));
+        } else {
+            panic!("Expected Schema statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_schema_field_default_value() {
+        let source = "schema User { name: string = \"unknown\", age: int64 }";
+        let program = parse(source).unwrap();
+        if let StmtKind::Schema { fields, .. } = &program.statements[0].kind {
+            assert_eq!(fields.len(), 2);
+            assert!(fields[0].default_value.is_some());
+            assert!(fields[1].default_value.is_none());
+        } else {
+            panic!("Expected Schema statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_migrate_add_column() {
+        let source = "migrate User from 1 to 2 { add_column(email: string) }";
+        let program = parse(source).unwrap();
+        if let StmtKind::Migrate { schema_name, from_version, to_version, operations } = &program.statements[0].kind {
+            assert_eq!(schema_name, "User");
+            assert_eq!(*from_version, 1);
+            assert_eq!(*to_version, 2);
+            assert_eq!(operations.len(), 1);
+            assert!(matches!(&operations[0], MigrateOp::AddColumn { name, .. } if name == "email"));
+        } else {
+            panic!("Expected Migrate statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_migrate_drop_column() {
+        let source = "migrate User from 2 to 3 { drop_column(legacy) }";
+        let program = parse(source).unwrap();
+        if let StmtKind::Migrate { operations, .. } = &program.statements[0].kind {
+            assert!(matches!(&operations[0], MigrateOp::DropColumn { name } if name == "legacy"));
+        } else {
+            panic!("Expected Migrate statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_migrate_rename_column() {
+        let source = "migrate User from 1 to 2 { rename_column(old_name, new_name) }";
+        let program = parse(source).unwrap();
+        if let StmtKind::Migrate { operations, .. } = &program.statements[0].kind {
+            assert!(matches!(&operations[0], MigrateOp::RenameColumn { from, to } if from == "old_name" && to == "new_name"));
+        } else {
+            panic!("Expected Migrate statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_migrate_alter_type() {
+        let source = "migrate User from 1 to 2 { alter_type(age, float64) }";
+        let program = parse(source).unwrap();
+        if let StmtKind::Migrate { operations, .. } = &program.statements[0].kind {
+            assert!(matches!(&operations[0], MigrateOp::AlterType { column, .. } if column == "age"));
+        } else {
+            panic!("Expected Migrate statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_migrate_multiple_operations() {
+        let source = "migrate User from 1 to 2 {\n  add_column(email: string)\n  drop_column(legacy)\n  rename_column(fname, first_name)\n}";
+        let program = parse(source).unwrap();
+        if let StmtKind::Migrate { operations, .. } = &program.statements[0].kind {
+            assert_eq!(operations.len(), 3);
+            assert!(matches!(&operations[0], MigrateOp::AddColumn { .. }));
+            assert!(matches!(&operations[1], MigrateOp::DropColumn { .. }));
+            assert!(matches!(&operations[2], MigrateOp::RenameColumn { .. }));
+        } else {
+            panic!("Expected Migrate statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_migrate_error_no_versions() {
+        let result = parse("migrate User { add_column(x: int64) }");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_migrate_error_invalid_op() {
+        let result = parse("migrate User from 1 to 2 { invalid_op(x) }");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_migrate_add_column_with_default() {
+        let source = "migrate User from 1 to 2 { add_column(email: string, default: \"\") }";
+        let program = parse(source).unwrap();
+        if let StmtKind::Migrate { operations, .. } = &program.statements[0].kind {
+            if let MigrateOp::AddColumn { name, default, .. } = &operations[0] {
+                assert_eq!(name, "email");
+                assert!(default.is_some());
+            } else {
+                panic!("Expected AddColumn");
+            }
+        } else {
+            panic!("Expected Migrate statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_schema_version_in_doc() {
+        let source = "/// @version 5\nschema Events { ts: int64 }";
+        let program = parse(source).unwrap();
+        if let StmtKind::Schema { version, .. } = &program.statements[0].kind {
+            assert_eq!(*version, Some(5));
+        } else {
+            panic!("Expected Schema statement");
+        }
     }
 }

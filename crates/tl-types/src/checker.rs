@@ -819,7 +819,8 @@ impl<'a> TypeChecker<'a> {
             | StmtKind::StreamDecl { .. }
             | StmtKind::SourceDecl { .. }
             | StmtKind::SinkDecl { .. }
-            | StmtKind::ModDecl { .. } => {}
+            | StmtKind::ModDecl { .. }
+            | StmtKind::Migrate { .. } => {}
 
             StmtKind::TraitDef { name, type_params: _, methods, .. } => {
                 // Lint: trait naming convention — should be PascalCase

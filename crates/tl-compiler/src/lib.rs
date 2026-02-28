@@ -12,6 +12,7 @@ pub mod vm;
 pub mod jit;
 pub mod jit_runtime;
 pub mod module;
+pub mod schema;
 #[cfg(feature = "python")]
 pub mod python;
 

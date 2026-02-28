@@ -313,8 +313,8 @@ impl Compiler {
             StmtKind::For { name, iter, body } => {
                 self.compile_for(name, iter, body)
             }
-            StmtKind::Schema { name, fields, .. } => {
-                self.compile_schema(name, fields)
+            StmtKind::Schema { name, fields, version, .. } => {
+                self.compile_schema(name, fields, version)
             }
             StmtKind::Train { name, algorithm, config } => {
                 self.compile_train(name, algorithm, config)
@@ -501,6 +501,9 @@ impl Compiler {
             StmtKind::TypeAlias { .. } => {
                 // Type aliases are type-checker only; no runtime code needed
                 Ok(())
+            }
+            StmtKind::Migrate { schema_name, from_version, to_version, operations } => {
+                self.compile_migrate(schema_name, *from_version, *to_version, operations)
             }
         }
     }
@@ -1012,21 +1015,14 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_schema(&mut self, name: &str, fields: &[SchemaField]) -> Result<(), TlError> {
+    fn compile_schema(&mut self, name: &str, fields: &[SchemaField], version: &Option<i64>) -> Result<(), TlError> {
         // Schema compilation: store as a global with the schema data
         // We use a special constant and SetGlobal
         let reg = self.current().alloc_register();
 
-        // Store schema field info as constants
-        let mut field_names = Vec::new();
-        let mut field_types = Vec::new();
-        for f in fields {
-            field_names.push(f.name.clone());
-            field_types.push(format!("{:?}", f.type_ann));
-        }
-
-        // Encode schema as a constant with name + fields as string
-        let schema_str = format!("__schema__:{}:{}", name,
+        // Encode schema as a constant with name + version + fields as string
+        let ver_str = version.map_or(String::new(), |v| format!(":v{}", v));
+        let schema_str = format!("__schema__:{}{}:{}", name, ver_str,
             fields.iter().map(|f| format!("{}:{:?}", f.name, f.type_ann)).collect::<Vec<_>>().join(","));
         let const_idx = self.current().add_constant(Constant::String(Arc::from(schema_str.as_str())));
         self.current().emit_abx(Op::LoadConst, reg, const_idx, 0);
@@ -1039,6 +1035,35 @@ impl Compiler {
         let local_reg = self.add_local(name.to_string());
         self.current().emit_abx(Op::LoadConst, local_reg, const_idx, 0);
 
+        Ok(())
+    }
+
+    fn compile_migrate(&mut self, schema_name: &str, from_version: i64, to_version: i64, operations: &[MigrateOp]) -> Result<(), TlError> {
+        // Encode migration as a constant string with ops
+        let mut ops_str = Vec::new();
+        for op in operations {
+            let s = match op {
+                MigrateOp::AddColumn { name, type_ann, default } => {
+                    let def_str = if let Some(d) = default { format!(",default:{d:?}") } else { String::new() };
+                    format!("add:{name}:{type_ann:?}{def_str}")
+                }
+                MigrateOp::DropColumn { name } => format!("drop:{name}"),
+                MigrateOp::RenameColumn { from, to } => format!("rename:{from}:{to}"),
+                MigrateOp::AlterType { column, new_type } => format!("alter:{column}:{new_type:?}"),
+                MigrateOp::AddConstraint { column, constraint } => format!("add_constraint:{column}:{constraint}"),
+                MigrateOp::DropConstraint { column, constraint } => format!("drop_constraint:{column}:{constraint}"),
+            };
+            ops_str.push(s);
+        }
+        let migrate_str = format!("__migrate__:{}:{}:{}:{}", schema_name, from_version, to_version, ops_str.join(";"));
+        let reg = self.current().alloc_register();
+        let const_idx = self.current().add_constant(Constant::String(Arc::from(migrate_str.as_str())));
+        self.current().emit_abx(Op::LoadConst, reg, const_idx, 0);
+        // Store as a global migration record
+        let name_key = format!("__migrate_{schema_name}_{from_version}_{to_version}");
+        let name_idx = self.current().add_constant(Constant::String(Arc::from(name_key.as_str())));
+        self.current().emit_abx(Op::SetGlobal, reg, name_idx, 0);
+        self.current().free_register();
         Ok(())
     }
 

@@ -262,6 +262,7 @@ impl fmt::Debug for VmTable {
 #[derive(Debug, Clone)]
 pub struct VmSchema {
     pub name: Arc<str>,
+    pub version: i64,
     pub arrow_schema: Arc<ArrowSchema>,
 }
 

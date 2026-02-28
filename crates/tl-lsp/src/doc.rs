@@ -24,6 +24,10 @@ pub struct ParsedDoc {
     pub examples: Vec<String>,
     /// `@deprecated reason`
     pub deprecated: Option<String>,
+    /// `@version N` — schema version number
+    pub version: Option<i64>,
+    /// `@since field description` — per-field lifecycle metadata
+    pub since: Vec<(String, String)>,
 }
 
 /// Kind of documented item
@@ -102,6 +106,8 @@ pub fn parse_doc_comment(raw: &str) -> ParsedDoc {
     let mut returns = None;
     let mut examples = Vec::new();
     let mut deprecated = None;
+    let mut version = None;
+    let mut since = Vec::new();
     let mut in_example = false;
     let mut current_example = Vec::new();
 
@@ -154,6 +160,17 @@ pub fn parse_doc_comment(raw: &str) -> ParsedDoc {
             }
         } else if let Some(rest) = trimmed.strip_prefix("@deprecated") {
             deprecated = Some(rest.trim().to_string());
+        } else if let Some(rest) = trimmed.strip_prefix("@version") {
+            if let std::result::Result::Ok(v) = rest.trim().parse::<i64>() {
+                version = Some(v);
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("@since") {
+            let rest = rest.trim();
+            if let Some((name, desc)) = rest.split_once(char::is_whitespace) {
+                since.push((name.trim().to_string(), desc.trim().to_string()));
+            } else if !rest.is_empty() {
+                since.push((rest.to_string(), String::new()));
+            }
         } else {
             description_lines.push(trimmed.to_string());
         }
@@ -182,6 +199,8 @@ pub fn parse_doc_comment(raw: &str) -> ParsedDoc {
         returns,
         examples,
         deprecated,
+        version,
+        since,
     }
 }
 
@@ -375,7 +394,7 @@ pub fn extract_docs(program: &Program, path: Option<&str>) -> ModuleDoc {
                     methods: Vec::new(),
                 });
             }
-            StmtKind::Schema { name, fields, is_public } => {
+            StmtKind::Schema { name, fields, is_public, .. } => {
                 let doc_fields: Vec<DocField> = fields.iter().map(|f| DocField {
                     name: f.name.clone(),
                     type_ann: format_type_expr(&f.type_ann),

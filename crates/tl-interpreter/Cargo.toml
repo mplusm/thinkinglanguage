@@ -13,6 +13,7 @@ tl-ai = { path = "../tl-ai" }
 tl-stream = { path = "../tl-stream" }
 tl-parser = { path = "../tl-parser" }
 tl-package = { path = "../tl-package" }
+tl-compiler = { path = "../tl-compiler" }
 reqwest = { version = "0.12", features = ["blocking", "rustls-tls"] }
 serde_json = "1"
 regex = "1"

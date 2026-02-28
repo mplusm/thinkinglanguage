@@ -437,7 +437,7 @@ impl Formatter {
                 self.push_indent();
                 self.output.push_str("continue\n");
             }
-            StmtKind::Schema { name, fields, is_public } => {
+            StmtKind::Schema { name, fields, is_public, .. } => {
                 self.push_indent();
                 if *is_public { self.output.push_str("pub "); }
                 self.output.push_str("schema ");
@@ -579,6 +579,41 @@ impl Formatter {
                 self.output.push_str(" = ");
                 self.output.push_str(&self.format_type_expr(value));
                 self.output.push('\n');
+            }
+            StmtKind::Migrate { schema_name, from_version, to_version, operations } => {
+                self.push_indent();
+                self.output.push_str(&format!("migrate {} from {} to {} {{\n", schema_name, from_version, to_version));
+                self.indent += 1;
+                for op in operations {
+                    self.push_indent();
+                    match op {
+                        tl_ast::MigrateOp::AddColumn { name, type_ann, default } => {
+                            self.output.push_str(&format!("add_column({}: {}", name, self.format_type_expr(type_ann)));
+                            if let Some(def) = default {
+                                self.output.push_str(&format!(", default: {}", self.format_expr(def)));
+                            }
+                            self.output.push_str(")\n");
+                        }
+                        tl_ast::MigrateOp::DropColumn { name } => {
+                            self.output.push_str(&format!("drop_column({})\n", name));
+                        }
+                        tl_ast::MigrateOp::RenameColumn { from, to } => {
+                            self.output.push_str(&format!("rename_column({}, {})\n", from, to));
+                        }
+                        tl_ast::MigrateOp::AlterType { column, new_type } => {
+                            self.output.push_str(&format!("alter_type({}, {})\n", column, self.format_type_expr(new_type)));
+                        }
+                        tl_ast::MigrateOp::AddConstraint { column, constraint } => {
+                            self.output.push_str(&format!("add_constraint({}, {})\n", column, constraint));
+                        }
+                        tl_ast::MigrateOp::DropConstraint { column, constraint } => {
+                            self.output.push_str(&format!("drop_constraint({}, {})\n", column, constraint));
+                        }
+                    }
+                }
+                self.indent -= 1;
+                self.push_indent();
+                self.output.push_str("}\n");
             }
         }
     }
@@ -854,6 +889,7 @@ fn is_top_level_decl(kind: &StmtKind) -> bool {
             | StmtKind::Test { .. }
             | StmtKind::Pipeline { .. }
             | StmtKind::Schema { .. }
+            | StmtKind::Migrate { .. }
     )
 }
 

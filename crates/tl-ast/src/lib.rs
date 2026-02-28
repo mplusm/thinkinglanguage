@@ -108,6 +108,18 @@ pub enum StmtKind {
         name: String,
         fields: Vec<SchemaField>,
         is_public: bool,
+        /// Schema version from `@version N` doc comment annotation
+        version: Option<i64>,
+        /// Parent version this schema evolves from
+        parent_version: Option<i64>,
+    },
+
+    /// `migrate SchemaName from V1 to V2 { add_column(...), ... }`
+    Migrate {
+        schema_name: String,
+        from_version: i64,
+        to_version: i64,
+        operations: Vec<MigrateOp>,
     },
 
     /// `model name = train algorithm { key: value, ... }`
@@ -315,6 +327,23 @@ pub struct MatchArm {
     pub body: Expr,
 }
 
+/// Schema migration operation
+#[derive(Debug, Clone)]
+pub enum MigrateOp {
+    /// `add_column(name: type, default: expr)`
+    AddColumn { name: String, type_ann: TypeExpr, default: Option<Expr> },
+    /// `drop_column(name)`
+    DropColumn { name: String },
+    /// `rename_column(old_name, new_name)`
+    RenameColumn { from: String, to: String },
+    /// `alter_type(column, new_type)`
+    AlterType { column: String, new_type: TypeExpr },
+    /// `add_constraint(column, constraint_name)`
+    AddConstraint { column: String, constraint: String },
+    /// `drop_constraint(column, constraint_name)`
+    DropConstraint { column: String, constraint: String },
+}
+
 /// Closure body: either a single expression or a block with statements.
 #[derive(Debug, Clone)]
 pub enum ClosureBody {
@@ -513,6 +542,10 @@ pub struct Param {
 pub struct SchemaField {
     pub name: String,
     pub type_ann: TypeExpr,
+    /// Field-level doc comment (may contain @since, @deprecated annotations)
+    pub doc_comment: Option<String>,
+    /// Default value for added fields (used in migrations)
+    pub default_value: Option<Expr>,
 }
 
 /// Type expressions (Phase 0: basic types only)

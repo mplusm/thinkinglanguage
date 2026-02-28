@@ -5176,6 +5176,7 @@ dependencies = [
  "tempfile",
  "tl-ai",
  "tl-ast",
+ "tl-compiler",
  "tl-data",
  "tl-errors",
  "tl-package",

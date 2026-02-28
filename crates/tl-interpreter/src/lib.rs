@@ -623,6 +623,15 @@ impl Environment {
         global.insert("py_getattr".to_string(), Value::Builtin("py_getattr".to_string()));
         global.insert("py_setattr".to_string(), Value::Builtin("py_setattr".to_string()));
         global.insert("py_to_tl".to_string(), Value::Builtin("py_to_tl".to_string()));
+        // Phase 21: Schema Evolution
+        global.insert("schema_register".to_string(), Value::Builtin("schema_register".to_string()));
+        global.insert("schema_get".to_string(), Value::Builtin("schema_get".to_string()));
+        global.insert("schema_latest".to_string(), Value::Builtin("schema_latest".to_string()));
+        global.insert("schema_history".to_string(), Value::Builtin("schema_history".to_string()));
+        global.insert("schema_check".to_string(), Value::Builtin("schema_check".to_string()));
+        global.insert("schema_diff".to_string(), Value::Builtin("schema_diff".to_string()));
+        global.insert("schema_versions".to_string(), Value::Builtin("schema_versions".to_string()));
+        global.insert("schema_fields".to_string(), Value::Builtin("schema_fields".to_string()));
 
         Self {
             scopes: vec![global],
@@ -693,6 +702,8 @@ pub struct Interpreter {
     pub package_roots: HashMap<String, std::path::PathBuf>,
     /// Project root (where tl.toml lives)
     pub project_root: Option<std::path::PathBuf>,
+    /// Schema registry for versioned schemas
+    pub schema_registry: tl_compiler::schema::SchemaRegistry,
 }
 
 impl Interpreter {
@@ -709,6 +720,7 @@ impl Interpreter {
             test_mode: false,
             package_roots: HashMap::new(),
             project_root: None,
+            schema_registry: tl_compiler::schema::SchemaRegistry::new(),
         }
     }
 
@@ -899,7 +911,7 @@ impl Interpreter {
                 }
                 Ok(Signal::None)
             }
-            StmtKind::Schema { name, fields, .. } => {
+            StmtKind::Schema { name, fields, version, .. } => {
                 let arrow_fields: Vec<ArrowField> = fields
                     .iter()
                     .map(|f| {
@@ -907,9 +919,37 @@ impl Interpreter {
                         ArrowField::new(&f.name, dt, true)
                     })
                     .collect();
+                let arrow_schema = Arc::new(ArrowSchema::new(arrow_fields));
+
+                // If versioned, register in schema registry
+                if let Some(ver) = version {
+                    let mut metadata = tl_compiler::schema::SchemaMetadata::default();
+                    // Extract @since from field doc comments
+                    for f in fields {
+                        if let Some(ref doc) = f.doc_comment {
+                            for line in doc.lines() {
+                                let trimmed = line.trim();
+                                if let Some(rest) = trimmed.strip_prefix("@since") {
+                                    if let Ok(v) = rest.trim().parse::<i64>() {
+                                        metadata.field_since.insert(f.name.clone(), v);
+                                    }
+                                } else if let Some(rest) = trimmed.strip_prefix("@deprecated") {
+                                    if let Ok(v) = rest.trim().parse::<i64>() {
+                                        metadata.field_deprecated.insert(f.name.clone(), v);
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(ref _def) = f.default_value {
+                            metadata.field_defaults.insert(f.name.clone(), format!("{:?}", f.default_value));
+                        }
+                    }
+                    let _ = self.schema_registry.register(name, *ver, arrow_schema.clone(), metadata);
+                }
+
                 let schema = TlSchema {
                     name: name.clone(),
-                    arrow_schema: Arc::new(ArrowSchema::new(arrow_fields)),
+                    arrow_schema,
                 };
                 self.env.set(name.clone(), Value::Schema(schema));
                 Ok(Signal::None)
@@ -1112,9 +1152,51 @@ impl Interpreter {
                 // Type aliases are type-checker only; no runtime effect
                 Ok(Signal::None)
             }
+            StmtKind::Migrate { schema_name, from_version, to_version, operations } => {
+                self.exec_migrate(schema_name, *from_version, *to_version, operations)
+            }
             StmtKind::Break => Ok(Signal::Break),
             StmtKind::Continue => Ok(Signal::Continue),
         }
+    }
+
+    /// Execute a migrate block — apply migration operations to schema registry
+    fn exec_migrate(&mut self, schema_name: &str, from_version: i64, to_version: i64, operations: &[MigrateOp]) -> Result<Signal, TlError> {
+        let ops: Vec<tl_compiler::schema::MigrationOp> = operations.iter().map(|op| {
+            match op {
+                MigrateOp::AddColumn { name, type_ann, default } => {
+                    tl_compiler::schema::MigrationOp::AddColumn {
+                        name: name.clone(),
+                        type_name: format!("{:?}", type_ann),
+                        default: default.as_ref().map(|d| format!("{:?}", d)),
+                    }
+                }
+                MigrateOp::DropColumn { name } => {
+                    tl_compiler::schema::MigrationOp::DropColumn { name: name.clone() }
+                }
+                MigrateOp::RenameColumn { from, to } => {
+                    tl_compiler::schema::MigrationOp::RenameColumn { from: from.clone(), to: to.clone() }
+                }
+                MigrateOp::AlterType { column, new_type } => {
+                    tl_compiler::schema::MigrationOp::AlterType {
+                        column: column.clone(),
+                        new_type: format!("{:?}", new_type),
+                    }
+                }
+                MigrateOp::AddConstraint { .. } | MigrateOp::DropConstraint { .. } => {
+                    // Constraints are metadata-only; no Arrow schema change
+                    tl_compiler::schema::MigrationOp::AddColumn { name: String::new(), type_name: String::new(), default: None }
+                }
+            }
+        }).collect();
+
+        self.schema_registry.apply_migration(schema_name, from_version, to_version, &ops)
+            .map_err(|e| TlError::Runtime(RuntimeError {
+                message: format!("Migration error: {}", e),
+                span: None,
+                stack_trace: vec![],
+            }))?;
+        Ok(Signal::None)
     }
 
     /// Evaluate a closure body (either expr or block).
@@ -3885,6 +3967,79 @@ impl Interpreter {
                 { self.interp_py_to_tl(args) }
                 #[cfg(not(feature = "python"))]
                 Err(runtime_err_s("py_to_tl() requires the 'python' feature"))
+            }
+
+            // Phase 21: Schema Evolution
+            "schema_register" => {
+                let name = match args.first() { Some(Value::String(s)) => s.clone(), _ => return Err(runtime_err_s("schema_register: need name")) };
+                let version = match args.get(1) { Some(Value::Int(v)) => *v, _ => return Err(runtime_err_s("schema_register: need version")) };
+                let fields = match args.get(2) {
+                    Some(Value::Map(pairs)) => {
+                        let mut arrow_fields = Vec::new();
+                        for (k, v) in pairs {
+                            let ftype = match v { Value::String(s) => s.clone(), _ => "string".to_string() };
+                            arrow_fields.push(ArrowField::new(k, tl_compiler::schema::type_name_to_arrow_pub(&ftype), true));
+                        }
+                        arrow_fields
+                    }
+                    _ => return Err(runtime_err_s("schema_register: third arg must be a map")),
+                };
+                let schema = Arc::new(ArrowSchema::new(fields));
+                self.schema_registry.register(&name, version, schema, tl_compiler::schema::SchemaMetadata::default())
+                    .map_err(|e| runtime_err(e))?;
+                Ok(Value::None)
+            }
+            "schema_get" => {
+                let name = match args.first() { Some(Value::String(s)) => s.clone(), _ => return Err(runtime_err_s("schema_get: need name")) };
+                let version = match args.get(1) { Some(Value::Int(v)) => *v, _ => return Err(runtime_err_s("schema_get: need version")) };
+                match self.schema_registry.get(&name, version) {
+                    Some(vs) => {
+                        let fields: Vec<Value> = vs.schema.fields().iter().map(|f: &std::sync::Arc<ArrowField>| {
+                            Value::String(format!("{}: {}", f.name(), f.data_type()))
+                        }).collect();
+                        Ok(Value::List(fields))
+                    }
+                    None => Ok(Value::None),
+                }
+            }
+            "schema_latest" => {
+                let name = match args.first() { Some(Value::String(s)) => s.clone(), _ => return Err(runtime_err_s("schema_latest: need name")) };
+                match self.schema_registry.latest(&name) {
+                    Some(vs) => Ok(Value::Int(vs.version)),
+                    None => Ok(Value::None),
+                }
+            }
+            "schema_history" => {
+                let name = match args.first() { Some(Value::String(s)) => s.clone(), _ => return Err(runtime_err_s("schema_history: need name")) };
+                let versions = self.schema_registry.versions(&name);
+                Ok(Value::List(versions.into_iter().map(Value::Int).collect()))
+            }
+            "schema_check" => {
+                let name = match args.first() { Some(Value::String(s)) => s.clone(), _ => return Err(runtime_err_s("schema_check: need name")) };
+                let v1 = match args.get(1) { Some(Value::Int(v)) => *v, _ => return Err(runtime_err_s("schema_check: need v1")) };
+                let v2 = match args.get(2) { Some(Value::Int(v)) => *v, _ => return Err(runtime_err_s("schema_check: need v2")) };
+                let mode_str = match args.get(3) { Some(Value::String(s)) => s.clone(), _ => "backward".to_string() };
+                let mode = tl_compiler::schema::CompatibilityMode::from_str(&mode_str);
+                let issues = self.schema_registry.check_compatibility(&name, v1, v2, mode);
+                Ok(Value::List(issues.into_iter().map(|i: tl_compiler::schema::CompatIssue| Value::String(i.to_string())).collect()))
+            }
+            "schema_diff" => {
+                let name = match args.first() { Some(Value::String(s)) => s.clone(), _ => return Err(runtime_err_s("schema_diff: need name")) };
+                let v1 = match args.get(1) { Some(Value::Int(v)) => *v, _ => return Err(runtime_err_s("schema_diff: need v1")) };
+                let v2 = match args.get(2) { Some(Value::Int(v)) => *v, _ => return Err(runtime_err_s("schema_diff: need v2")) };
+                let diffs = self.schema_registry.diff(&name, v1, v2);
+                Ok(Value::List(diffs.into_iter().map(|d: tl_compiler::schema::SchemaDiff| Value::String(d.to_string())).collect()))
+            }
+            "schema_versions" => {
+                let name = match args.first() { Some(Value::String(s)) => s.clone(), _ => return Err(runtime_err_s("schema_versions: need name")) };
+                let versions = self.schema_registry.versions(&name);
+                Ok(Value::List(versions.into_iter().map(Value::Int).collect()))
+            }
+            "schema_fields" => {
+                let name = match args.first() { Some(Value::String(s)) => s.clone(), _ => return Err(runtime_err_s("schema_fields: need name")) };
+                let version = match args.get(1) { Some(Value::Int(v)) => *v, _ => return Err(runtime_err_s("schema_fields: need version")) };
+                let fields = self.schema_registry.fields(&name, version);
+                Ok(Value::List(fields.into_iter().map(|(n, t)| Value::String(format!("{}: {}", n, t))).collect()))
             }
 
             _ => Err(runtime_err(format!("Unknown builtin: {name}"))),
@@ -8030,5 +8185,147 @@ print(match r { Result::Ok(v) if v > 100 => "big", Result::Ok(v) => v, Result::E
     fn test_interp_both_backends_expr() {
         let output = run_output("let f = (x) => x * 3 + 1\nprint(f(4))");
         assert_eq!(output, vec!["13"]);
+    }
+
+    // Phase 21: Schema Evolution — interpreter tests
+
+    #[test]
+    fn test_interp_versioned_schema_registration() {
+        // Parse and execute a versioned schema definition
+        let output = run_output(r#"
+/// User schema
+/// @version 1
+schema User {
+    id: int64
+    name: string
+}
+print(schema_latest("User"))
+"#);
+        assert_eq!(output, vec!["1"]);
+    }
+
+    #[test]
+    fn test_interp_schema_v1_v2_migration() {
+        let output = run_output(r#"
+/// @version 1
+schema User {
+    id: int64
+    name: string
+}
+/// @version 2
+schema UserV2 {
+    id: int64
+    name: string
+    email: string
+}
+schema_register("User", 2, map_from("id", "int64", "name", "string", "email", "string"))
+print(schema_latest("User"))
+"#);
+        assert_eq!(output, vec!["2"]);
+    }
+
+    #[test]
+    fn test_interp_schema_latest() {
+        let output = run_output(r#"
+schema_register("Order", 1, map_from("id", "int64"))
+schema_register("Order", 2, map_from("id", "int64", "total", "float64"))
+schema_register("Order", 3, map_from("id", "int64", "total", "float64", "status", "string"))
+print(schema_latest("Order"))
+"#);
+        assert_eq!(output, vec!["3"]);
+    }
+
+    #[test]
+    fn test_interp_schema_history() {
+        let output = run_output(r#"
+schema_register("Event", 1, map_from("id", "int64"))
+schema_register("Event", 2, map_from("id", "int64", "name", "string"))
+print(schema_history("Event"))
+"#);
+        assert_eq!(output, vec!["[1, 2]"]);
+    }
+
+    #[test]
+    fn test_interp_schema_check_backward_compat() {
+        let output = run_output(r#"
+schema_register("T", 1, map_from("id", "int64"))
+schema_register("T", 2, map_from("id", "int64", "name", "string"))
+let issues = schema_check("T", 1, 2, "backward")
+print(len(issues))
+"#);
+        // Adding a column is backward compatible
+        assert_eq!(output, vec!["0"]);
+    }
+
+    #[test]
+    fn test_interp_migrate_add_column() {
+        let output = run_output(r#"
+/// @version 1
+schema Product {
+    id: int64
+    name: string
+}
+migrate Product from 1 to 2 {
+    add_column(price: float64, default: "0.0")
+}
+print(schema_latest("Product"))
+let fields = schema_fields("Product", 2)
+print(len(fields))
+"#);
+        assert_eq!(output, vec!["2", "3"]);
+    }
+
+    #[test]
+    fn test_interp_migrate_rename_column() {
+        let output = run_output(r#"
+/// @version 1
+schema Item {
+    id: int64
+    item_name: string
+}
+migrate Item from 1 to 2 {
+    rename_column(item_name, name)
+}
+let fields = schema_fields("Item", 2)
+print(fields)
+"#);
+        let output_str = &output[0];
+        assert!(output_str.contains("name"), "Expected 'name' in fields, got: {}", output_str);
+        assert!(!output_str.contains("item_name"), "Unexpected 'item_name' in fields, got: {}", output_str);
+    }
+
+    #[test]
+    fn test_interp_schema_diff() {
+        let output = run_output(r#"
+schema_register("D", 1, map_from("id", "int64", "name", "string"))
+schema_register("D", 2, map_from("id", "int64", "name", "string", "email", "string"))
+let d = schema_diff("D", 1, 2)
+print(len(d))
+print(d)
+"#);
+        assert_eq!(output[0], "1");
+        assert!(output[1].contains("added"), "Expected 'added' in diff, got: {}", output[1]);
+    }
+
+    #[test]
+    fn test_interp_schema_versions() {
+        let output = run_output(r#"
+schema_register("V", 1, map_from("a", "int64"))
+schema_register("V", 3, map_from("a", "int64", "b", "string"))
+schema_register("V", 2, map_from("a", "int64", "c", "float64"))
+print(schema_versions("V"))
+"#);
+        // Should be sorted
+        assert_eq!(output, vec!["[1, 2, 3]"]);
+    }
+
+    #[test]
+    fn test_interp_schema_fields() {
+        let output = run_output(r#"
+schema_register("F", 1, map_from("id", "int64", "name", "string"))
+let f = schema_fields("F", 1)
+print(len(f))
+"#);
+        assert_eq!(output, vec!["2"]);
     }
 }

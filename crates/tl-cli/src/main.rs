@@ -64,6 +64,9 @@ impl TlHelper {
             "read_mysql", "redis_connect", "redis_get", "redis_set", "redis_del", "graphql_query", "register_s3",
             // Phase 20: Python FFI
             "py_import", "py_call", "py_eval", "py_getattr", "py_setattr", "py_to_tl",
+            // Phase 21: Schema Evolution
+            "schema_register", "schema_get", "schema_latest", "schema_history",
+            "schema_check", "schema_diff", "schema_versions", "schema_fields", "migrate",
         ].iter().map(|s| String::from(*s)).collect();
         completions.sort();
         TlHelper { completions }
@@ -324,6 +327,11 @@ enum Commands {
         #[arg(long)]
         public_only: bool,
     },
+    /// Schema evolution and migration commands
+    Migrate {
+        #[command(subcommand)]
+        action: MigrateAction,
+    },
     /// Publish a package to the registry (not yet available)
     Publish,
     /// Search for packages in the registry (not yet available)
@@ -346,6 +354,50 @@ enum ModelsAction {
     Delete {
         /// Model name
         name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum MigrateAction {
+    /// Apply migrations from a .tl source file
+    Apply {
+        /// Path to the .tl file containing schema and migrate statements
+        file: String,
+        /// Backend: "vm" (default) or "interp"
+        #[arg(long, default_value = "vm")]
+        backend: String,
+    },
+    /// Check compatibility without applying migrations
+    Check {
+        /// Path to the .tl file
+        file: String,
+        /// Backend: "vm" (default) or "interp"
+        #[arg(long, default_value = "vm")]
+        backend: String,
+    },
+    /// Show diff between schema versions
+    Diff {
+        /// Path to the .tl file
+        file: String,
+        /// Schema name
+        schema: String,
+        /// Source version
+        v1: i64,
+        /// Target version
+        v2: i64,
+        /// Backend: "vm" (default) or "interp"
+        #[arg(long, default_value = "vm")]
+        backend: String,
+    },
+    /// Show version history for a schema
+    History {
+        /// Path to the .tl file
+        file: String,
+        /// Schema name
+        schema: String,
+        /// Backend: "vm" (default) or "interp"
+        #[arg(long, default_value = "vm")]
+        backend: String,
     },
 }
 
@@ -420,6 +472,7 @@ fn main() {
         Some(Commands::Remove { name }) => package::cmd_remove(&name),
         Some(Commands::Install) => package::cmd_install(),
         Some(Commands::Update { name }) => package::cmd_update(name.as_deref()),
+        Some(Commands::Migrate { action }) => run_migrate(action),
         Some(Commands::Publish) => package::cmd_publish(),
         Some(Commands::Search { query }) => package::cmd_search(&query),
         None => run_repl("vm"), // Default to REPL with VM backend
@@ -1381,6 +1434,230 @@ fn run_build(backend: &str, dump_bytecode: bool, no_check: bool, strict: bool) {
         package_roots,
         Some(project_root.to_path_buf()),
     );
+}
+
+// ---------------------------------------------------------------------------
+// tl migrate
+// ---------------------------------------------------------------------------
+
+fn run_migrate(action: MigrateAction) {
+    match action {
+        MigrateAction::Apply { file, backend } => {
+            println!("Applying migrations from {}...", file);
+            run_migrate_file(&file, &backend, false);
+        }
+        MigrateAction::Check { file, backend } => {
+            println!("Checking schema compatibility in {}...", file);
+            run_migrate_file(&file, &backend, true);
+        }
+        MigrateAction::Diff { file, schema, v1, v2, backend } => {
+            run_migrate_diff(&file, &backend, &schema, v1, v2);
+        }
+        MigrateAction::History { file, schema, backend } => {
+            run_migrate_history(&file, &backend, &schema);
+        }
+    }
+}
+
+fn run_migrate_file(path: &str, backend: &str, check_only: bool) {
+    let source = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading '{}': {}", path, e);
+            process::exit(1);
+        }
+    };
+
+    let program = match parse(&source) {
+        Ok(p) => p,
+        Err(TlError::Parser(ref e)) => {
+            report_parser_error(&source, path, e);
+            process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("Error: {e}");
+            process::exit(1);
+        }
+    };
+
+    if backend == "interp" {
+        let mut interp = Interpreter::new();
+        match interp.execute(&program) {
+            Ok(_) => {
+                if check_only {
+                    println!("All schemas and migrations validated successfully.");
+                } else {
+                    println!("Migrations applied successfully.");
+                }
+            }
+            Err(e) => {
+                match &e {
+                    TlError::Runtime(re) => report_runtime_error(&source, path, re),
+                    _ => eprintln!("Error: {e}"),
+                }
+                process::exit(1);
+            }
+        }
+    } else {
+        let proto = match compile(&program) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Compilation error: {e}");
+                process::exit(1);
+            }
+        };
+        let mut vm = Vm::new();
+        match vm.execute(&proto) {
+            Ok(_) => {
+                if check_only {
+                    println!("All schemas and migrations validated successfully.");
+                } else {
+                    println!("Migrations applied successfully.");
+                }
+            }
+            Err(e) => {
+                match &e {
+                    TlError::Runtime(re) => report_runtime_error(&source, path, re),
+                    _ => eprintln!("Error: {e}"),
+                }
+                process::exit(1);
+            }
+        }
+    }
+}
+
+fn run_migrate_diff(path: &str, backend: &str, schema_name: &str, v1: i64, v2: i64) {
+    let source = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading '{}': {}", path, e);
+            process::exit(1);
+        }
+    };
+
+    let program = match parse(&source) {
+        Ok(p) => p,
+        Err(TlError::Parser(ref e)) => {
+            report_parser_error(&source, path, e);
+            process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("Error: {e}");
+            process::exit(1);
+        }
+    };
+
+    if backend == "interp" {
+        let mut interp = Interpreter::new();
+        if let Err(e) = interp.execute(&program) {
+            match &e {
+                TlError::Runtime(re) => report_runtime_error(&source, path, re),
+                _ => eprintln!("Error: {e}"),
+            }
+            process::exit(1);
+        }
+        let diffs = interp.schema_registry.diff(schema_name, v1, v2);
+        if diffs.is_empty() {
+            println!("No differences between {} v{} and v{}", schema_name, v1, v2);
+        } else {
+            println!("Schema `{}` diff (v{} -> v{}):", schema_name, v1, v2);
+            for d in &diffs {
+                println!("  - {}", d);
+            }
+        }
+    } else {
+        let proto = match compile(&program) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Compilation error: {e}");
+                process::exit(1);
+            }
+        };
+        let mut vm = Vm::new();
+        if let Err(e) = vm.execute(&proto) {
+            match &e {
+                TlError::Runtime(re) => report_runtime_error(&source, path, re),
+                _ => eprintln!("Error: {e}"),
+            }
+            process::exit(1);
+        }
+        let diffs = vm.schema_registry.diff(schema_name, v1, v2);
+        if diffs.is_empty() {
+            println!("No differences between {} v{} and v{}", schema_name, v1, v2);
+        } else {
+            println!("Schema `{}` diff (v{} -> v{}):", schema_name, v1, v2);
+            for d in &diffs {
+                println!("  - {}", d);
+            }
+        }
+    }
+}
+
+fn run_migrate_history(path: &str, backend: &str, schema_name: &str) {
+    let source = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading '{}': {}", path, e);
+            process::exit(1);
+        }
+    };
+
+    let program = match parse(&source) {
+        Ok(p) => p,
+        Err(TlError::Parser(ref e)) => {
+            report_parser_error(&source, path, e);
+            process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("Error: {e}");
+            process::exit(1);
+        }
+    };
+
+    if backend == "interp" {
+        let mut interp = Interpreter::new();
+        if let Err(e) = interp.execute(&program) {
+            match &e {
+                TlError::Runtime(re) => report_runtime_error(&source, path, re),
+                _ => eprintln!("Error: {e}"),
+            }
+            process::exit(1);
+        }
+        let versions = interp.schema_registry.versions(schema_name);
+        if versions.is_empty() {
+            println!("No versions found for schema `{}`", schema_name);
+        } else {
+            println!("Schema `{}` version history:", schema_name);
+            for v in &versions {
+                println!("  v{}", v);
+            }
+        }
+    } else {
+        let proto = match compile(&program) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Compilation error: {e}");
+                process::exit(1);
+            }
+        };
+        let mut vm = Vm::new();
+        if let Err(e) = vm.execute(&proto) {
+            match &e {
+                TlError::Runtime(re) => report_runtime_error(&source, path, re),
+                _ => eprintln!("Error: {e}"),
+            }
+            process::exit(1);
+        }
+        let versions = vm.schema_registry.versions(schema_name);
+        if versions.is_empty() {
+            println!("No versions found for schema `{}`", schema_name);
+        } else {
+            println!("Schema `{}` version history:", schema_name);
+            for v in &versions {
+                println!("  v{}", v);
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -103,6 +103,12 @@ pub fn infer_expr(expr: &Expr, env: &TypeEnv) -> Type {
                     "graphql_query" => Type::Any,
                     "redis_get" => Type::Any,
                     "redis_set" | "redis_del" | "register_s3" => Type::Unit,
+                    // Phase 21: Schema Evolution
+                    "schema_register" => Type::Unit,
+                    "schema_get" | "schema_latest" => Type::Any,
+                    "schema_history" | "schema_versions" => Type::List(Box::new(Type::Int)),
+                    "schema_check" | "schema_diff" | "schema_fields" => Type::List(Box::new(Type::String)),
+                    "schema_apply_migration" => Type::Unit,
                     // Phase 20: Python FFI
                     "py_import" => Type::PyObject,
                     "py_eval" | "py_call" | "py_getattr" | "py_to_tl" => Type::Any,
@@ -721,5 +727,37 @@ mod tests {
             args: vec![Expr::Int(42)],
         };
         assert_eq!(infer_expr(&expr, &env), Type::String);
+    }
+
+    // Phase 21: Schema Evolution type inference
+
+    #[test]
+    fn test_infer_schema_register_returns_unit() {
+        let env = TypeEnv::new();
+        let expr = Expr::Call {
+            function: Box::new(Expr::Ident("schema_register".into())),
+            args: vec![],
+        };
+        assert_eq!(infer_expr(&expr, &env), Type::Unit);
+    }
+
+    #[test]
+    fn test_infer_schema_history_returns_list_int() {
+        let env = TypeEnv::new();
+        let expr = Expr::Call {
+            function: Box::new(Expr::Ident("schema_history".into())),
+            args: vec![],
+        };
+        assert_eq!(infer_expr(&expr, &env), Type::List(Box::new(Type::Int)));
+    }
+
+    #[test]
+    fn test_infer_schema_check_returns_list_string() {
+        let env = TypeEnv::new();
+        let expr = Expr::Call {
+            function: Box::new(Expr::Ident("schema_check".into())),
+            args: vec![],
+        };
+        assert_eq!(infer_expr(&expr, &env), Type::List(Box::new(Type::String)));
     }
 }
