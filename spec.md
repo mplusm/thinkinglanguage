@@ -1585,7 +1585,7 @@ Reference: Compare against Polars (DataFrame performance), DuckDB (analytical qu
 | 2 | Compiler Backend | ✅ Complete (partial — see deferred) | — |
 | 3 | AI Integration | ✅ Complete | — |
 | 4 | Streaming & Pipelines | ✅ Complete | — |
-| 5 | Ecosystem & Community | Future | — |
+| 5 | Ecosystem & Community | ✅ Complete (Phase 33) | — |
 | 6 | Production & Scale | Future | — |
 | 7 | Language Completeness & Runtime | ✅ Complete | 437 |
 | 8 | Type System Foundation | ✅ Complete | 510 |
@@ -1598,8 +1598,25 @@ Reference: Compare against Polars (DataFrame performance), DuckDB (analytical qu
 | 15 | Package Manager & Registry | ✅ Complete | 856 |
 | 16 | Pattern Matching & Destructuring | ✅ Complete | 891 |
 | 17 | Closures & Lambdas Improvements | ✅ Complete | 934 |
+| 18 | Documentation Generation | ✅ Complete | 969 |
+| 19 | Python FFI Bridge | ✅ Complete | 989 |
+| 20 | Schema Evolution & Migration | ✅ Complete | 1016 |
+| 21 | Advanced Type System | ✅ Complete | 1050 |
+| 22 | Security & Access Control | ✅ Complete | 1074 |
+| 23 | Async/Await & Runtime | ✅ Complete | 1093 |
+| 24 | Tokio Async Runtime | ✅ Complete | 1107 |
+| 25 | VM Upvalue Fix | ✅ Complete | 1114 |
+| 26 | Data Error Hierarchy | ✅ Complete | 1132 |
+| 27 | Ownership & Move Semantics | ✅ Complete | 1161 |
+| 28 | TL-IR Intermediate Representation | ✅ Complete | 1190 |
+| 29 | LLVM Backend | ✅ Complete | 1208 |
+| 30 | WASM Backend | ✅ Complete | 1220 |
+| 31 | GPU Tensor Support | ✅ Complete | 1244 |
+| 32 | Ecosystem & Community | ✅ Complete | 1257 |
+| 33 | Dependency Upgrade Workflow | ✅ Complete | 1272 |
+| 34 | Production & Scale | Future | — |
 
-**Current test count: 934 passed + 1 ignored**
+**Current test count: 1272 passed + 1 ignored**
 
 ### Phase 0: Foundation ✅
 
