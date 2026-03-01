@@ -6,28 +6,33 @@ license.workspace = true
 description = "Bytecode compiler and VM for ThinkingLanguage (Phase 2)"
 
 [dependencies]
+# Always needed (WASM-safe)
 tl-ast = { path = "../tl-ast" }
 tl-errors = { path = "../tl-errors" }
 tl-ir = { path = "../tl-ir" }
-tl-data = { path = "../tl-data" }
-tl-ai = { path = "../tl-ai" }
-tl-stream = { path = "../tl-stream" }
 tl-parser = { path = "../tl-parser" }
 tl-lexer = { path = "../tl-lexer" }
-tl-package = { path = "../tl-package" }
-cranelift-codegen = "0.116"
-cranelift-frontend = "0.116"
-cranelift-jit = "0.116"
-cranelift-module = "0.116"
-target-lexicon = "0.13"
-rayon = "1"
-reqwest = { version = "0.12", features = ["blocking", "rustls-tls"] }
 serde_json = "1"
 regex = "1"
 chrono = "0.4"
 rust_decimal = "1"
 sha2 = "0.10"
 md-5 = "0.10"
+
+# Native-only (excluded in WASM builds)
+tl-data = { path = "../tl-data", optional = true }
+tl-ai = { path = "../tl-ai", optional = true }
+tl-stream = { path = "../tl-stream", optional = true }
+tl-package = { path = "../tl-package", optional = true }
+cranelift-codegen = { version = "0.116", optional = true }
+cranelift-frontend = { version = "0.116", optional = true }
+cranelift-jit = { version = "0.116", optional = true }
+cranelift-module = { version = "0.116", optional = true }
+target-lexicon = { version = "0.13", optional = true }
+rayon = { version = "1", optional = true }
+reqwest = { version = "0.12", features = ["blocking", "rustls-tls"], optional = true }
+
+# Feature-gated optional deps
 pyo3 = { version = "0.23", features = ["auto-initialize"], optional = true }
 arrow-ipc = { version = "53", optional = true }
 arrow-array = { version = "53", optional = true }
@@ -38,7 +43,12 @@ tokio = { version = "1", features = ["rt-multi-thread", "time", "fs", "sync"], o
 tempfile = "3"
 
 [features]
-default = []
+default = ["native"]
+native = [
+    "dep:tl-data", "dep:tl-ai", "dep:tl-stream", "dep:tl-package",
+    "dep:cranelift-codegen", "dep:cranelift-frontend", "dep:cranelift-jit", "dep:cranelift-module",
+    "dep:target-lexicon", "dep:rayon", "dep:reqwest",
+]
 mysql = ["tl-data/mysql"]
 s3 = ["tl-data/s3"]
 redis = ["tl-data/redis"]

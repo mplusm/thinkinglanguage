@@ -1,0 +1,22 @@
+[package]
+name = "tl-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WASM build of ThinkingLanguage for browser execution"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+tl-lexer = { path = "../tl-lexer" }
+tl-ast = { path = "../tl-ast" }
+tl-parser = { path = "../tl-parser" }
+tl-errors = { path = "../tl-errors" }
+tl-types = { path = "../tl-types" }
+tl-compiler = { path = "../tl-compiler", default-features = false }
+wasm-bindgen = "0.2"
+serde_json = "1"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"

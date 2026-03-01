@@ -9,7 +9,9 @@ pub mod chunk;
 pub mod value;
 pub mod compiler;
 pub mod vm;
+#[cfg(feature = "native")]
 pub mod jit;
+#[cfg(feature = "native")]
 pub mod jit_runtime;
 pub mod module;
 pub mod schema;
@@ -23,4 +25,5 @@ pub use compiler::{compile, compile_with_source};
 pub use vm::Vm;
 pub use chunk::Prototype;
 pub use value::VmValue;
+#[cfg(feature = "native")]
 pub use jit::JitCompiler;

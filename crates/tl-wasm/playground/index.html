@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ThinkingLanguage Playground</title>
+<style>
+  :root {
+    --bg: #1e1e2e;
+    --surface: #181825;
+    --overlay: #313244;
+    --text: #cdd6f4;
+    --subtext: #a6adc8;
+    --blue: #89b4fa;
+    --green: #a6e3a1;
+    --red: #f38ba8;
+    --yellow: #f9e2af;
+    --mauve: #cba6f7;
+    --border: #45475a;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  header h1 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--blue);
+  }
+  header h1 span { color: var(--subtext); font-weight: 400; }
+  .toolbar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  select, button {
+    font-family: inherit;
+    font-size: 13px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--overlay);
+    color: var(--text);
+    cursor: pointer;
+    outline: none;
+  }
+  select:hover, button:hover { border-color: var(--blue); }
+  button.run {
+    background: var(--blue);
+    color: var(--surface);
+    font-weight: 600;
+    border: none;
+  }
+  button.run:hover { opacity: 0.9; }
+  .main {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+  }
+  .pane {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .pane-header {
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--subtext);
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .divider {
+    width: 4px;
+    background: var(--border);
+    cursor: col-resize;
+    flex-shrink: 0;
+  }
+  .divider:hover { background: var(--blue); }
+  textarea {
+    flex: 1;
+    background: var(--surface);
+    color: var(--text);
+    border: none;
+    padding: 12px;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 14px;
+    line-height: 1.6;
+    resize: none;
+    outline: none;
+    tab-size: 4;
+  }
+  #output {
+    flex: 1;
+    background: var(--surface);
+    padding: 12px;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 14px;
+    line-height: 1.6;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  #output.error { color: var(--red); }
+  #output.success { color: var(--green); }
+  .status {
+    padding: 4px 16px;
+    font-size: 12px;
+    color: var(--subtext);
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    flex-shrink: 0;
+  }
+  .loading {
+    color: var(--yellow);
+    animation: pulse 1s ease-in-out infinite;
+  }
+  @keyframes pulse { 50% { opacity: 0.5; } }
+  @media (max-width: 768px) {
+    .main { flex-direction: column; }
+    .divider { width: auto; height: 4px; cursor: row-resize; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>ThinkingLanguage <span>Playground</span></h1>
+  <div class="toolbar">
+    <select id="examples">
+      <option value="">Examples...</option>
+      <option value="hello">Hello World</option>
+      <option value="fibonacci">Fibonacci</option>
+      <option value="closures">Closures</option>
+      <option value="structs">Structs & Enums</option>
+      <option value="patterns">Pattern Matching</option>
+      <option value="generators">Generators</option>
+      <option value="functional">Functional</option>
+      <option value="errors">Error Handling</option>
+    </select>
+    <button class="run" id="runBtn" disabled>Run (Ctrl+Enter)</button>
+  </div>
+</header>
+<div class="main">
+  <div class="pane">
+    <div class="pane-header">Source</div>
+    <textarea id="editor" spellcheck="false" placeholder="Loading WASM...">// Welcome to ThinkingLanguage!
+// Press Ctrl+Enter to run.
+
+fn greet(name) {
+    println("Hello, " + name + "!")
+}
+
+greet("World")
+
+// Try the examples dropdown above!
+</textarea>
+  </div>
+  <div class="divider" id="divider"></div>
+  <div class="pane">
+    <div class="pane-header">Output</div>
+    <div id="output"></div>
+  </div>
+</div>
+<div class="status">
+  <span id="statusMsg" class="loading">Loading WASM...</span>
+  <span id="timing"></span>
+</div>
+
+<script type="module">
+import init, { execute, check } from './pkg/tl_wasm.js';
+
+const editor = document.getElementById('editor');
+const output = document.getElementById('output');
+const runBtn = document.getElementById('runBtn');
+const examples = document.getElementById('examples');
+const statusMsg = document.getElementById('statusMsg');
+const timing = document.getElementById('timing');
+
+const EXAMPLES = {
+  hello: `// Hello World
+println("Hello, ThinkingLanguage!")
+println("1 + 2 = " + str(1 + 2))
+
+let names = ["Alice", "Bob", "Charlie"]
+for name in names {
+    println("Hi, " + name + "!")
+}`,
+
+  fibonacci: `// Fibonacci — recursive + iterative
+fn fib_rec(n) {
+    if n <= 1 { return n }
+    fib_rec(n - 1) + fib_rec(n - 2)
+}
+
+fn fib_iter(n) {
+    let a = 0
+    let b = 1
+    for _ in range(n) {
+        let tmp = b
+        b = a + b
+        a = tmp
+    }
+    a
+}
+
+println("Recursive:  fib(10) = " + str(fib_rec(10)))
+println("Iterative:  fib(30) = " + str(fib_iter(30)))
+
+// First 15 Fibonacci numbers
+let fibs = list(range(15)) |> map(fn(n) => fib_iter(n))
+println("First 15: " + str(fibs))`,
+
+  closures: `// Closures & Higher-Order Functions
+fn make_adder(x) {
+    fn(y) => x + y
+}
+
+let add5 = make_adder(5)
+let add10 = make_adder(10)
+println("add5(3) = " + str(add5(3)))
+println("add10(3) = " + str(add10(3)))
+
+// Pipeline with closures
+let nums = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+let result = nums
+    |> filter(fn(x) => x % 2 == 0)
+    |> map(fn(x) => x * x)
+println("Even squares: " + str(result))
+
+// Composition
+fn compose(f, g) {
+    fn(x) => f(g(x))
+}
+let double_then_add5 = compose(add5, fn(x) => x * 2)
+println("double_then_add5(3) = " + str(double_then_add5(3)))`,
+
+  structs: `// Structs, Enums, and Impl Blocks
+struct Point {
+    x,
+    y
+}
+
+impl Point {
+    fn new(x, y) {
+        Point { x: x, y: y }
+    }
+
+    fn distance(self, other) {
+        let dx = self.x - other.x
+        let dy = self.y - other.y
+        sqrt(dx * dx + dy * dy)
+    }
+
+    fn translate(self, dx, dy) {
+        Point { x: self.x + dx, y: self.y + dy }
+    }
+}
+
+enum Shape {
+    Circle(radius),
+    Rectangle(w, h)
+}
+
+fn area(shape) {
+    match shape {
+        Shape::Circle(r) => 3.14159 * r * r,
+        Shape::Rectangle(w, h) => w * h
+    }
+}
+
+let p1 = Point::new(0, 0)
+let p2 = Point::new(3, 4)
+println("Distance: " + str(p1.distance(p2)))
+
+let p3 = p1.translate(1, 2)
+println("Translated: (" + str(p3.x) + ", " + str(p3.y) + ")")
+
+println("Circle area: " + str(area(Shape::Circle(5))))
+println("Rect area: " + str(area(Shape::Rectangle(3, 4))))`,
+
+  patterns: `// Pattern Matching
+enum Expr {
+    Num(val),
+    Add(l, r),
+    Mul(l, r),
+    Neg(inner)
+}
+
+fn eval(expr) {
+    match expr {
+        Expr::Num(n) => n,
+        Expr::Add(a, b) => eval(a) + eval(b),
+        Expr::Mul(a, b) => eval(a) * eval(b),
+        Expr::Neg(e) => -eval(e)
+    }
+}
+
+fn show(expr) {
+    match expr {
+        Expr::Num(n) => str(n),
+        Expr::Add(a, b) => "(" + show(a) + " + " + show(b) + ")",
+        Expr::Mul(a, b) => "(" + show(a) + " * " + show(b) + ")",
+        Expr::Neg(e) => "(-" + show(e) + ")"
+    }
+}
+
+// (2 + 3) * -(4)
+let expr = Expr::Mul(
+    Expr::Add(Expr::Num(2), Expr::Num(3)),
+    Expr::Neg(Expr::Num(4))
+)
+
+println(show(expr) + " = " + str(eval(expr)))
+
+// Destructuring with guards
+fn classify(n) {
+    match n {
+        x if x < 0 => "negative",
+        0 => "zero",
+        x if x <= 10 => "small",
+        x if x <= 100 => "medium",
+        _ => "large"
+    }
+}
+
+for n in [-5, 0, 7, 42, 1000] {
+    println(str(n) + " is " + classify(n))
+}`,
+
+  generators: `// Generators & Lazy Iteration
+gen fn fibonacci() {
+    let a = 0
+    let b = 1
+    loop {
+        yield a
+        let tmp = b
+        b = a + b
+        a = tmp
+    }
+}
+
+// Take first 10 Fibonacci numbers
+let fibs = fibonacci() |> take(10) |> collect()
+println("Fibonacci: " + str(fibs))
+
+// Custom generator
+gen fn countdown(n) {
+    while n > 0 {
+        yield n
+        n = n - 1
+    }
+    yield "Go!"
+}
+
+for item in countdown(5) {
+    println(item)
+}
+
+// Generator combinators
+gen fn evens() {
+    let n = 0
+    loop {
+        yield n
+        n = n + 2
+    }
+}
+
+let result = evens()
+    |> take(10)
+    |> filter(fn(x) => x % 3 == 0)
+    |> collect()
+println("Evens divisible by 3: " + str(result))`,
+
+  functional: `// Functional Programming
+fn quicksort(lst) {
+    if len(lst) <= 1 { return lst }
+    let pivot = lst[0]
+    let rest = slice(lst, 1, len(lst))
+    let less = rest |> filter(fn(x) => x < pivot)
+    let greater = rest |> filter(fn(x) => x >= pivot)
+    quicksort(less) + [pivot] + quicksort(greater)
+}
+
+let data = [38, 27, 43, 3, 9, 82, 10]
+println("Sorted: " + str(quicksort(data)))
+
+// Reduce / fold
+fn fold(lst, init, f) {
+    let acc = init
+    for item in lst {
+        acc = f(acc, item)
+    }
+    acc
+}
+
+let sum = fold([1,2,3,4,5], 0, fn(a,b) => a + b)
+let product = fold([1,2,3,4,5], 1, fn(a,b) => a * b)
+println("Sum: " + str(sum))
+println("Product: " + str(product))
+
+// Map as dictionary
+let m = {}
+m["name"] = "TL"
+m["version"] = "0.1"
+m["features"] = ["closures", "generators", "pattern matching"]
+for key in keys(m) {
+    println(key + ": " + str(m[key]))
+}`,
+
+  errors: `// Error Handling with Try/Catch
+fn divide(a, b) {
+    if b == 0 {
+        throw "division by zero"
+    }
+    a / b
+}
+
+// Basic try/catch
+try {
+    println("10 / 2 = " + str(divide(10, 2)))
+    println("10 / 0 = " + str(divide(10, 0)))
+} catch e {
+    println("Caught error: " + str(e))
+}
+
+// Result type with match
+fn safe_parse(s) {
+    try {
+        Result::Ok(int(s))
+    } catch e {
+        Result::Err("cannot parse: " + s)
+    }
+}
+
+for input in ["42", "hello", "100"] {
+    match safe_parse(input) {
+        Result::Ok(n) => println(str(input) + " => " + str(n)),
+        Result::Err(msg) => println(str(input) + " => Error: " + msg)
+    }
+}`
+};
+
+// Tab key handler
+editor.addEventListener('keydown', (e) => {
+  if (e.key === 'Tab') {
+    e.preventDefault();
+    const start = editor.selectionStart;
+    const end = editor.selectionEnd;
+    editor.value = editor.value.substring(0, start) + '    ' + editor.value.substring(end);
+    editor.selectionStart = editor.selectionEnd = start + 4;
+  }
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    run();
+  }
+});
+
+examples.addEventListener('change', () => {
+  const key = examples.value;
+  if (EXAMPLES[key]) {
+    editor.value = EXAMPLES[key];
+    examples.value = '';
+  }
+});
+
+// Resizable divider
+const divider = document.getElementById('divider');
+let dragging = false;
+divider.addEventListener('mousedown', () => { dragging = true; });
+document.addEventListener('mousemove', (e) => {
+  if (!dragging) return;
+  const main = document.querySelector('.main');
+  const rect = main.getBoundingClientRect();
+  const pct = ((e.clientX - rect.left) / rect.width) * 100;
+  const panes = main.querySelectorAll('.pane');
+  panes[0].style.flex = `0 0 ${pct}%`;
+  panes[1].style.flex = `0 0 ${100 - pct}%`;
+});
+document.addEventListener('mouseup', () => { dragging = false; });
+
+function run() {
+  const source = editor.value;
+  if (!source.trim()) {
+    output.textContent = '';
+    output.className = '';
+    return;
+  }
+  const start = performance.now();
+  try {
+    const result = execute(source);
+    const elapsed = (performance.now() - start).toFixed(1);
+    output.textContent = result || '(no output)';
+    output.className = 'success';
+    timing.textContent = `${elapsed}ms`;
+  } catch (e) {
+    const elapsed = (performance.now() - start).toFixed(1);
+    output.textContent = e;
+    output.className = 'error';
+    timing.textContent = `${elapsed}ms`;
+  }
+}
+
+runBtn.addEventListener('click', run);
+
+async function main() {
+  await init();
+  statusMsg.textContent = 'Ready';
+  statusMsg.className = '';
+  runBtn.disabled = false;
+  editor.placeholder = '// Write ThinkingLanguage code here...';
+}
+
+main().catch(err => {
+  statusMsg.textContent = 'Failed to load WASM: ' + err;
+  statusMsg.className = '';
+  output.textContent = 'Failed to initialize: ' + err;
+  output.className = 'error';
+});
+</script>
+</body>
+</html>

@@ -5,8 +5,11 @@ use std::fmt;
 use std::sync::{Arc, Mutex, mpsc};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(feature = "native")]
 use tl_data::{ArrowSchema, DataFrame};
+#[cfg(feature = "native")]
 use tl_ai::{TlTensor, TlModel};
+#[cfg(feature = "native")]
 use tl_stream::{ConnectorConfig, PipelineDef, StreamDef, PipelineResult};
 
 use crate::chunk::{BuiltinId, Prototype};
@@ -25,20 +28,28 @@ pub enum VmValue {
     /// A builtin function reference
     Builtin(BuiltinId),
     /// A lazy DataFusion table
+    #[cfg(feature = "native")]
     Table(VmTable),
     /// A schema definition
+    #[cfg(feature = "native")]
     Schema(VmSchema),
     /// A tensor (ndarray)
+    #[cfg(feature = "native")]
     Tensor(Arc<TlTensor>),
     /// A trained model
+    #[cfg(feature = "native")]
     Model(Arc<TlModel>),
     /// A connector configuration
+    #[cfg(feature = "native")]
     Connector(Arc<ConnectorConfig>),
     /// A pipeline result
+    #[cfg(feature = "native")]
     PipelineResult(Arc<PipelineResult>),
     /// A pipeline definition
+    #[cfg(feature = "native")]
     PipelineDef(Arc<PipelineDef>),
     /// A stream definition
+    #[cfg(feature = "native")]
     StreamDef(Arc<StreamDef>),
     /// A struct type definition
     StructDef(Arc<VmStructDef>),
@@ -255,11 +266,13 @@ pub enum UpvalueRef {
 }
 
 /// Wrapper around DataFusion DataFrame.
+#[cfg(feature = "native")]
 #[derive(Clone)]
 pub struct VmTable {
     pub df: DataFrame,
 }
 
+#[cfg(feature = "native")]
 impl fmt::Debug for VmTable {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "<table>")
@@ -267,6 +280,7 @@ impl fmt::Debug for VmTable {
 }
 
 /// Schema definition.
+#[cfg(feature = "native")]
 #[derive(Debug, Clone)]
 pub struct VmSchema {
     pub name: Arc<str>,
@@ -304,13 +318,21 @@ impl VmValue {
             VmValue::None => "none",
             VmValue::Function(_) => "function",
             VmValue::Builtin(_) => "builtin",
+            #[cfg(feature = "native")]
             VmValue::Table(_) => "table",
+            #[cfg(feature = "native")]
             VmValue::Schema(_) => "schema",
+            #[cfg(feature = "native")]
             VmValue::Tensor(_) => "tensor",
+            #[cfg(feature = "native")]
             VmValue::Model(_) => "model",
+            #[cfg(feature = "native")]
             VmValue::Connector(_) => "connector",
+            #[cfg(feature = "native")]
             VmValue::PipelineResult(_) => "pipeline_result",
+            #[cfg(feature = "native")]
             VmValue::PipelineDef(_) => "pipeline",
+            #[cfg(feature = "native")]
             VmValue::StreamDef(_) => "stream",
             VmValue::StructDef(_) => "struct_def",
             VmValue::StructInstance(_) => "struct",
@@ -343,13 +365,21 @@ impl fmt::Debug for VmValue {
             VmValue::List(items) => write!(f, "List({items:?})"),
             VmValue::Function(c) => write!(f, "<fn {}>", c.prototype.name),
             VmValue::Builtin(id) => write!(f, "<builtin {}>", id.name()),
+            #[cfg(feature = "native")]
             VmValue::Table(_) => write!(f, "<table>"),
+            #[cfg(feature = "native")]
             VmValue::Schema(s) => write!(f, "<schema {}>", s.name),
+            #[cfg(feature = "native")]
             VmValue::Tensor(t) => write!(f, "Tensor({t:?})"),
+            #[cfg(feature = "native")]
             VmValue::Model(m) => write!(f, "Model({m:?})"),
+            #[cfg(feature = "native")]
             VmValue::Connector(c) => write!(f, "<connector {}>", c.name),
+            #[cfg(feature = "native")]
             VmValue::PipelineResult(r) => write!(f, "{r:?}"),
+            #[cfg(feature = "native")]
             VmValue::PipelineDef(p) => write!(f, "<pipeline {}>", p.name),
+            #[cfg(feature = "native")]
             VmValue::StreamDef(s) => write!(f, "<stream {}>", s.name),
             VmValue::StructDef(d) => write!(f, "<struct {}>", d.name),
             VmValue::StructInstance(s) => {
@@ -427,13 +457,21 @@ impl fmt::Display for VmValue {
             }
             VmValue::Function(c) => write!(f, "<fn {}>", c.prototype.name),
             VmValue::Builtin(id) => write!(f, "<builtin {}>", id.name()),
+            #[cfg(feature = "native")]
             VmValue::Table(_) => write!(f, "<table>"),
+            #[cfg(feature = "native")]
             VmValue::Schema(s) => write!(f, "<schema {}>", s.name),
+            #[cfg(feature = "native")]
             VmValue::Tensor(t) => write!(f, "{t}"),
+            #[cfg(feature = "native")]
             VmValue::Model(m) => write!(f, "{m}"),
+            #[cfg(feature = "native")]
             VmValue::Connector(c) => write!(f, "{c}"),
+            #[cfg(feature = "native")]
             VmValue::PipelineResult(r) => write!(f, "{r}"),
+            #[cfg(feature = "native")]
             VmValue::PipelineDef(p) => write!(f, "{p}"),
+            #[cfg(feature = "native")]
             VmValue::StreamDef(s) => write!(f, "{s}"),
             VmValue::StructDef(d) => write!(f, "<struct {}>", d.name),
             VmValue::StructInstance(s) => {

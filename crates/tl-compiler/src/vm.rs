@@ -2,13 +2,19 @@
 // Register-based VM that executes compiled bytecode.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex};
+#[cfg(feature = "native")]
+use std::sync::mpsc;
+#[cfg(feature = "native")]
 use std::time::Duration;
 
+#[cfg(feature = "native")]
 use rayon::prelude::*;
 use tl_ast::Expr as AstExpr;
 use tl_errors::{RuntimeError, TlError};
+#[cfg(feature = "native")]
 use tl_data::{DataEngine, JoinType, col};
+#[cfg(feature = "native")]
 use tl_data::translate::{translate_expr, LocalValue, TranslateContext};
 
 use crate::chunk::*;
@@ -40,6 +46,7 @@ fn vm_values_equal(a: &VmValue, b: &VmValue) -> bool {
     }
 }
 
+#[cfg(feature = "native")]
 /// Resolve a file path within a package directory for package imports.
 /// `pkg_root` is the package root (containing tl.toml).
 /// `remaining` are the path segments after the package name.
@@ -149,9 +156,11 @@ fn vm_value_to_json(v: &VmValue) -> serde_json::Value {
 }
 
 /// Minimum list size before we attempt parallel execution.
+#[cfg(feature = "native")]
 const PARALLEL_THRESHOLD: usize = 10_000;
 
 /// Check if a closure is pure (no captured upvalues) and thus safe to run in parallel.
+#[cfg(feature = "native")]
 fn is_pure_closure(func: &VmValue) -> bool {
     match func {
         VmValue::Function(closure) => closure.upvalues.is_empty(),
@@ -161,6 +170,7 @@ fn is_pure_closure(func: &VmValue) -> bool {
 
 /// Execute a pure function (no upvalues) in an isolated mini-VM.
 /// Used by rayon parallel operations — each thread gets its own stack.
+#[cfg(feature = "native")]
 fn execute_pure_fn(proto: &Arc<Prototype>, args: &[VmValue]) -> Result<VmValue, TlError> {
     let base = 0;
     let num_regs = proto.num_registers as usize;
@@ -378,6 +388,7 @@ pub struct Vm {
     /// Global variables
     pub globals: HashMap<String, VmValue>,
     /// Data engine (lazily initialized)
+    #[cfg(feature = "native")]
     data_engine: Option<DataEngine>,
     /// Captured output (for testing)
     pub output: Vec<String>,
@@ -418,6 +429,7 @@ impl Vm {
             stack: Vec::with_capacity(256),
             frames: Vec::new(),
             globals: HashMap::new(),
+            #[cfg(feature = "native")]
             data_engine: None,
             output: Vec::new(),
             try_handlers: Vec::new(),
@@ -479,6 +491,7 @@ impl Vm {
         self.runtime.as_ref().unwrap().clone()
     }
 
+    #[cfg(feature = "native")]
     fn engine(&mut self) -> &DataEngine {
         if self.data_engine.is_none() {
             self.data_engine = Some(DataEngine::new());
@@ -663,6 +676,7 @@ impl Vm {
                     let name = self.get_string_constant(frame_idx, bx)?;
                     let val = self.stack[base + a as usize].clone();
                     // Phase 21: Detect __schema__ and __migrate__ globals and register in schema_registry
+                    #[cfg(feature = "native")]
                     if let VmValue::String(ref s) = val {
                         if s.starts_with("__schema__:") {
                             self.process_schema_global(s);
@@ -906,10 +920,18 @@ impl Vm {
                     self.stack[base + a as usize] = VmValue::Map(pairs);
                 }
                 Op::TablePipe => {
-                    // a = table reg, b = op name constant idx, c = args constant idx
-                    let table_val = self.stack[base + a as usize].clone();
-                    let result = self.handle_table_pipe(frame_idx, table_val, b, c)?;
-                    self.stack[base + a as usize] = result;
+                    #[cfg(feature = "native")]
+                    {
+                        // a = table reg, b = op name constant idx, c = args constant idx
+                        let table_val = self.stack[base + a as usize].clone();
+                        let result = self.handle_table_pipe(frame_idx, table_val, b, c)?;
+                        self.stack[base + a as usize] = result;
+                    }
+                    #[cfg(not(feature = "native"))]
+                    {
+                        let _ = (a, b, c, frame_idx);
+                        return Err(runtime_err("Table operations not available in WASM"));
+                    }
                 }
                 Op::CallBuiltin => {
                     // a = dest, b = builtin id, c = first arg reg
@@ -1062,21 +1084,32 @@ impl Vm {
                     self.stack[base + a as usize] = VmValue::String(Arc::from(result.as_str()));
                 }
                 Op::Train => {
-                    // a = dest, b = algorithm constant, c = config AstExprList constant
-                    let result = self.handle_train(frame_idx, b, c)?;
-                    self.stack[base + a as usize] = result;
+                    #[cfg(feature = "native")]
+                    { let result = self.handle_train(frame_idx, b, c)?;
+                    self.stack[base + a as usize] = result; }
+                    #[cfg(not(feature = "native"))]
+                    { let _ = (a, b, c, frame_idx); return Err(runtime_err("AI training not available in WASM")); }
                 }
                 Op::PipelineExec => {
-                    let result = self.handle_pipeline_exec(frame_idx, b, c)?;
-                    self.stack[base + a as usize] = result;
+                    #[cfg(feature = "native")]
+                    { let result = self.handle_pipeline_exec(frame_idx, b, c)?;
+                    self.stack[base + a as usize] = result; }
+                    #[cfg(not(feature = "native"))]
+                    { let _ = (a, b, c, frame_idx); return Err(runtime_err("Pipelines not available in WASM")); }
                 }
                 Op::StreamExec => {
-                    let result = self.handle_stream_exec(frame_idx, b)?;
-                    self.stack[base + a as usize] = result;
+                    #[cfg(feature = "native")]
+                    { let result = self.handle_stream_exec(frame_idx, b)?;
+                    self.stack[base + a as usize] = result; }
+                    #[cfg(not(feature = "native"))]
+                    { let _ = (a, b, frame_idx); return Err(runtime_err("Streaming not available in WASM")); }
                 }
                 Op::ConnectorDecl => {
-                    let result = self.handle_connector_decl(frame_idx, b, c)?;
-                    self.stack[base + a as usize] = result;
+                    #[cfg(feature = "native")]
+                    { let result = self.handle_connector_decl(frame_idx, b, c)?;
+                    self.stack[base + a as usize] = result; }
+                    #[cfg(not(feature = "native"))]
+                    { let _ = (a, b, c, frame_idx); return Err(runtime_err("Connectors not available in WASM")); }
                 }
 
                 // ── Phase 5: Language completeness opcodes ──
@@ -1265,27 +1298,35 @@ impl Vm {
                 }
 
                 Op::Import => {
-                    // a = dest, bx = path constant
-                    // Next instruction encodes either:
-                    //   - Classic import: A = alias constant, B = 0, C = 0
-                    //   - Use import: A = extra, B = kind, C = 0xAB (magic marker)
-                    let path = self.get_string_constant(frame_idx, bx)?;
-                    let next = self.frames[frame_idx].prototype.code[self.frames[frame_idx].ip];
-                    self.frames[frame_idx].ip += 1;
-                    let next_a = decode_a(next);
-                    let next_b = decode_b(next);
-                    let next_c = decode_c(next);
+                    #[cfg(feature = "native")]
+                    {
+                        // a = dest, bx = path constant
+                        // Next instruction encodes either:
+                        //   - Classic import: A = alias constant, B = 0, C = 0
+                        //   - Use import: A = extra, B = kind, C = 0xAB (magic marker)
+                        let path = self.get_string_constant(frame_idx, bx)?;
+                        let next = self.frames[frame_idx].prototype.code[self.frames[frame_idx].ip];
+                        self.frames[frame_idx].ip += 1;
+                        let next_a = decode_a(next);
+                        let next_b = decode_b(next);
+                        let next_c = decode_c(next);
 
-                    let result = if next_c == 0xAB {
-                        // Use-style import (dot-path)
-                        self.handle_use_import(&path, next_a, next_b, frame_idx)?
-                    } else {
-                        // Classic import "file.tl" [as alias]
-                        let alias_idx = next_a as u16;
-                        let alias = self.get_string_constant(frame_idx, alias_idx)?;
-                        self.handle_import(&path, &alias)?
-                    };
-                    self.stack[base + a as usize] = result;
+                        let result = if next_c == 0xAB {
+                            // Use-style import (dot-path)
+                            self.handle_use_import(&path, next_a, next_b, frame_idx)?
+                        } else {
+                            // Classic import "file.tl" [as alias]
+                            let alias_idx = next_a as u16;
+                            let alias = self.get_string_constant(frame_idx, alias_idx)?;
+                            self.handle_import(&path, &alias)?
+                        };
+                        self.stack[base + a as usize] = result;
+                    }
+                    #[cfg(not(feature = "native"))]
+                    {
+                        let _ = (a, bx, frame_idx);
+                        return Err(runtime_err("Module imports not available in WASM"));
+                    }
                 }
 
                 Op::Await => {
@@ -1660,6 +1701,7 @@ impl Vm {
             (VmValue::String(a), VmValue::String(b)) => {
                 Ok(VmValue::String(Arc::from(format!("{a}{b}").as_str())))
             }
+            #[cfg(feature = "native")]
             (VmValue::Tensor(a), VmValue::Tensor(b)) => {
                 let result = a.add(b).map_err(|e| runtime_err(format!("{e}")))?;
                 Ok(VmValue::Tensor(Arc::new(result)))
@@ -1685,6 +1727,7 @@ impl Vm {
             (VmValue::Float(a), VmValue::Float(b)) => Ok(VmValue::Float(a - b)),
             (VmValue::Int(a), VmValue::Float(b)) => Ok(VmValue::Float(*a as f64 - b)),
             (VmValue::Float(a), VmValue::Int(b)) => Ok(VmValue::Float(a - *b as f64)),
+            #[cfg(feature = "native")]
             (VmValue::Tensor(a), VmValue::Tensor(b)) => {
                 let result = a.sub(b).map_err(|e| runtime_err(format!("{e}")))?;
                 Ok(VmValue::Tensor(Arc::new(result)))
@@ -1712,10 +1755,12 @@ impl Vm {
             (VmValue::String(a), VmValue::Int(b)) => {
                 Ok(VmValue::String(Arc::from(a.repeat(*b as usize).as_str())))
             }
+            #[cfg(feature = "native")]
             (VmValue::Tensor(a), VmValue::Tensor(b)) => {
                 let result = a.mul(b).map_err(|e| runtime_err(format!("{e}")))?;
                 Ok(VmValue::Tensor(Arc::new(result)))
             }
+            #[cfg(feature = "native")]
             (VmValue::Tensor(t), VmValue::Float(s)) | (VmValue::Float(s), VmValue::Tensor(t)) => {
                 let result = t.scale(*s);
                 Ok(VmValue::Tensor(Arc::new(result)))
@@ -1746,6 +1791,7 @@ impl Vm {
                 if *b == 0 { return Err(runtime_err("Division by zero")); }
                 Ok(VmValue::Float(a / *b as f64))
             }
+            #[cfg(feature = "native")]
             (VmValue::Tensor(a), VmValue::Tensor(b)) => {
                 let result = a.div(b).map_err(|e| runtime_err(format!("{e}")))?;
                 Ok(VmValue::Tensor(Arc::new(result)))
@@ -1869,6 +1915,7 @@ impl Vm {
             BuiltinId::Print | BuiltinId::Println => {
                 let mut parts = Vec::new();
                 for a in &args {
+                    #[cfg(feature = "native")]
                     match a {
                         VmValue::Table(t) => {
                             let batches = self.engine().collect(t.df.clone())
@@ -1879,6 +1926,8 @@ impl Vm {
                         }
                         _ => parts.push(format!("{a}")),
                     }
+                    #[cfg(not(feature = "native"))]
+                    parts.push(format!("{a}"));
                 }
                 let line = parts.join(" ");
                 println!("{line}");
@@ -1996,6 +2045,7 @@ impl Vm {
                 };
                 let func = args[1].clone();
                 // Parallel path for large lists with pure functions
+                #[cfg(feature = "native")]
                 if items.len() >= PARALLEL_THRESHOLD && is_pure_closure(&func) {
                     let proto = match &func {
                         VmValue::Function(c) => c.prototype.clone(),
@@ -2024,6 +2074,7 @@ impl Vm {
                 };
                 let func = args[1].clone();
                 // Parallel path for large lists with pure functions
+                #[cfg(feature = "native")]
                 if items.len() >= PARALLEL_THRESHOLD && is_pure_closure(&func) {
                     let proto = match &func {
                         VmValue::Function(c) => c.prototype.clone(),
@@ -2076,6 +2127,7 @@ impl Vm {
                 };
                 // Check if any floats are present
                 let has_float = items.iter().any(|v| matches!(v, VmValue::Float(_)));
+                #[cfg(feature = "native")]
                 if items.len() >= PARALLEL_THRESHOLD {
                     // Parallel sum for large lists
                     if has_float {
@@ -2146,6 +2198,7 @@ impl Vm {
                 Ok(VmValue::Bool(true))
             }
             // ── Data engine builtins ──
+            #[cfg(feature = "native")]
             BuiltinId::ReadCsv => {
                 if args.len() != 1 { return Err(runtime_err("read_csv() expects 1 argument (path)")); }
                 let path = match &args[0] {
@@ -2165,6 +2218,7 @@ impl Vm {
                     }
                 }
             }
+            #[cfg(feature = "native")]
             BuiltinId::ReadParquet => {
                 if args.len() != 1 { return Err(runtime_err("read_parquet() expects 1 argument (path)")); }
                 let path = match &args[0] {
@@ -2184,6 +2238,7 @@ impl Vm {
                     }
                 }
             }
+            #[cfg(feature = "native")]
             BuiltinId::WriteCsv => {
                 if args.len() != 2 { return Err(runtime_err("write_csv() expects 2 arguments (table, path)")); }
                 let df = match &args[0] {
@@ -2207,6 +2262,7 @@ impl Vm {
                     }
                 }
             }
+            #[cfg(feature = "native")]
             BuiltinId::WriteParquet => {
                 if args.len() != 2 { return Err(runtime_err("write_parquet() expects 2 arguments (table, path)")); }
                 let df = match &args[0] {
@@ -2230,6 +2286,7 @@ impl Vm {
                     }
                 }
             }
+            #[cfg(feature = "native")]
             BuiltinId::Collect => {
                 if args.len() != 1 { return Err(runtime_err("collect() expects 1 argument (table)")); }
                 let df = match &args[0] {
@@ -2240,6 +2297,7 @@ impl Vm {
                 let formatted = DataEngine::format_batches(&batches).map_err(|e| runtime_err(e))?;
                 Ok(VmValue::String(Arc::from(formatted.as_str())))
             }
+            #[cfg(feature = "native")]
             BuiltinId::Show => {
                 let df = match args.first() {
                     Some(VmValue::Table(t)) => t.df.clone(),
@@ -2257,6 +2315,7 @@ impl Vm {
                 self.output.push(formatted);
                 Ok(VmValue::None)
             }
+            #[cfg(feature = "native")]
             BuiltinId::Describe => {
                 if args.len() != 1 { return Err(runtime_err("describe() expects 1 argument (table)")); }
                 let df = match &args[0] {
@@ -2278,6 +2337,7 @@ impl Vm {
                 self.output.push(output.clone());
                 Ok(VmValue::String(Arc::from(output.as_str())))
             }
+            #[cfg(feature = "native")]
             BuiltinId::Head => {
                 if args.is_empty() { return Err(runtime_err("head() expects at least 1 argument (table)")); }
                 let df = match &args[0] {
@@ -2292,6 +2352,7 @@ impl Vm {
                 let limited = df.limit(0, Some(n)).map_err(|e| runtime_err(format!("{e}")))?;
                 Ok(VmValue::Table(VmTable { df: limited }))
             }
+            #[cfg(feature = "native")]
             BuiltinId::Postgres => {
                 if args.len() != 2 { return Err(runtime_err("postgres() expects 2 arguments (conn_str, table_name)")); }
                 let conn_str = match &args[0] {
@@ -2315,7 +2376,14 @@ impl Vm {
                     }
                 }
             }
+            #[cfg(not(feature = "native"))]
+            BuiltinId::ReadCsv | BuiltinId::ReadParquet | BuiltinId::WriteCsv |
+            BuiltinId::WriteParquet | BuiltinId::Collect | BuiltinId::Show |
+            BuiltinId::Describe | BuiltinId::Head | BuiltinId::Postgres => {
+                Err(runtime_err("Data operations not available in WASM"))
+            }
             // ── AI builtins ──
+            #[cfg(feature = "native")]
             BuiltinId::Tensor => {
                 if args.is_empty() { return Err(runtime_err("tensor() expects at least 1 argument")); }
                 let data = self.vmvalue_to_f64_list(&args[0])?;
@@ -2328,18 +2396,21 @@ impl Vm {
                     .map_err(|e| runtime_err(format!("{e}")))?;
                 Ok(VmValue::Tensor(Arc::new(t)))
             }
+            #[cfg(feature = "native")]
             BuiltinId::TensorZeros => {
                 if args.is_empty() { return Err(runtime_err("tensor_zeros() expects 1 argument (shape)")); }
                 let shape = self.vmvalue_to_usize_list(&args[0])?;
                 let t = tl_ai::TlTensor::zeros(&shape);
                 Ok(VmValue::Tensor(Arc::new(t)))
             }
+            #[cfg(feature = "native")]
             BuiltinId::TensorOnes => {
                 if args.is_empty() { return Err(runtime_err("tensor_ones() expects 1 argument (shape)")); }
                 let shape = self.vmvalue_to_usize_list(&args[0])?;
                 let t = tl_ai::TlTensor::ones(&shape);
                 Ok(VmValue::Tensor(Arc::new(t)))
             }
+            #[cfg(feature = "native")]
             BuiltinId::TensorShape => {
                 match args.first() {
                     Some(VmValue::Tensor(t)) => {
@@ -2349,6 +2420,7 @@ impl Vm {
                     _ => Err(runtime_err("tensor_shape() expects a tensor")),
                 }
             }
+            #[cfg(feature = "native")]
             BuiltinId::TensorReshape => {
                 if args.len() != 2 { return Err(runtime_err("tensor_reshape() expects 2 arguments (tensor, shape)")); }
                 let t = match &args[0] {
@@ -2359,6 +2431,7 @@ impl Vm {
                 let reshaped = t.reshape(&shape).map_err(|e| runtime_err(format!("{e}")))?;
                 Ok(VmValue::Tensor(Arc::new(reshaped)))
             }
+            #[cfg(feature = "native")]
             BuiltinId::TensorTranspose => {
                 match args.first() {
                     Some(VmValue::Tensor(t)) => {
@@ -2368,6 +2441,7 @@ impl Vm {
                     _ => Err(runtime_err("tensor_transpose() expects a tensor")),
                 }
             }
+            #[cfg(feature = "native")]
             BuiltinId::TensorSum => {
                 match args.first() {
                     Some(VmValue::Tensor(t)) => {
@@ -2376,6 +2450,7 @@ impl Vm {
                     _ => Err(runtime_err("tensor_sum() expects a tensor")),
                 }
             }
+            #[cfg(feature = "native")]
             BuiltinId::TensorMean => {
                 match args.first() {
                     Some(VmValue::Tensor(t)) => {
@@ -2384,6 +2459,7 @@ impl Vm {
                     _ => Err(runtime_err("tensor_mean() expects a tensor")),
                 }
             }
+            #[cfg(feature = "native")]
             BuiltinId::TensorDot => {
                 if args.len() != 2 { return Err(runtime_err("tensor_dot() expects 2 arguments")); }
                 let a_t = match &args[0] {
@@ -2397,6 +2473,7 @@ impl Vm {
                 let result = a_t.dot(b_t).map_err(|e| runtime_err(format!("{e}")))?;
                 Ok(VmValue::Tensor(Arc::new(result)))
             }
+            #[cfg(feature = "native")]
             BuiltinId::Predict => {
                 if args.len() < 2 { return Err(runtime_err("predict() expects at least 2 arguments (model, input)")); }
                 let model = match &args[0] {
@@ -2411,6 +2488,7 @@ impl Vm {
                     .map_err(|e| runtime_err(format!("{e}")))?;
                 Ok(VmValue::Tensor(Arc::new(result)))
             }
+            #[cfg(feature = "native")]
             BuiltinId::Similarity => {
                 if args.len() != 2 { return Err(runtime_err("similarity() expects 2 arguments")); }
                 let a_t = match &args[0] {
@@ -2424,6 +2502,7 @@ impl Vm {
                 let sim = tl_ai::similarity(a_t, b_t).map_err(|e| runtime_err(format!("{e}")))?;
                 Ok(VmValue::Float(sim))
             }
+            #[cfg(feature = "native")]
             BuiltinId::AiComplete => {
                 if args.is_empty() { return Err(runtime_err("ai_complete() expects at least 1 argument (prompt)")); }
                 let prompt = match &args[0] {
@@ -2438,6 +2517,7 @@ impl Vm {
                     .map_err(|e| runtime_err(format!("{e}")))?;
                 Ok(VmValue::String(Arc::from(result.as_str())))
             }
+            #[cfg(feature = "native")]
             BuiltinId::AiChat => {
                 if args.is_empty() { return Err(runtime_err("ai_chat() expects at least 1 argument (model)")); }
                 let model = match &args[0] {
@@ -2464,6 +2544,7 @@ impl Vm {
                     .map_err(|e| runtime_err(format!("{e}")))?;
                 Ok(VmValue::String(Arc::from(result.as_str())))
             }
+            #[cfg(feature = "native")]
             BuiltinId::ModelSave => {
                 if args.len() != 2 { return Err(runtime_err("model_save() expects 2 arguments (model, path)")); }
                 let model = match &args[0] {
@@ -2478,6 +2559,7 @@ impl Vm {
                     .map_err(|e| runtime_err(format!("{e}")))?;
                 Ok(VmValue::None)
             }
+            #[cfg(feature = "native")]
             BuiltinId::ModelLoad => {
                 if args.is_empty() { return Err(runtime_err("model_load() expects 1 argument (path)")); }
                 let path = match &args[0] {
@@ -2488,6 +2570,7 @@ impl Vm {
                     .map_err(|e| runtime_err(format!("{e}")))?;
                 Ok(VmValue::Model(Arc::new(model)))
             }
+            #[cfg(feature = "native")]
             BuiltinId::ModelRegister => {
                 if args.len() != 2 { return Err(runtime_err("model_register() expects 2 arguments (name, model)")); }
                 let name = match &args[0] {
@@ -2503,6 +2586,7 @@ impl Vm {
                     .map_err(|e| runtime_err(format!("{e}")))?;
                 Ok(VmValue::None)
             }
+            #[cfg(feature = "native")]
             BuiltinId::ModelList => {
                 let registry = tl_ai::ModelRegistry::default_location();
                 let names = registry.list();
@@ -2511,6 +2595,7 @@ impl Vm {
                     .collect();
                 Ok(VmValue::List(items))
             }
+            #[cfg(feature = "native")]
             BuiltinId::ModelGet => {
                 if args.is_empty() { return Err(runtime_err("model_get() expects 1 argument (name)")); }
                 let name = match &args[0] {
@@ -2523,7 +2608,17 @@ impl Vm {
                     Err(_) => Ok(VmValue::None),
                 }
             }
+            #[cfg(not(feature = "native"))]
+            BuiltinId::Tensor | BuiltinId::TensorZeros | BuiltinId::TensorOnes |
+            BuiltinId::TensorShape | BuiltinId::TensorReshape | BuiltinId::TensorTranspose |
+            BuiltinId::TensorSum | BuiltinId::TensorMean | BuiltinId::TensorDot |
+            BuiltinId::Predict | BuiltinId::Similarity | BuiltinId::AiComplete |
+            BuiltinId::AiChat | BuiltinId::ModelSave | BuiltinId::ModelLoad |
+            BuiltinId::ModelRegister | BuiltinId::ModelList | BuiltinId::ModelGet => {
+                Err(runtime_err("AI/ML operations not available in WASM"))
+            }
             // Streaming builtins
+            #[cfg(feature = "native")]
             BuiltinId::AlertSlack => {
                 if args.len() < 2 { return Err(runtime_err("alert_slack(url, msg) requires 2 args")); }
                 let url = match &args[0] { VmValue::String(s) => s.to_string(), _ => return Err(runtime_err("alert_slack: url must be a string")) };
@@ -2532,6 +2627,7 @@ impl Vm {
                     .map_err(|e| runtime_err(&e))?;
                 Ok(VmValue::None)
             }
+            #[cfg(feature = "native")]
             BuiltinId::AlertWebhook => {
                 if args.len() < 2 { return Err(runtime_err("alert_webhook(url, msg) requires 2 args")); }
                 let url = match &args[0] { VmValue::String(s) => s.to_string(), _ => return Err(runtime_err("alert_webhook: url must be a string")) };
@@ -2540,14 +2636,17 @@ impl Vm {
                     .map_err(|e| runtime_err(&e))?;
                 Ok(VmValue::None)
             }
+            #[cfg(feature = "native")]
             BuiltinId::Emit => {
                 if args.is_empty() { return Err(runtime_err("emit() requires at least 1 argument")); }
                 self.output.push(format!("emit: {}", args[0]));
                 Ok(args[0].clone())
             }
+            #[cfg(feature = "native")]
             BuiltinId::Lineage => {
                 Ok(VmValue::String(Arc::from("lineage_tracker")))
             }
+            #[cfg(feature = "native")]
             BuiltinId::RunPipeline => {
                 if args.is_empty() { return Err(runtime_err("run_pipeline() requires a pipeline")); }
                 if let VmValue::PipelineDef(ref def) = args[0] {
@@ -2555,6 +2654,11 @@ impl Vm {
                 } else {
                     Err(runtime_err("run_pipeline: argument must be a pipeline"))
                 }
+            }
+            #[cfg(not(feature = "native"))]
+            BuiltinId::AlertSlack | BuiltinId::AlertWebhook | BuiltinId::Emit |
+            BuiltinId::Lineage | BuiltinId::RunPipeline => {
+                Err(runtime_err("Streaming not available in WASM"))
             }
             // Phase 5: Math builtins
             BuiltinId::Sqrt => match args.first() {
@@ -2632,6 +2736,7 @@ impl Vm {
                     Err(runtime_err("join() expects 2 arguments"))
                 }
             }
+            #[cfg(feature = "native")]
             BuiltinId::HttpGet => {
                 if args.is_empty() { return Err(runtime_err("http_get() expects a URL")); }
                 if let VmValue::String(url) = &args[0] {
@@ -2652,6 +2757,7 @@ impl Vm {
                     Err(runtime_err("http_get() expects a string URL"))
                 }
             }
+            #[cfg(feature = "native")]
             BuiltinId::HttpPost => {
                 if args.len() < 2 { return Err(runtime_err("http_post() expects URL and body")); }
                 if let (VmValue::String(url), VmValue::String(body)) = (&args[0], &args[1]) {
@@ -2676,6 +2782,10 @@ impl Vm {
                 } else {
                     Err(runtime_err("http_post() expects string URL and body"))
                 }
+            }
+            #[cfg(not(feature = "native"))]
+            BuiltinId::HttpGet | BuiltinId::HttpPost => {
+                Err(runtime_err("HTTP requests not available in WASM"))
             }
             BuiltinId::Assert => {
                 if args.is_empty() { return Err(runtime_err("assert() expects at least 1 argument")); }
@@ -2732,6 +2842,7 @@ impl Vm {
                 }
                 Ok(VmValue::Map(pairs))
             }
+            #[cfg(feature = "native")]
             BuiltinId::ReadFile => {
                 if args.is_empty() { return Err(runtime_err("read_file() expects a path")); }
                 if let VmValue::String(path) = &args[0] {
@@ -2742,6 +2853,7 @@ impl Vm {
                     Err(runtime_err("read_file() expects a string path"))
                 }
             }
+            #[cfg(feature = "native")]
             BuiltinId::WriteFile => {
                 if args.len() < 2 { return Err(runtime_err("write_file() expects path and content")); }
                 if let (VmValue::String(path), VmValue::String(content)) = (&args[0], &args[1]) {
@@ -2752,6 +2864,7 @@ impl Vm {
                     Err(runtime_err("write_file() expects string path and content"))
                 }
             }
+            #[cfg(feature = "native")]
             BuiltinId::AppendFile => {
                 if args.len() < 2 { return Err(runtime_err("append_file() expects path and content")); }
                 if let (VmValue::String(path), VmValue::String(content)) = (&args[0], &args[1]) {
@@ -2766,6 +2879,7 @@ impl Vm {
                     Err(runtime_err("append_file() expects string path and content"))
                 }
             }
+            #[cfg(feature = "native")]
             BuiltinId::FileExists => {
                 if args.is_empty() { return Err(runtime_err("file_exists() expects a path")); }
                 if let VmValue::String(path) = &args[0] {
@@ -2774,6 +2888,7 @@ impl Vm {
                     Err(runtime_err("file_exists() expects a string path"))
                 }
             }
+            #[cfg(feature = "native")]
             BuiltinId::ListDir => {
                 if args.is_empty() { return Err(runtime_err("list_dir() expects a path")); }
                 if let VmValue::String(path) = &args[0] {
@@ -2787,6 +2902,12 @@ impl Vm {
                     Err(runtime_err("list_dir() expects a string path"))
                 }
             }
+            #[cfg(not(feature = "native"))]
+            BuiltinId::ReadFile | BuiltinId::WriteFile | BuiltinId::AppendFile |
+            BuiltinId::FileExists | BuiltinId::ListDir => {
+                Err(runtime_err("File I/O not available in WASM"))
+            }
+            #[cfg(feature = "native")]
             BuiltinId::EnvGet => {
                 if args.is_empty() { return Err(runtime_err("env_get() expects a name")); }
                 if let VmValue::String(name) = &args[0] {
@@ -2798,6 +2919,7 @@ impl Vm {
                     Err(runtime_err("env_get() expects a string"))
                 }
             }
+            #[cfg(feature = "native")]
             BuiltinId::EnvSet => {
                 if args.len() < 2 { return Err(runtime_err("env_set() expects name and value")); }
                 if let (VmValue::String(name), VmValue::String(val)) = (&args[0], &args[1]) {
@@ -2806,6 +2928,10 @@ impl Vm {
                 } else {
                     Err(runtime_err("env_set() expects two strings"))
                 }
+            }
+            #[cfg(not(feature = "native"))]
+            BuiltinId::EnvGet | BuiltinId::EnvSet => {
+                Err(runtime_err("Environment variables not available in WASM"))
             }
             BuiltinId::RegexMatch => {
                 if args.len() < 2 { return Err(runtime_err("regex_match() expects pattern and string")); }
@@ -2897,6 +3023,7 @@ impl Vm {
             }
 
             // Phase 7: Concurrency builtins
+            #[cfg(feature = "native")]
             BuiltinId::Spawn => {
                 if args.is_empty() {
                     return Err(runtime_err("spawn() expects a function argument"));
@@ -2935,6 +3062,7 @@ impl Vm {
                     _ => Err(runtime_err("spawn() expects a function")),
                 }
             }
+            #[cfg(feature = "native")]
             BuiltinId::Sleep => {
                 if args.is_empty() {
                     return Err(runtime_err("sleep() expects a duration in milliseconds"));
@@ -2947,6 +3075,7 @@ impl Vm {
                     _ => Err(runtime_err("sleep() expects an integer (milliseconds)")),
                 }
             }
+            #[cfg(feature = "native")]
             BuiltinId::Channel => {
                 let capacity = match args.first() {
                     Some(VmValue::Int(n)) => *n as usize,
@@ -2955,6 +3084,7 @@ impl Vm {
                 };
                 Ok(VmValue::Channel(Arc::new(VmChannel::new(capacity))))
             }
+            #[cfg(feature = "native")]
             BuiltinId::Send => {
                 if args.len() < 2 {
                     return Err(runtime_err("send() expects a channel and a value"));
@@ -2968,6 +3098,7 @@ impl Vm {
                     _ => Err(runtime_err("send() expects a channel as first argument")),
                 }
             }
+            #[cfg(feature = "native")]
             BuiltinId::Recv => {
                 if args.is_empty() {
                     return Err(runtime_err("recv() expects a channel"));
@@ -2983,6 +3114,7 @@ impl Vm {
                     _ => Err(runtime_err("recv() expects a channel")),
                 }
             }
+            #[cfg(feature = "native")]
             BuiltinId::TryRecv => {
                 if args.is_empty() {
                     return Err(runtime_err("try_recv() expects a channel"));
@@ -2998,6 +3130,7 @@ impl Vm {
                     _ => Err(runtime_err("try_recv() expects a channel")),
                 }
             }
+            #[cfg(feature = "native")]
             BuiltinId::AwaitAll => {
                 if args.is_empty() {
                     return Err(runtime_err("await_all() expects a list of tasks"));
@@ -3031,6 +3164,7 @@ impl Vm {
                     _ => Err(runtime_err("await_all() expects a list")),
                 }
             }
+            #[cfg(feature = "native")]
             BuiltinId::Pmap => {
                 if args.len() < 2 {
                     return Err(runtime_err("pmap() expects a list and a function"));
@@ -3089,6 +3223,7 @@ impl Vm {
                 }
                 Ok(VmValue::List(results))
             }
+            #[cfg(feature = "native")]
             BuiltinId::Timeout => {
                 if args.len() < 2 {
                     return Err(runtime_err("timeout() expects a task and a duration in milliseconds"));
@@ -3121,6 +3256,12 @@ impl Vm {
                     }
                     _ => Err(runtime_err("timeout() expects a task as first argument")),
                 }
+            }
+            #[cfg(not(feature = "native"))]
+            BuiltinId::Spawn | BuiltinId::Sleep | BuiltinId::Channel |
+            BuiltinId::Send | BuiltinId::Recv | BuiltinId::TryRecv |
+            BuiltinId::AwaitAll | BuiltinId::Pmap | BuiltinId::Timeout => {
+                Err(runtime_err("Threading not available in WASM"))
             }
             // Phase 8: Iterators & Generators
             BuiltinId::Next => {
@@ -3447,6 +3588,7 @@ impl Vm {
             }
 
             // ── Phase 15: Data Quality & Connectors ──
+            #[cfg(feature = "native")]
             BuiltinId::FillNull => {
                 if args.len() < 2 { return Err(runtime_err("fill_null() expects (table, column, [strategy], [value])")); }
                 let df = match &args[0] {
@@ -3476,6 +3618,7 @@ impl Vm {
                 let result = self.engine().fill_null(df, &column, &strategy, fill_value).map_err(|e| runtime_err(e))?;
                 Ok(VmValue::Table(VmTable { df: result }))
             }
+            #[cfg(feature = "native")]
             BuiltinId::DropNull => {
                 if args.len() < 2 { return Err(runtime_err("drop_null() expects (table, column)")); }
                 let df = match &args[0] {
@@ -3489,6 +3632,7 @@ impl Vm {
                 let result = self.engine().drop_null(df, &column).map_err(|e| runtime_err(e))?;
                 Ok(VmValue::Table(VmTable { df: result }))
             }
+            #[cfg(feature = "native")]
             BuiltinId::Dedup => {
                 if args.is_empty() { return Err(runtime_err("dedup() expects (table, [columns...])")); }
                 let df = match &args[0] {
@@ -3501,6 +3645,7 @@ impl Vm {
                 let result = self.engine().dedup(df, &columns).map_err(|e| runtime_err(e))?;
                 Ok(VmValue::Table(VmTable { df: result }))
             }
+            #[cfg(feature = "native")]
             BuiltinId::Clamp => {
                 if args.len() < 4 { return Err(runtime_err("clamp() expects (table, column, min, max)")); }
                 let df = match &args[0] {
@@ -3524,6 +3669,7 @@ impl Vm {
                 let result = self.engine().clamp(df, &column, min_val, max_val).map_err(|e| runtime_err(e))?;
                 Ok(VmValue::Table(VmTable { df: result }))
             }
+            #[cfg(feature = "native")]
             BuiltinId::DataProfile => {
                 if args.is_empty() { return Err(runtime_err("data_profile() expects (table)")); }
                 let df = match &args[0] {
@@ -3533,6 +3679,7 @@ impl Vm {
                 let result = self.engine().data_profile(df).map_err(|e| runtime_err(e))?;
                 Ok(VmValue::Table(VmTable { df: result }))
             }
+            #[cfg(feature = "native")]
             BuiltinId::RowCount => {
                 if args.is_empty() { return Err(runtime_err("row_count() expects (table)")); }
                 let df = match &args[0] {
@@ -3542,6 +3689,7 @@ impl Vm {
                 let count = self.engine().row_count(df).map_err(|e| runtime_err(e))?;
                 Ok(VmValue::Int(count))
             }
+            #[cfg(feature = "native")]
             BuiltinId::NullRate => {
                 if args.len() < 2 { return Err(runtime_err("null_rate() expects (table, column)")); }
                 let df = match &args[0] {
@@ -3555,6 +3703,7 @@ impl Vm {
                 let rate = self.engine().null_rate(df, &column).map_err(|e| runtime_err(e))?;
                 Ok(VmValue::Float(rate))
             }
+            #[cfg(feature = "native")]
             BuiltinId::IsUnique => {
                 if args.len() < 2 { return Err(runtime_err("is_unique() expects (table, column)")); }
                 let df = match &args[0] {
@@ -3568,6 +3717,13 @@ impl Vm {
                 let unique = self.engine().is_unique(df, &column).map_err(|e| runtime_err(e))?;
                 Ok(VmValue::Bool(unique))
             }
+            #[cfg(not(feature = "native"))]
+            BuiltinId::FillNull | BuiltinId::DropNull | BuiltinId::Dedup |
+            BuiltinId::Clamp | BuiltinId::DataProfile | BuiltinId::RowCount |
+            BuiltinId::NullRate | BuiltinId::IsUnique => {
+                Err(runtime_err("Data operations not available in WASM"))
+            }
+            #[cfg(feature = "native")]
             BuiltinId::IsEmail => {
                 if args.is_empty() { return Err(runtime_err("is_email() expects 1 argument")); }
                 let s = match &args[0] {
@@ -3576,6 +3732,7 @@ impl Vm {
                 };
                 Ok(VmValue::Bool(tl_data::validate::is_email(&s)))
             }
+            #[cfg(feature = "native")]
             BuiltinId::IsUrl => {
                 if args.is_empty() { return Err(runtime_err("is_url() expects 1 argument")); }
                 let s = match &args[0] {
@@ -3584,6 +3741,7 @@ impl Vm {
                 };
                 Ok(VmValue::Bool(tl_data::validate::is_url(&s)))
             }
+            #[cfg(feature = "native")]
             BuiltinId::IsPhone => {
                 if args.is_empty() { return Err(runtime_err("is_phone() expects 1 argument")); }
                 let s = match &args[0] {
@@ -3592,6 +3750,7 @@ impl Vm {
                 };
                 Ok(VmValue::Bool(tl_data::validate::is_phone(&s)))
             }
+            #[cfg(feature = "native")]
             BuiltinId::IsBetween => {
                 if args.len() < 3 { return Err(runtime_err("is_between() expects (value, low, high)")); }
                 let val = match &args[0] {
@@ -3611,6 +3770,7 @@ impl Vm {
                 };
                 Ok(VmValue::Bool(tl_data::validate::is_between(val, low, high)))
             }
+            #[cfg(feature = "native")]
             BuiltinId::Levenshtein => {
                 if args.len() < 2 { return Err(runtime_err("levenshtein() expects (str_a, str_b)")); }
                 let a = match &args[0] {
@@ -3623,6 +3783,7 @@ impl Vm {
                 };
                 Ok(VmValue::Int(tl_data::validate::levenshtein(&a, &b) as i64))
             }
+            #[cfg(feature = "native")]
             BuiltinId::Soundex => {
                 if args.is_empty() { return Err(runtime_err("soundex() expects 1 argument")); }
                 let s = match &args[0] {
@@ -3631,6 +3792,12 @@ impl Vm {
                 };
                 Ok(VmValue::String(Arc::from(tl_data::validate::soundex(&s).as_str())))
             }
+            #[cfg(not(feature = "native"))]
+            BuiltinId::IsEmail | BuiltinId::IsUrl | BuiltinId::IsPhone |
+            BuiltinId::IsBetween | BuiltinId::Levenshtein | BuiltinId::Soundex => {
+                Err(runtime_err("Data validation not available in WASM"))
+            }
+            #[cfg(feature = "native")]
             BuiltinId::ReadMysql => {
                 #[cfg(feature = "mysql")]
                 {
@@ -3649,6 +3816,7 @@ impl Vm {
                 #[cfg(not(feature = "mysql"))]
                 Err(runtime_err("read_mysql() requires the 'mysql' feature"))
             }
+            #[cfg(feature = "native")]
             BuiltinId::RedisConnect => {
                 #[cfg(feature = "redis")]
                 {
@@ -3663,6 +3831,7 @@ impl Vm {
                 #[cfg(not(feature = "redis"))]
                 Err(runtime_err("redis_connect() requires the 'redis' feature"))
             }
+            #[cfg(feature = "native")]
             BuiltinId::RedisGet => {
                 #[cfg(feature = "redis")]
                 {
@@ -3683,6 +3852,7 @@ impl Vm {
                 #[cfg(not(feature = "redis"))]
                 Err(runtime_err("redis_get() requires the 'redis' feature"))
             }
+            #[cfg(feature = "native")]
             BuiltinId::RedisSet => {
                 #[cfg(feature = "redis")]
                 {
@@ -3705,6 +3875,7 @@ impl Vm {
                 #[cfg(not(feature = "redis"))]
                 Err(runtime_err("redis_set() requires the 'redis' feature"))
             }
+            #[cfg(feature = "native")]
             BuiltinId::RedisDel => {
                 #[cfg(feature = "redis")]
                 {
@@ -3723,6 +3894,7 @@ impl Vm {
                 #[cfg(not(feature = "redis"))]
                 Err(runtime_err("redis_del() requires the 'redis' feature"))
             }
+            #[cfg(feature = "native")]
             BuiltinId::GraphqlQuery => {
                 if args.len() < 2 { return Err(runtime_err("graphql_query() expects (endpoint, query, [variables])")); }
                 let endpoint = match &args[0] {
@@ -3754,6 +3926,7 @@ impl Vm {
                     .map_err(|e| runtime_err(format!("graphql_query() JSON parse error: {e}")))?;
                 Ok(vm_json_to_value(&json))
             }
+            #[cfg(feature = "native")]
             BuiltinId::RegisterS3 => {
                 #[cfg(feature = "s3")]
                 {
@@ -3777,6 +3950,12 @@ impl Vm {
                 }
                 #[cfg(not(feature = "s3"))]
                 Err(runtime_err("register_s3() requires the 's3' feature"))
+            }
+            #[cfg(not(feature = "native"))]
+            BuiltinId::ReadMysql | BuiltinId::RedisConnect | BuiltinId::RedisGet |
+            BuiltinId::RedisSet | BuiltinId::RedisDel | BuiltinId::GraphqlQuery |
+            BuiltinId::RegisterS3 => {
+                Err(runtime_err("Connectors not available in WASM"))
             }
             // Phase 20: Python FFI
             BuiltinId::PyImport => {
@@ -3817,8 +3996,8 @@ impl Vm {
             }
 
             // Phase 21: Schema Evolution builtins
+            #[cfg(feature = "native")]
             BuiltinId::SchemaRegister => {
-                // schema_register(name, version, fields_map)
                 let name = match args.first() {
                     Some(VmValue::String(s)) => s.to_string(),
                     _ => return Err(runtime_err("schema_register: first arg must be schema name string")),
@@ -3827,7 +4006,6 @@ impl Vm {
                     Some(VmValue::Int(v)) => *v,
                     _ => return Err(runtime_err("schema_register: second arg must be version number")),
                 };
-                // fields as map { "name": "type", ... } — Map is Vec<(Arc<str>, VmValue)>
                 let fields = match args.get(2) {
                     Some(VmValue::Map(pairs)) => {
                         let mut arrow_fields = Vec::new();
@@ -3845,6 +4023,7 @@ impl Vm {
                     .map_err(|e| runtime_err(&e))?;
                 Ok(VmValue::None)
             }
+            #[cfg(feature = "native")]
             BuiltinId::SchemaGet => {
                 let name = match args.first() { Some(VmValue::String(s)) => s.to_string(), _ => return Err(runtime_err("schema_get: need name")) };
                 let version = match args.get(1) { Some(VmValue::Int(v)) => *v, _ => return Err(runtime_err("schema_get: need version")) };
@@ -3858,6 +4037,7 @@ impl Vm {
                     None => Ok(VmValue::None),
                 }
             }
+            #[cfg(feature = "native")]
             BuiltinId::SchemaLatest => {
                 let name = match args.first() { Some(VmValue::String(s)) => s.to_string(), _ => return Err(runtime_err("schema_latest: need name")) };
                 match self.schema_registry.latest(&name) {
@@ -3865,11 +4045,13 @@ impl Vm {
                     None => Ok(VmValue::None),
                 }
             }
+            #[cfg(feature = "native")]
             BuiltinId::SchemaHistory => {
                 let name = match args.first() { Some(VmValue::String(s)) => s.to_string(), _ => return Err(runtime_err("schema_history: need name")) };
                 let versions = self.schema_registry.versions(&name);
                 Ok(VmValue::List(versions.into_iter().map(VmValue::Int).collect()))
             }
+            #[cfg(feature = "native")]
             BuiltinId::SchemaCheck => {
                 let name = match args.first() { Some(VmValue::String(s)) => s.to_string(), _ => return Err(runtime_err("schema_check: need name")) };
                 let v1 = match args.get(1) { Some(VmValue::Int(v)) => *v, _ => return Err(runtime_err("schema_check: need v1")) };
@@ -3879,6 +4061,7 @@ impl Vm {
                 let issues = self.schema_registry.check_compatibility(&name, v1, v2, mode);
                 Ok(VmValue::List(issues.into_iter().map(|i| VmValue::String(std::sync::Arc::from(i.to_string()))).collect()))
             }
+            #[cfg(feature = "native")]
             BuiltinId::SchemaDiff => {
                 let name = match args.first() { Some(VmValue::String(s)) => s.to_string(), _ => return Err(runtime_err("schema_diff: need name")) };
                 let v1 = match args.get(1) { Some(VmValue::Int(v)) => *v, _ => return Err(runtime_err("schema_diff: need v1")) };
@@ -3886,23 +4069,32 @@ impl Vm {
                 let diffs = self.schema_registry.diff(&name, v1, v2);
                 Ok(VmValue::List(diffs.into_iter().map(|d| VmValue::String(std::sync::Arc::from(d.to_string()))).collect()))
             }
+            #[cfg(feature = "native")]
             BuiltinId::SchemaApplyMigration => {
                 let name = match args.first() { Some(VmValue::String(s)) => s.to_string(), _ => return Err(runtime_err("schema_apply_migration: need name")) };
                 let from_v = match args.get(1) { Some(VmValue::Int(v)) => *v, _ => return Err(runtime_err("schema_apply_migration: need from_ver")) };
                 let to_v = match args.get(2) { Some(VmValue::Int(v)) => *v, _ => return Err(runtime_err("schema_apply_migration: need to_ver")) };
-                // Look up registered migration
                 Ok(VmValue::String(std::sync::Arc::from(format!("migration {}:{}->{} applied", name, from_v, to_v))))
             }
+            #[cfg(feature = "native")]
             BuiltinId::SchemaVersions => {
                 let name = match args.first() { Some(VmValue::String(s)) => s.to_string(), _ => return Err(runtime_err("schema_versions: need name")) };
                 let versions = self.schema_registry.versions(&name);
                 Ok(VmValue::List(versions.into_iter().map(VmValue::Int).collect()))
             }
+            #[cfg(feature = "native")]
             BuiltinId::SchemaFields => {
                 let name = match args.first() { Some(VmValue::String(s)) => s.to_string(), _ => return Err(runtime_err("schema_fields: need name")) };
                 let version = match args.get(1) { Some(VmValue::Int(v)) => *v, _ => return Err(runtime_err("schema_fields: need version")) };
                 let fields = self.schema_registry.fields(&name, version);
                 Ok(VmValue::List(fields.into_iter().map(|(n, t)| VmValue::String(std::sync::Arc::from(format!("{}: {}", n, t)))).collect()))
+            }
+            #[cfg(not(feature = "native"))]
+            BuiltinId::SchemaRegister | BuiltinId::SchemaGet | BuiltinId::SchemaLatest |
+            BuiltinId::SchemaHistory | BuiltinId::SchemaCheck | BuiltinId::SchemaDiff |
+            BuiltinId::SchemaApplyMigration | BuiltinId::SchemaVersions | BuiltinId::SchemaFields => {
+                let _ = args;
+                Err(runtime_err("Schema operations not available in WASM"))
             }
 
             // ── Phase 22: Advanced Types ──
@@ -4142,6 +4334,7 @@ impl Vm {
         }
     }
 
+    #[cfg(feature = "native")]
     fn handle_train(&mut self, frame_idx: usize, algo_const: u8, config_const: u8) -> Result<VmValue, TlError> {
         let frame = &self.frames[frame_idx];
         let algorithm = match &frame.prototype.constants[algo_const as usize] {
@@ -4255,6 +4448,7 @@ impl Vm {
         Ok(VmValue::Model(Arc::new(model)))
     }
 
+    #[cfg(feature = "native")]
     fn extract_f64_column(col: &std::sync::Arc<dyn tl_data::datafusion::arrow::array::Array>, out: &mut Vec<f64>) -> Result<(), TlError> {
         use tl_data::datafusion::arrow::array::{Float64Array, Int64Array, Float32Array, Int32Array, Array};
         let len = col.len();
@@ -4280,6 +4474,7 @@ impl Vm {
         Ok(())
     }
 
+    #[cfg(feature = "native")]
     fn handle_pipeline_exec(&mut self, frame_idx: usize, name_const: u8, config_const: u8) -> Result<VmValue, TlError> {
         let frame = &self.frames[frame_idx];
         let name = match &frame.prototype.constants[name_const as usize] {
@@ -4327,6 +4522,7 @@ impl Vm {
         Ok(VmValue::PipelineDef(Arc::new(def)))
     }
 
+    #[cfg(feature = "native")]
     fn handle_stream_exec(&mut self, frame_idx: usize, config_const: u8) -> Result<VmValue, TlError> {
         let frame = &self.frames[frame_idx];
         let config_args = match &frame.prototype.constants[config_const as usize] {
@@ -4371,6 +4567,7 @@ impl Vm {
         Ok(VmValue::StreamDef(Arc::new(def)))
     }
 
+    #[cfg(feature = "native")]
     fn parse_window_type(s: &str) -> Option<tl_stream::window::WindowType> {
         if let Some(dur) = s.strip_prefix("tumbling:") {
             let ms = tl_stream::parse_duration(dur).ok()?;
@@ -4392,6 +4589,7 @@ impl Vm {
         }
     }
 
+    #[cfg(feature = "native")]
     fn handle_connector_decl(&mut self, frame_idx: usize, type_const: u8, config_const: u8) -> Result<VmValue, TlError> {
         let frame = &self.frames[frame_idx];
         let connector_type = match &frame.prototype.constants[type_const as usize] {
@@ -4626,6 +4824,7 @@ impl Vm {
     }
 
     /// Process a __schema__:Name:vN:fields... global to register in schema_registry.
+    #[cfg(feature = "native")]
     fn process_schema_global(&mut self, s: &str) {
         // Format: __schema__:Name:vN:field1:Type,field2:Type,...
         let rest = &s["__schema__:".len()..];
@@ -4673,6 +4872,7 @@ impl Vm {
     }
 
     /// Process a __migrate__:Name:fromVer:toVer:ops global to apply migration.
+    #[cfg(feature = "native")]
     fn process_migrate_global(&mut self, s: &str) {
         // Format: __migrate__:Name:from:to:op1;op2;...
         let rest = &s["__migrate__:".len()..];
@@ -5155,6 +5355,7 @@ impl Vm {
     }
 
     /// Handle import at runtime.
+    #[cfg(feature = "native")]
     fn handle_import(&mut self, path: &str, alias: &str) -> Result<VmValue, TlError> {
         // Resolve relative path from current file
         let resolved = if let Some(ref base) = self.file_path {
@@ -5239,6 +5440,7 @@ impl Vm {
     }
 
     /// Bind import exports into current scope.
+    #[cfg(feature = "native")]
     fn bind_import_exports(&mut self, exports: HashMap<String, VmValue>, alias: &str) -> Result<VmValue, TlError> {
         if alias.is_empty() {
             // Wildcard import: merge all exports into current scope
@@ -5259,6 +5461,7 @@ impl Vm {
     }
 
     /// Handle use-style imports (dot-path syntax).
+    #[cfg(feature = "native")]
     fn handle_use_import(&mut self, path_str: &str, extra_a: u8, kind: u8, _frame_idx: usize) -> Result<VmValue, TlError> {
         match kind {
             0 => {
@@ -5314,6 +5517,7 @@ impl Vm {
     }
 
     /// Resolve dot-path segments to a file path for use statements.
+    #[cfg(feature = "native")]
     fn resolve_use_path(&self, segments: &[&str]) -> Result<String, TlError> {
         let base_dir = if let Some(ref fp) = self.file_path {
             std::path::Path::new(fp)
@@ -5447,6 +5651,7 @@ impl Vm {
 
     // ── Table pipe handler ──
 
+    #[cfg(feature = "native")]
     fn handle_table_pipe(
         &mut self,
         frame_idx: usize,
@@ -5819,6 +6024,7 @@ impl Vm {
     }
 
     /// Build TranslateContext from VM globals and stack.
+    #[cfg(feature = "native")]
     fn build_translate_context(&self) -> TranslateContext {
         let mut ctx = TranslateContext::new();
         // Add globals
@@ -8092,6 +8298,7 @@ print(s.contains("b"))"#);
     }
 
     #[test]
+    #[cfg(feature = "native")]
     fn test_resolve_package_file_entry_points() {
         let tmp = tempfile::tempdir().unwrap();
 
