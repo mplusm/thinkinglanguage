@@ -21,6 +21,7 @@ tl-ai = { path = "../tl-ai" }
 tl-stream = { path = "../tl-stream" }
 tl-lsp = { path = "../tl-lsp" }
 tl-package = { path = "../tl-package" }
+tl-llvm = { path = "../tl-llvm", optional = true }
 clap.workspace = true
 rustyline.workspace = true
 toml = "0.8"
@@ -37,3 +38,4 @@ s3 = ["tl-compiler/s3", "tl-interpreter/s3"]
 redis = ["tl-compiler/redis", "tl-interpreter/redis"]
 python = ["tl-compiler/python", "tl-interpreter/python"]
 async-runtime = ["tl-compiler/async-runtime", "tl-interpreter/async-runtime"]
+llvm-backend = ["tl-llvm"]

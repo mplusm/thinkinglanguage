@@ -190,7 +190,7 @@ enum Commands {
     Run {
         /// Path to the .tl file
         file: String,
-        /// Backend: "vm" (default) or "interp"
+        /// Backend: "vm" (default), "interp", or "llvm" (requires llvm-backend feature)
         #[arg(long, default_value = "vm")]
         backend: String,
         /// Dump compiled bytecode instead of executing
@@ -353,6 +353,17 @@ enum Commands {
         /// Search query
         query: String,
     },
+    /// Compile a .tl file to native object file (requires llvm-backend feature)
+    Compile {
+        /// Path to the .tl file
+        file: String,
+        /// Output file path (defaults to <file>.o)
+        #[arg(short, long)]
+        output: Option<String>,
+        /// Dump LLVM IR instead of writing object file
+        #[arg(long)]
+        emit_ir: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -489,6 +500,7 @@ fn main() {
         Some(Commands::Migrate { action }) => run_migrate(action),
         Some(Commands::Publish) => package::cmd_publish(),
         Some(Commands::Search { query }) => package::cmd_search(&query),
+        Some(Commands::Compile { file, output, emit_ir }) => run_compile(&file, output.as_deref(), emit_ir),
         None => run_repl("vm"), // Default to REPL with VM backend
     }
 }
@@ -627,8 +639,20 @@ fn run_file_with_packages(
                 process::exit(1);
             }
         }
+        #[cfg(feature = "llvm-backend")]
+        "llvm" => {
+            if let Err(e) = tl_llvm::aot::compile_and_run(&source, Some(path)) {
+                eprintln!("LLVM backend error: {e}");
+                process::exit(1);
+            }
+        }
         _ => {
-            eprintln!("Unknown backend: '{backend}'. Use 'vm' or 'interp'.");
+            let backends = if cfg!(feature = "llvm-backend") {
+                "'vm', 'interp', or 'llvm'"
+            } else {
+                "'vm' or 'interp'"
+            };
+            eprintln!("Unknown backend: '{backend}'. Use {backends}.");
             process::exit(1);
         }
     }
@@ -1468,6 +1492,55 @@ fn run_build(backend: &str, dump_bytecode: bool, no_check: bool, strict: bool) {
         false,
         &[],
     );
+}
+
+// ---------------------------------------------------------------------------
+// tl compile (LLVM backend)
+// ---------------------------------------------------------------------------
+
+fn run_compile(path: &str, output: Option<&str>, emit_ir: bool) {
+    #[cfg(not(feature = "llvm-backend"))]
+    {
+        let _ = (path, output, emit_ir);
+        eprintln!("LLVM backend is not enabled. Rebuild with: cargo build --features llvm-backend");
+        process::exit(1);
+    }
+
+    #[cfg(feature = "llvm-backend")]
+    {
+        let source = match fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Cannot read '{path}': {e}");
+                process::exit(1);
+            }
+        };
+
+        if emit_ir {
+            match tl_llvm::aot::compile_to_ir(&source) {
+                Ok(ir) => println!("{ir}"),
+                Err(e) => {
+                    eprintln!("LLVM IR generation error: {e}");
+                    process::exit(1);
+                }
+            }
+        } else {
+            let out_path = match output {
+                Some(o) => std::path::PathBuf::from(o),
+                None => {
+                    let p = std::path::Path::new(path);
+                    p.with_extension("o")
+                }
+            };
+            match tl_llvm::aot::compile_to_object(&source, &out_path) {
+                Ok(()) => println!("Compiled to {}", out_path.display()),
+                Err(e) => {
+                    eprintln!("Compilation error: {e}");
+                    process::exit(1);
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

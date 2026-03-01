@@ -1,0 +1,15 @@
+[package]
+name = "tl-llvm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LLVM backend for ThinkingLanguage (Phase 30)"
+
+[dependencies]
+tl-compiler = { path = "../tl-compiler" }
+tl-ast = { path = "../tl-ast" }
+tl-parser = { path = "../tl-parser" }
+tl-errors = { path = "../tl-errors" }
+inkwell = { version = "0.8", features = ["llvm19-1"] }
+llvm-sys = { version = "191", features = ["prefer-dynamic"] }
+rust_decimal = "1"

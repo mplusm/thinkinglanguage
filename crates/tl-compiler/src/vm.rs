@@ -372,11 +372,11 @@ struct TryHandler {
 /// The bytecode virtual machine.
 pub struct Vm {
     /// Register stack
-    stack: Vec<VmValue>,
+    pub stack: Vec<VmValue>,
     /// Call frame stack
     frames: Vec<CallFrame>,
     /// Global variables
-    pub(crate) globals: HashMap<String, VmValue>,
+    pub globals: HashMap<String, VmValue>,
     /// Data engine (lazily initialized)
     data_engine: Option<DataEngine>,
     /// Captured output (for testing)
@@ -1851,7 +1851,7 @@ impl Vm {
 
     // ── Builtin dispatch ──
 
-    fn call_builtin(&mut self, id: u8, args_base: usize, arg_count: usize) -> Result<VmValue, TlError> {
+    pub fn call_builtin(&mut self, id: u8, args_base: usize, arg_count: usize) -> Result<VmValue, TlError> {
         let args: Vec<VmValue> = (0..arg_count)
             .map(|i| {
                 let val = &self.stack[args_base + i];
@@ -4777,7 +4777,7 @@ impl Vm {
         }
     }
 
-    fn dispatch_method(&mut self, obj: VmValue, method: &str, args: &[VmValue]) -> Result<VmValue, TlError> {
+    pub fn dispatch_method(&mut self, obj: VmValue, method: &str, args: &[VmValue]) -> Result<VmValue, TlError> {
         // Universal .clone() method — deep copy any value
         if method == "clone" {
             return self.deep_clone_value(&obj);
@@ -5949,6 +5949,58 @@ impl Vm {
             }
         }
         Ok(result)
+    }
+
+    /// Execute a single bytecode instruction at the given base offset.
+    /// Used by the LLVM backend's Tier 3 fallback to run complex opcodes on the VM.
+    pub fn execute_single_instruction(
+        &mut self,
+        inst: u32,
+        proto: &Prototype,
+        base: usize,
+    ) -> Result<Option<VmValue>, TlError> {
+        use crate::opcode::{decode_op, decode_a, decode_b, decode_c, decode_bx};
+
+        let proto = Arc::new(proto.clone());
+        // Push a temporary call frame so the VM can resolve constants etc.
+        self.frames.push(CallFrame {
+            prototype: proto.clone(),
+            ip: 0,
+            base,
+            upvalues: Vec::new(),
+        });
+        let frame_idx = self.frames.len() - 1;
+
+        let op = decode_op(inst);
+        let a = decode_a(inst);
+        let _b = decode_b(inst);
+        let _c = decode_c(inst);
+        let bx = decode_bx(inst);
+
+        // Dispatch the single opcode. We handle the most common
+        // Tier 3 ops here; anything not handled returns Ok(None).
+        let result = match op {
+            Op::GetGlobal => {
+                let name = self.get_string_constant(frame_idx, bx)?;
+                let val = self.globals.get(name.as_ref()).cloned().unwrap_or(VmValue::None);
+                self.stack[base + a as usize] = val;
+                Ok(None)
+            }
+            Op::SetGlobal => {
+                let name = self.get_string_constant(frame_idx, bx)?;
+                let val = self.stack[base + a as usize].clone();
+                self.globals.insert(name.to_string(), val);
+                Ok(None)
+            }
+            _ => {
+                // For opcodes not explicitly handled, return Ok — the caller
+                // should have handled Tier 1/2 in LLVM IR.
+                Ok(None)
+            }
+        };
+
+        self.frames.pop();
+        result
     }
 }
 

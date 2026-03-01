@@ -2540,6 +2540,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "inkwell"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1def4112dfb2ce2993db7027f7acdb43c1f4ee1c70a082a2eef306ed5d0df365"
+dependencies = [
+ "inkwell_internals",
+ "libc",
+ "llvm-sys",
+ "once_cell",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "inkwell_internals"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63736175c9a30ea123f7018de9f26163e0b39cd6978990ae486b510c4f3bad69"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "instant"
 version = "0.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2830,6 +2854,20 @@ name = "litemap"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6373607a59f0be73a39b6fe456b8192fcc3585f602af20751600e974dd455e77"
+
+[[package]]
+name = "llvm-sys"
+version = "191.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0ad1fffbdac72a40b55aa58b31aa0efe925e277941b6705f128692b27f1d506"
+dependencies = [
+ "anyhow",
+ "cc",
+ "lazy_static",
+ "libc",
+ "regex-lite",
+ "semver",
+]
 
 [[package]]
 name = "lock_api"
@@ -4216,6 +4254,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "regex-lite"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cab834c73d247e67f4fae452806d17d3c7501756d98c8808d7c9c7aa7d18f973"
+
+[[package]]
 name = "regex-syntax"
 version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5099,6 +5143,7 @@ dependencies = [
  "tl-errors",
  "tl-interpreter",
  "tl-lexer",
+ "tl-llvm",
  "tl-lsp",
  "tl-package",
  "tl-parser",
@@ -5206,6 +5251,19 @@ version = "0.1.0"
 dependencies = [
  "logos",
  "tl-errors",
+]
+
+[[package]]
+name = "tl-llvm"
+version = "0.1.0"
+dependencies = [
+ "inkwell",
+ "llvm-sys",
+ "rust_decimal",
+ "tl-ast",
+ "tl-compiler",
+ "tl-errors",
+ "tl-parser",
 ]
 
 [[package]]
