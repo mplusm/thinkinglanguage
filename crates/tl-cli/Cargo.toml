@@ -27,6 +27,12 @@ rustyline.workspace = true
 toml = "0.8"
 toml_edit = "0.22"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"
+
+# Optional — notebook TUI
+ratatui = { version = "0.29", optional = true }
+crossterm = { version = "0.28", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -36,7 +42,10 @@ kafka = ["tl-stream/kafka"]
 mysql = ["tl-compiler/mysql", "tl-interpreter/mysql"]
 s3 = ["tl-compiler/s3", "tl-interpreter/s3"]
 redis = ["tl-compiler/redis", "tl-interpreter/redis"]
+sqlite = ["tl-compiler/sqlite", "tl-interpreter/sqlite"]
 python = ["tl-compiler/python", "tl-interpreter/python"]
 async-runtime = ["tl-compiler/async-runtime", "tl-interpreter/async-runtime"]
 llvm-backend = ["tl-llvm"]
 gpu = ["tl-compiler/gpu"]
+registry = ["tl-package/registry"]
+notebook = ["dep:ratatui", "dep:crossterm"]

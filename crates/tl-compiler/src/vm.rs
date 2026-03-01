@@ -3928,6 +3928,48 @@ impl Vm {
                 Err(runtime_err("read_mysql() requires the 'mysql' feature"))
             }
             #[cfg(feature = "native")]
+            BuiltinId::ReadSqlite => {
+                #[cfg(feature = "sqlite")]
+                {
+                    if args.len() < 2 { return Err(runtime_err("read_sqlite() expects (db_path, query)")); }
+                    let db_path = match &args[0] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("read_sqlite() db_path must be a string")),
+                    };
+                    let query = match &args[1] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("read_sqlite() query must be a string")),
+                    };
+                    let df = self.engine().read_sqlite(&db_path, &query).map_err(|e| runtime_err(e))?;
+                    Ok(VmValue::Table(VmTable { df }))
+                }
+                #[cfg(not(feature = "sqlite"))]
+                Err(runtime_err("read_sqlite() requires the 'sqlite' feature"))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::WriteSqlite => {
+                #[cfg(feature = "sqlite")]
+                {
+                    if args.len() < 3 { return Err(runtime_err("write_sqlite() expects (table, db_path, table_name)")); }
+                    let df = match &args[0] {
+                        VmValue::Table(t) => t.df.clone(),
+                        _ => return Err(runtime_err("write_sqlite() first arg must be a table")),
+                    };
+                    let db_path = match &args[1] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("write_sqlite() db_path must be a string")),
+                    };
+                    let table_name = match &args[2] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("write_sqlite() table_name must be a string")),
+                    };
+                    self.engine().write_sqlite(df, &db_path, &table_name).map_err(|e| runtime_err(e))?;
+                    Ok(VmValue::None)
+                }
+                #[cfg(not(feature = "sqlite"))]
+                Err(runtime_err("write_sqlite() requires the 'sqlite' feature"))
+            }
+            #[cfg(feature = "native")]
             BuiltinId::RedisConnect => {
                 #[cfg(feature = "redis")]
                 {
@@ -4063,7 +4105,8 @@ impl Vm {
                 Err(runtime_err("register_s3() requires the 's3' feature"))
             }
             #[cfg(not(feature = "native"))]
-            BuiltinId::ReadMysql | BuiltinId::RedisConnect | BuiltinId::RedisGet |
+            BuiltinId::ReadMysql | BuiltinId::ReadSqlite | BuiltinId::WriteSqlite |
+            BuiltinId::RedisConnect | BuiltinId::RedisGet |
             BuiltinId::RedisSet | BuiltinId::RedisDel | BuiltinId::GraphqlQuery |
             BuiltinId::RegisterS3 => {
                 Err(runtime_err("Connectors not available in WASM"))

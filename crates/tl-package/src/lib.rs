@@ -5,6 +5,9 @@ pub mod cache;
 pub mod fetch;
 pub mod resolver;
 
+#[cfg(feature = "registry")]
+pub mod registry_client;
+
 pub use manifest::{Manifest, ProjectConfig, DependencySpec, DetailedDep, DepSourceKind};
 pub use version::{Version, VersionReq};
 pub use lockfile::{LockFile, LockedPackage};

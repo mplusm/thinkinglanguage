@@ -578,6 +578,9 @@ pub enum BuiltinId {
     ToCpu = 177,
     GpuMatmul = 178,
     GpuBatchPredict = 179,
+    // Phase 33: SQLite
+    ReadSqlite = 180,
+    WriteSqlite = 181,
 }
 
 impl BuiltinId {
@@ -771,6 +774,9 @@ impl BuiltinId {
             "to_cpu" => Some(BuiltinId::ToCpu),
             "gpu_matmul" => Some(BuiltinId::GpuMatmul),
             "gpu_batch_predict" => Some(BuiltinId::GpuBatchPredict),
+            // Phase 33: SQLite
+            "read_sqlite" => Some(BuiltinId::ReadSqlite),
+            "write_sqlite" => Some(BuiltinId::WriteSqlite),
             _ => None,
         }
     }
@@ -965,6 +971,9 @@ impl BuiltinId {
             BuiltinId::ToCpu => "to_cpu",
             BuiltinId::GpuMatmul => "gpu_matmul",
             BuiltinId::GpuBatchPredict => "gpu_batch_predict",
+            // Phase 33: SQLite
+            BuiltinId::ReadSqlite => "read_sqlite",
+            BuiltinId::WriteSqlite => "write_sqlite",
         }
     }
 }

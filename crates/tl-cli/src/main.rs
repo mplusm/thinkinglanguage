@@ -26,6 +26,9 @@ use tl_types::checker::{CheckerConfig, check_program};
 
 mod deploy;
 mod package;
+mod notebook;
+#[cfg(feature = "notebook")]
+mod notebook_tui;
 
 // ---------------------------------------------------------------------------
 // Tab-completion helper
@@ -353,6 +356,14 @@ enum Commands {
         /// Search query
         query: String,
     },
+    /// Open or create an interactive notebook (.tlnb)
+    Notebook {
+        /// Path to the .tlnb file (created if it doesn't exist)
+        file: String,
+        /// Export notebook to .tl file instead of opening TUI
+        #[arg(long)]
+        export: bool,
+    },
     /// Compile a .tl file to native object file (requires llvm-backend feature)
     Compile {
         /// Path to the .tl file
@@ -498,6 +509,7 @@ fn main() {
         Some(Commands::Install) => package::cmd_install(),
         Some(Commands::Update { name }) => package::cmd_update(name.as_deref()),
         Some(Commands::Migrate { action }) => run_migrate(action),
+        Some(Commands::Notebook { file, export }) => cmd_notebook(&file, export),
         Some(Commands::Publish) => package::cmd_publish(),
         Some(Commands::Search { query }) => package::cmd_search(&query),
         Some(Commands::Compile { file, output, emit_ir }) => run_compile(&file, output.as_deref(), emit_ir),
@@ -744,6 +756,53 @@ fn run_check(path: &str, strict: bool) {
         eprintln!("{warning_count} warning(s)");
     } else {
         eprintln!("No errors or warnings.");
+    }
+}
+
+fn cmd_notebook(file: &str, export: bool) {
+    use std::path::PathBuf;
+
+    let path = PathBuf::from(file);
+
+    // Load or create notebook
+    let nb = if path.exists() {
+        match notebook::Notebook::load(&path) {
+            Ok(nb) => nb,
+            Err(e) => {
+                eprintln!("{e}");
+                process::exit(1);
+            }
+        }
+    } else {
+        notebook::Notebook::new()
+    };
+
+    if export {
+        let content = nb.export_tl();
+        let tl_path = path.with_extension("tl");
+        if let Err(e) = std::fs::write(&tl_path, &content) {
+            eprintln!("Cannot write {}: {e}", tl_path.display());
+            process::exit(1);
+        }
+        println!("Exported to {}", tl_path.display());
+        return;
+    }
+
+    #[cfg(feature = "notebook")]
+    {
+        let mut app = notebook_tui::NotebookApp::new(nb, path);
+        if let Err(e) = app.run() {
+            eprintln!("Notebook error: {e}");
+            process::exit(1);
+        }
+    }
+    #[cfg(not(feature = "notebook"))]
+    {
+        eprintln!("Notebook TUI requires the 'notebook' feature.");
+        eprintln!("Rebuild with: cargo build --features notebook");
+        let _ = nb;
+        let _ = path;
+        process::exit(1);
     }
 }
 

@@ -170,27 +170,77 @@ pub fn cmd_update(pkg: Option<&str>) {
     run_install_for(project_root);
 }
 
-/// `tl publish` — stub for registry publishing.
+/// `tl publish` — publish package to the registry.
 pub fn cmd_publish() {
-    println!("Package registry is not yet available.");
-    println!();
-    println!("To share packages, use git repositories:");
-    println!("  1. Push your project to GitHub/GitLab");
-    println!("  2. Others can add it with:");
-    println!("     tl add <name> --git https://github.com/user/repo.git");
+    #[cfg(feature = "registry")]
+    {
+        let cwd = std::env::current_dir().unwrap_or_else(|e| {
+            eprintln!("Cannot determine current directory: {e}");
+            process::exit(1);
+        });
+
+        let manifest_path = super::find_manifest(&cwd).unwrap_or_else(|| {
+            eprintln!("No tl.toml found. Run 'tl init <name>' to create a project.");
+            process::exit(1);
+        });
+
+        let project_root = manifest_path.parent().unwrap();
+        match tl_package::registry_client::publish_package(project_root) {
+            Ok(resp) => {
+                println!("Published {} v{}", resp.name, resp.version);
+                println!("  sha256: {}", resp.sha256);
+            }
+            Err(e) => {
+                eprintln!("Publish failed: {e}");
+                process::exit(1);
+            }
+        }
+    }
+    #[cfg(not(feature = "registry"))]
+    {
+        println!("Package registry is not yet available.");
+        println!();
+        println!("To share packages, use git repositories:");
+        println!("  1. Push your project to GitHub/GitLab");
+        println!("  2. Others can add it with:");
+        println!("     tl add <name> --git https://github.com/user/repo.git");
+    }
 }
 
-/// `tl search <query>` — stub for registry search.
+/// `tl search <query>` — search the package registry.
 pub fn cmd_search(query: &str) {
-    println!("Package registry is not yet available.");
-    println!();
-    println!("To find TL packages, search GitHub:");
-    println!("  https://github.com/topics/thinkinglanguage");
-    println!();
-    println!("To use a package you found:");
-    println!("  tl add <name> --git <url>");
-    println!("  tl add <name> --path <local-path>");
-    let _ = query;
+    #[cfg(feature = "registry")]
+    {
+        match tl_package::registry_client::search_packages(query) {
+            Ok(results) => {
+                if results.is_empty() {
+                    println!("No packages found matching '{query}'");
+                } else {
+                    for r in &results {
+                        let desc = r.description.as_deref().unwrap_or("");
+                        println!("  {} v{} — {}", r.name, r.latest_version, desc);
+                    }
+                    println!("Found {} package(s).", results.len());
+                }
+            }
+            Err(e) => {
+                eprintln!("Search failed: {e}");
+                process::exit(1);
+            }
+        }
+    }
+    #[cfg(not(feature = "registry"))]
+    {
+        println!("Package registry is not yet available.");
+        println!();
+        println!("To find TL packages, search GitHub:");
+        println!("  https://github.com/topics/thinkinglanguage");
+        println!();
+        println!("To use a package you found:");
+        println!("  tl add <name> --git <url>");
+        println!("  tl add <name> --path <local-path>");
+        let _ = query;
+    }
 }
 
 /// Helper: run resolve_and_install for a project root.

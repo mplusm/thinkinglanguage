@@ -186,16 +186,95 @@ fn fetch_path(
     })
 }
 
-/// Registry fetch — stub that returns a helpful error.
-fn fetch_registry(name: &str, version_req: &str, _cache: &PackageCache) -> Result<FetchResult, String> {
-    Err(format!(
-        "Package registry is not yet available.\n\
-         Cannot fetch '{name}' version '{version_req}' from registry.\n\
-         \n\
-         Use one of these alternatives:\n\
-         - Git dependency:  tl add {name} --git https://github.com/user/{name}.git\n\
-         - Path dependency: tl add {name} --path ../path/to/{name}"
-    ))
+/// Registry fetch — downloads from the package registry when the `registry` feature is enabled.
+fn fetch_registry(name: &str, version_req: &str, cache: &PackageCache) -> Result<FetchResult, String> {
+    #[cfg(feature = "registry")]
+    {
+        fetch_registry_impl(name, version_req, cache)
+    }
+    #[cfg(not(feature = "registry"))]
+    {
+        let _ = cache;
+        Err(format!(
+            "Package registry is not yet available.\n\
+             Cannot fetch '{name}' version '{version_req}' from registry.\n\
+             \n\
+             Use one of these alternatives:\n\
+             - Git dependency:  tl add {name} --git https://github.com/user/{name}.git\n\
+             - Path dependency: tl add {name} --path ../path/to/{name}"
+        ))
+    }
+}
+
+#[cfg(feature = "registry")]
+fn fetch_registry_impl(name: &str, version_req: &str, cache: &PackageCache) -> Result<FetchResult, String> {
+    use crate::version::VersionReq;
+
+    // Get package info from registry
+    let info = crate::registry_client::get_package_info(name)?;
+
+    // Find the best matching version
+    let req = VersionReq::parse(version_req)?;
+    let matching = info
+        .versions
+        .iter()
+        .filter(|v| {
+            crate::version::Version::parse(&v.version)
+                .is_ok_and(|ver| req.matches(&ver))
+        })
+        .last(); // latest matching version
+
+    let version_entry = matching.ok_or_else(|| {
+        format!(
+            "No version of '{name}' matches requirement '{version_req}'"
+        )
+    })?;
+
+    let version = &version_entry.version;
+
+    // Download tarball
+    let tarball = crate::registry_client::download_package(name, version)?;
+
+    // Verify hash
+    {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&tarball);
+        let hash = format!("{:x}", hasher.finalize());
+        if hash != version_entry.sha256 {
+            return Err(format!(
+                "SHA-256 mismatch for '{name}' v{version}: expected {}, got {hash}",
+                version_entry.sha256
+            ));
+        }
+    }
+
+    // Extract to cache
+    let cache_dir = cache.package_dir(name, version);
+    if cache_dir.exists() {
+        let _ = std::fs::remove_dir_all(&cache_dir);
+    }
+    std::fs::create_dir_all(&cache_dir)
+        .map_err(|e| format!("Failed to create cache dir: {e}"))?;
+
+    {
+        use flate2::read::GzDecoder;
+        use tar::Archive;
+        let decoder = GzDecoder::new(tarball.as_slice());
+        let mut archive = Archive::new(decoder);
+        archive
+            .unpack(&cache_dir)
+            .map_err(|e| format!("Failed to extract package: {e}"))?;
+    }
+
+    let source_desc = format!("registry+{}@{version}", crate::registry_client::registry_url());
+
+    Ok(FetchResult {
+        name: name.to_string(),
+        version: version.clone(),
+        source_desc,
+        cache_path: cache_dir,
+    })
 }
 
 /// Read the version from a package's tl.toml.

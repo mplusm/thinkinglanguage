@@ -11,6 +11,8 @@ pub mod mysql_conn;
 pub mod s3;
 #[cfg(feature = "redis")]
 pub mod redis_conn;
+#[cfg(feature = "sqlite")]
+pub mod sqlite_conn;
 
 pub use engine::DataEngine;
 

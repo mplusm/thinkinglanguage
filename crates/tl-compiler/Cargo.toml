@@ -53,6 +53,7 @@ native = [
 mysql = ["tl-data/mysql"]
 s3 = ["tl-data/s3"]
 redis = ["tl-data/redis"]
+sqlite = ["tl-data/sqlite"]
 python = ["pyo3", "arrow-ipc", "arrow-array", "arrow-schema"]
 async-runtime = ["tokio"]
 gpu = ["dep:tl-gpu", "native"]

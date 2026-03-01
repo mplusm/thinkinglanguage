@@ -21,6 +21,7 @@ mysql = { version = "25", optional = true }
 object_store = { version = "0.11", features = ["aws"], optional = true }
 url = { version = "2", optional = true }
 redis = { version = "0.27", optional = true }
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -30,3 +31,4 @@ default = []
 mysql = ["dep:mysql"]
 s3 = ["dep:object_store", "dep:url"]
 redis = ["dep:redis"]
+sqlite = ["dep:rusqlite"]

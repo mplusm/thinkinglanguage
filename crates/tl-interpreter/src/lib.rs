@@ -631,6 +631,8 @@ impl Environment {
         global.insert("levenshtein".to_string(), Value::Builtin("levenshtein".to_string()));
         global.insert("soundex".to_string(), Value::Builtin("soundex".to_string()));
         global.insert("read_mysql".to_string(), Value::Builtin("read_mysql".to_string()));
+        global.insert("read_sqlite".to_string(), Value::Builtin("read_sqlite".to_string()));
+        global.insert("write_sqlite".to_string(), Value::Builtin("write_sqlite".to_string()));
         global.insert("redis_connect".to_string(), Value::Builtin("redis_connect".to_string()));
         global.insert("redis_get".to_string(), Value::Builtin("redis_get".to_string()));
         global.insert("redis_set".to_string(), Value::Builtin("redis_set".to_string()));
@@ -3968,6 +3970,46 @@ impl Interpreter {
                 }
                 #[cfg(not(feature = "mysql"))]
                 Err(runtime_err_s("read_mysql() requires the 'mysql' feature"))
+            }
+            "read_sqlite" => {
+                #[cfg(feature = "sqlite")]
+                {
+                    if args.len() < 2 { return Err(runtime_err_s("read_sqlite() expects (db_path, query)")); }
+                    let db_path = match &args[0] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("read_sqlite() db_path must be a string")),
+                    };
+                    let query = match &args[1] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("read_sqlite() query must be a string")),
+                    };
+                    let df = self.engine().read_sqlite(&db_path, &query).map_err(|e| runtime_err(e))?;
+                    Ok(Value::Table(TlTable { df }))
+                }
+                #[cfg(not(feature = "sqlite"))]
+                Err(runtime_err_s("read_sqlite() requires the 'sqlite' feature"))
+            }
+            "write_sqlite" => {
+                #[cfg(feature = "sqlite")]
+                {
+                    if args.len() < 3 { return Err(runtime_err_s("write_sqlite() expects (table, db_path, table_name)")); }
+                    let df = match &args[0] {
+                        Value::Table(t) => t.df.clone(),
+                        _ => return Err(runtime_err_s("write_sqlite() first arg must be a table")),
+                    };
+                    let db_path = match &args[1] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("write_sqlite() db_path must be a string")),
+                    };
+                    let table_name = match &args[2] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("write_sqlite() table_name must be a string")),
+                    };
+                    self.engine().write_sqlite(df, &db_path, &table_name).map_err(|e| runtime_err(e))?;
+                    Ok(Value::None)
+                }
+                #[cfg(not(feature = "sqlite"))]
+                Err(runtime_err_s("write_sqlite() requires the 'sqlite' feature"))
             }
             "redis_connect" => {
                 #[cfg(feature = "redis")]

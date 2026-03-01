@@ -13,5 +13,17 @@ toml = "0.8"
 toml_edit = "0.22"
 thiserror.workspace = true
 
+# Optional — registry client support
+reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], optional = true }
+sha2 = { version = "0.10", optional = true }
+tar = { version = "0.4", optional = true }
+flate2 = { version = "1", optional = true }
+serde_json = { version = "1", optional = true }
+base64 = { version = "0.22", optional = true }
+
 [dev-dependencies]
 tempfile = "3"
+
+[features]
+default = []
+registry = ["dep:reqwest", "dep:sha2", "dep:tar", "dep:flate2", "dep:serde_json", "dep:base64"]
