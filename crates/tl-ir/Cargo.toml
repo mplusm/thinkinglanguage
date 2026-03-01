@@ -1,0 +1,9 @@
+[package]
+name = "tl-ir"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Intermediate Representation for ThinkingLanguage table pipe optimization"
+
+[dependencies]
+tl-ast = { path = "../tl-ast" }

@@ -9022,4 +9022,137 @@ r.x = 99
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Cannot mutate a borrowed reference"), "Error: {err}");
     }
+
+    // ── Phase 29: IR Integration Tests ──
+
+    #[test]
+    fn test_ir_filter_merge_chain() {
+        // Two adjacent filters should be merged by the IR optimizer
+        let dir = tempfile::tempdir().unwrap();
+        let csv = dir.path().join("data.csv");
+        std::fs::write(&csv, "name,age\nAlice,30\nBob,20\nCharlie,35\n").unwrap();
+        let src = format!(
+            r#"let t = read_csv("{}")
+let r = t |> filter(age > 25) |> filter(age < 40) |> collect()
+print(r)"#,
+            csv.to_str().unwrap()
+        );
+        let output = run_output(&src);
+        // Both Alice(30) and Charlie(35) pass both filters
+        assert!(output[0].contains("Alice"), "Output should contain Alice: {}", output[0]);
+        assert!(output[0].contains("Charlie"), "Output should contain Charlie: {}", output[0]);
+        assert!(!output[0].contains("Bob"), "Output should not contain Bob: {}", output[0]);
+    }
+
+    #[test]
+    fn test_ir_predicate_pushdown_through_select() {
+        // filter after select should be pushed before select by IR optimizer
+        let dir = tempfile::tempdir().unwrap();
+        let csv = dir.path().join("data.csv");
+        std::fs::write(&csv, "name,age,city\nAlice,30,NYC\nBob,20,LA\nCharlie,35,NYC\n").unwrap();
+        let src = format!(
+            r#"let t = read_csv("{}")
+let r = t |> select(name, age) |> filter(age > 25) |> collect()
+print(r)"#,
+            csv.to_str().unwrap()
+        );
+        let output = run_output(&src);
+        assert!(output[0].contains("Alice"), "Output should contain Alice");
+        assert!(output[0].contains("Charlie"), "Output should contain Charlie");
+        assert!(!output[0].contains("Bob"), "Output should not contain Bob");
+    }
+
+    #[test]
+    fn test_ir_sort_filter_pushdown() {
+        // filter after sort should be pushed before sort
+        let dir = tempfile::tempdir().unwrap();
+        let csv = dir.path().join("data.csv");
+        std::fs::write(&csv, "name,score\nAlice,90\nBob,50\nCharlie,75\n").unwrap();
+        let src = format!(
+            r#"let t = read_csv("{}")
+let r = t |> sort(score, "desc") |> filter(score > 60) |> collect()
+print(r)"#,
+            csv.to_str().unwrap()
+        );
+        let output = run_output(&src);
+        assert!(output[0].contains("Alice"), "Output should contain Alice");
+        assert!(output[0].contains("Charlie"), "Output should contain Charlie");
+        assert!(!output[0].contains("Bob"), "Output should not contain Bob");
+    }
+
+    #[test]
+    fn test_ir_multi_operation_chain() {
+        // Complex chain: filter + select + sort + limit
+        let dir = tempfile::tempdir().unwrap();
+        let csv = dir.path().join("data.csv");
+        std::fs::write(
+            &csv,
+            "name,age,dept\nAlice,30,Eng\nBob,20,Sales\nCharlie,35,Eng\nDiana,28,Sales\n",
+        )
+        .unwrap();
+        let src = format!(
+            r#"let t = read_csv("{}")
+let r = t |> filter(age > 22) |> select(name, age) |> sort(age, "desc") |> limit(2) |> collect()
+print(r)"#,
+            csv.to_str().unwrap()
+        );
+        let output = run_output(&src);
+        // Top 2 by age descending among age>22: Charlie(35), Alice(30)
+        assert!(output[0].contains("Charlie"), "Output: {}", output[0]);
+        assert!(output[0].contains("Alice"), "Output: {}", output[0]);
+    }
+
+    #[test]
+    fn test_ir_pipe_move_semantics_preserved() {
+        // The source variable should be moved after pipe chain
+        let dir = tempfile::tempdir().unwrap();
+        let csv = dir.path().join("data.csv");
+        std::fs::write(&csv, "name,age\nAlice,30\n").unwrap();
+        let src = format!(
+            r#"let t = read_csv("{}")
+let r = t |> filter(age > 0) |> collect()
+print(t)"#,
+            csv.to_str().unwrap()
+        );
+        let result = run(&src);
+        assert!(result.is_err(), "Should error on use-after-move");
+    }
+
+    #[test]
+    fn test_ir_non_table_op_fallback() {
+        // A pipe chain with a non-table op should fall back to legacy path
+        let output = run_output(r#"
+fn double(x) { x * 2 }
+let result = 5 |> double()
+print(result)
+"#);
+        assert_eq!(output, vec!["10"]);
+    }
+
+    #[test]
+    fn test_ir_mixed_pipe_fallback() {
+        // A pipe into a builtin (not a table op) should use legacy path
+        let output = run_output(r#"
+let result = [3, 1, 2] |> len()
+print(result)
+"#);
+        assert_eq!(output, vec!["3"]);
+    }
+
+    #[test]
+    fn test_ir_single_filter_roundtrip() {
+        // Even a single filter goes through IR and round-trips correctly
+        let dir = tempfile::tempdir().unwrap();
+        let csv = dir.path().join("data.csv");
+        std::fs::write(&csv, "name,age\nAlice,30\nBob,20\n").unwrap();
+        let src = format!(
+            r#"let t = read_csv("{}")
+let r = t |> filter(age > 25) |> collect()
+print(r)"#,
+            csv.to_str().unwrap()
+        );
+        let output = run_output(&src);
+        assert!(output[0].contains("Alice"), "Output: {}", output[0]);
+        assert!(!output[0].contains("Bob"), "Output: {}", output[0]);
+    }
 }

@@ -8,6 +8,7 @@ description = "Bytecode compiler and VM for ThinkingLanguage (Phase 2)"
 [dependencies]
 tl-ast = { path = "../tl-ast" }
 tl-errors = { path = "../tl-errors" }
+tl-ir = { path = "../tl-ir" }
 tl-data = { path = "../tl-data" }
 tl-ai = { path = "../tl-ai" }
 tl-stream = { path = "../tl-stream" }

@@ -1837,7 +1837,135 @@ impl Compiler {
         }
     }
 
+    /// Table operations recognized by the compiler for Op::TablePipe emission.
+    /// Must match what the VM's handle_table_pipe expects for the legacy path.
+    const TABLE_OPS: &'static [&'static str] = &[
+        "filter", "select", "sort", "with", "aggregate",
+        "join", "head", "limit", "collect", "show",
+        "describe", "write_csv", "write_parquet",
+    ];
+
     fn compile_pipe(
+        &mut self,
+        left: &Expr,
+        right: &Expr,
+        dest: u8,
+    ) -> Result<(), TlError> {
+        // Try IR-optimized path for table pipe chains
+        if let Some((source, ops)) = self.try_extract_table_pipe_chain(left, right) {
+            if let Ok(plan) = tl_ir::build_query_plan(&source, &ops) {
+                let optimized = tl_ir::optimize(plan);
+                let lowered = tl_ir::lower_plan(&optimized);
+                return self.emit_optimized_plan(left, &source, &lowered, dest);
+            }
+        }
+        // Fall back to legacy path
+        self.compile_pipe_legacy(left, right, dest)
+    }
+
+    /// Try to extract a flat table pipe chain from nested Pipe expressions.
+    /// Returns (source_expr, [(op_name, args)]) if all ops are table ops.
+    fn try_extract_table_pipe_chain(
+        &self,
+        left: &Expr,
+        right: &Expr,
+    ) -> Option<(Expr, Vec<(String, Vec<Expr>)>)> {
+        let mut ops = Vec::new();
+
+        // Extract op from the right side
+        let (fname, args) = match right {
+            Expr::Call { function, args } => {
+                if let Expr::Ident(fname) = function.as_ref() {
+                    (fname.as_str(), args.clone())
+                } else {
+                    return None;
+                }
+            }
+            _ => return None,
+        };
+
+        if !Self::TABLE_OPS.contains(&fname) {
+            return None;
+        }
+
+        ops.push((fname.to_string(), args));
+
+        // Walk left side to collect more pipe ops
+        let source = self.extract_pipe_chain_left(left, &mut ops)?;
+
+        // Reverse because we collected from right to left
+        ops.reverse();
+
+        Some((source, ops))
+    }
+
+    /// Recursively extract pipe chain ops from the left side.
+    fn extract_pipe_chain_left(
+        &self,
+        expr: &Expr,
+        ops: &mut Vec<(String, Vec<Expr>)>,
+    ) -> Option<Expr> {
+        match expr {
+            Expr::Pipe { left, right } => {
+                // Extract the op from this pipe's right side
+                let (fname, args) = match right.as_ref() {
+                    Expr::Call { function, args } => {
+                        if let Expr::Ident(fname) = function.as_ref() {
+                            (fname.as_str(), args.clone())
+                        } else {
+                            return None;
+                        }
+                    }
+                    _ => return None,
+                };
+
+                if !Self::TABLE_OPS.contains(&fname) {
+                    return None;
+                }
+
+                ops.push((fname.to_string(), args));
+
+                // Continue extracting from the left side
+                self.extract_pipe_chain_left(left, ops)
+            }
+            // Base case: not a pipe — this is the source expression
+            other => Some(other.clone()),
+        }
+    }
+
+    /// Emit optimized table pipe operations from the lowered IR plan.
+    fn emit_optimized_plan(
+        &mut self,
+        _original_left: &Expr,
+        source: &Expr,
+        lowered_ops: &[(String, Vec<Expr>)],
+        dest: u8,
+    ) -> Result<(), TlError> {
+        let left_reg = self.current().alloc_register();
+        self.compile_expr(source, left_reg)?;
+
+        // Mark the source variable as moved (consumed by pipe)
+        self.emit_pipe_move(source);
+
+        // Emit TablePipe for each lowered operation
+        for (op_name, args) in lowered_ops {
+            let args_idx = self.current().add_constant(
+                Constant::AstExprList(args.clone())
+            );
+            let op_idx = self.current().add_constant(
+                Constant::String(Arc::from(op_name.as_str()))
+            );
+            self.current().emit_abc(Op::TablePipe, left_reg, op_idx as u8, args_idx as u8, 0);
+        }
+
+        if left_reg != dest {
+            self.current().emit_abc(Op::Move, dest, left_reg, 0, 0);
+        }
+        self.current().free_register();
+        Ok(())
+    }
+
+    fn compile_pipe_legacy(
         &mut self,
         left: &Expr,
         right: &Expr,
@@ -1853,10 +1981,7 @@ impl Compiler {
             Expr::Call { function, args } => {
                 if let Expr::Ident(fname) = function.as_ref() {
                     // Check if this is a table operation
-                    let table_ops = ["filter", "select", "sort", "with", "aggregate",
-                                    "join", "head", "limit", "collect", "show",
-                                    "describe", "write_csv", "write_parquet"];
-                    if table_ops.contains(&fname.as_str()) {
+                    if Self::TABLE_OPS.contains(&fname.as_str()) {
                         // Store AST args as constant for table pipe
                         let args_idx = self.current().add_constant(
                             Constant::AstExprList(args.clone())
