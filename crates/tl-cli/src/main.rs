@@ -329,7 +329,12 @@ enum Commands {
     Update {
         /// Package name (updates all if omitted)
         name: Option<String>,
+        /// Preview changes without modifying tl.lock
+        #[arg(long)]
+        dry_run: bool,
     },
+    /// Show outdated dependencies
+    Outdated,
     /// Generate documentation for a .tl file
     Doc {
         /// Path to the .tl file or directory
@@ -507,7 +512,8 @@ fn main() {
         }
         Some(Commands::Remove { name }) => package::cmd_remove(&name),
         Some(Commands::Install) => package::cmd_install(),
-        Some(Commands::Update { name }) => package::cmd_update(name.as_deref()),
+        Some(Commands::Update { name, dry_run }) => package::cmd_update(name.as_deref(), dry_run),
+        Some(Commands::Outdated) => package::cmd_outdated(),
         Some(Commands::Migrate { action }) => run_migrate(action),
         Some(Commands::Notebook { file, export }) => cmd_notebook(&file, export),
         Some(Commands::Publish) => package::cmd_publish(),

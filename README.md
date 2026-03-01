@@ -162,7 +162,9 @@ cargo build --release --features "sqlite,mysql,redis,s3,kafka,python,gpu,async-r
 | `tl add <pkg>` | Add a dependency |
 | `tl remove <pkg>` | Remove a dependency |
 | `tl install` | Install all dependencies |
-| `tl update [pkg]` | Update dependencies |
+| `tl update [pkg]` | Update dependencies (with version diffs) |
+| `tl update --dry-run` | Preview dependency updates without changes |
+| `tl outdated` | Show outdated dependencies |
 | `tl publish` | Publish to package registry |
 | `tl search <query>` | Search package registry |
 

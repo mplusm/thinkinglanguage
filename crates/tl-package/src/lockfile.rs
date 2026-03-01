@@ -15,6 +15,16 @@ pub struct LockedPackage {
     pub version: String,
     /// Source descriptor: "git+url#rev", "path+/absolute/path"
     pub source: String,
+    /// Whether this is a direct dependency (vs transitive).
+    #[serde(default = "default_true")]
+    pub direct: bool,
+    /// Names of packages this package depends on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dependencies: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl LockFile {
@@ -52,6 +62,17 @@ impl LockFile {
 }
 
 impl LockedPackage {
+    /// Create a new LockedPackage (direct dependency with no transitive deps).
+    pub fn new(name: impl Into<String>, version: impl Into<String>, source: String) -> Self {
+        LockedPackage {
+            name: name.into(),
+            version: version.into(),
+            source,
+            direct: true,
+            dependencies: Vec::new(),
+        }
+    }
+
     /// Create a source descriptor for a git dependency.
     pub fn git_source(url: &str, rev: &str) -> String {
         format!("git+{url}#{rev}")
@@ -95,16 +116,8 @@ mod tests {
 
         let lock = LockFile {
             packages: vec![
-                LockedPackage {
-                    name: "utils".into(),
-                    version: "1.0.0".into(),
-                    source: LockedPackage::path_source("/home/user/utils"),
-                },
-                LockedPackage {
-                    name: "remote".into(),
-                    version: "2.1.0".into(),
-                    source: LockedPackage::git_source("https://github.com/user/remote.git", "abc123"),
-                },
+                LockedPackage::new("utils", "1.0.0", LockedPackage::path_source("/home/user/utils")),
+                LockedPackage::new("remote", "2.1.0", LockedPackage::git_source("https://github.com/user/remote.git", "abc123")),
             ],
         };
 
@@ -119,8 +132,8 @@ mod tests {
     fn lockfile_find_by_name() {
         let lock = LockFile {
             packages: vec![
-                LockedPackage { name: "a".into(), version: "1.0.0".into(), source: "path+/a".into() },
-                LockedPackage { name: "b".into(), version: "2.0.0".into(), source: "path+/b".into() },
+                LockedPackage::new("a", "1.0.0", "path+/a".into()),
+                LockedPackage::new("b", "2.0.0", "path+/b".into()),
             ],
         };
         assert!(lock.find("a").is_some());
@@ -137,8 +150,8 @@ mod tests {
     fn lockfile_remove() {
         let mut lock = LockFile {
             packages: vec![
-                LockedPackage { name: "a".into(), version: "1.0.0".into(), source: "path+/a".into() },
-                LockedPackage { name: "b".into(), version: "2.0.0".into(), source: "path+/b".into() },
+                LockedPackage::new("a", "1.0.0", "path+/a".into()),
+                LockedPackage::new("b", "2.0.0", "path+/b".into()),
             ],
         };
         assert!(lock.remove("a"));
@@ -148,21 +161,46 @@ mod tests {
 
     #[test]
     fn locked_package_source_helpers() {
-        let pkg = LockedPackage {
-            name: "test".into(),
-            version: "1.0.0".into(),
-            source: LockedPackage::git_source("https://example.com/repo.git", "deadbeef"),
-        };
+        let pkg = LockedPackage::new("test", "1.0.0", LockedPackage::git_source("https://example.com/repo.git", "deadbeef"));
         assert!(pkg.is_git());
         assert!(!pkg.is_path());
         assert_eq!(pkg.git_url(), Some("https://example.com/repo.git"));
 
-        let path_pkg = LockedPackage {
-            name: "local".into(),
-            version: "0.1.0".into(),
-            source: LockedPackage::path_source("/home/user/local"),
-        };
+        let path_pkg = LockedPackage::new("local", "0.1.0", LockedPackage::path_source("/home/user/local"));
         assert!(path_pkg.is_path());
         assert_eq!(path_pkg.path_value(), Some("/home/user/local"));
+    }
+
+    #[test]
+    fn lockfile_backward_compat() {
+        // Old format without direct/dependencies fields should deserialize correctly
+        let toml_str = r#"
+[[packages]]
+name = "oldpkg"
+version = "1.0.0"
+source = "path+/old"
+"#;
+        let lock: LockFile = toml::from_str(toml_str).unwrap();
+        assert_eq!(lock.packages.len(), 1);
+        assert!(lock.packages[0].direct); // defaults to true
+        assert!(lock.packages[0].dependencies.is_empty()); // defaults to empty
+    }
+
+    #[test]
+    fn lockfile_round_trip_new_fields() {
+        let dir = TempDir::new().unwrap();
+        let lock_path = dir.path().join("tl.lock");
+
+        let mut pkg = LockedPackage::new("transitive", "1.0.0", "path+/t".into());
+        pkg.direct = false;
+        pkg.dependencies = vec!["sub-dep".into()];
+
+        let lock = LockFile {
+            packages: vec![pkg],
+        };
+        lock.save(&lock_path).unwrap();
+        let loaded = LockFile::load(&lock_path).unwrap();
+        assert_eq!(loaded.packages[0].direct, false);
+        assert_eq!(loaded.packages[0].dependencies, vec!["sub-dep".to_string()]);
     }
 }

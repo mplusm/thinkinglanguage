@@ -63,8 +63,8 @@ cargo test -p tl-gpu --features gpu
 
 ### Test Counts
 
-As of Phase 33:
-- Base: ~1257 tests (without feature flags)
+As of Phase 33 (with dependency upgrade features):
+- Base: ~1272 tests (without feature flags)
 - With `sqlite`: +5 tests
 - With `async-runtime`: ~1252 tests
 - With `python`: +44 tests

@@ -275,6 +275,8 @@ tl add <pkg>                # Add a dependency
 tl remove <pkg>             # Remove a dependency
 tl install                  # Install all dependencies from tl.toml
 tl update [pkg]             # Update dependencies (all or specific)
+tl update --dry-run         # Preview updates without modifying tl.lock
+tl outdated                 # Show outdated dependencies
 tl publish                  # Publish package to registry
 tl search <query>           # Search the package registry
 ```
@@ -287,3 +289,25 @@ Flags for `tl add`:
 | `--git <url>` | Git repository URL |
 | `--branch <branch>` | Git branch |
 | `--path <path>` | Local filesystem path |
+
+Flags for `tl update`:
+
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | Preview changes without modifying `tl.lock` |
+
+`tl update` shows version diffs:
+```
+  + newpkg v1.0.0 (new)
+  utils: 1.0.0 -> 1.2.0
+  - oldpkg v2.0.0 (removed)
+  3 package(s) changed (1 added, 1 updated, 1 removed).
+```
+
+`tl outdated` shows a table of dependencies with newer versions available (requires `registry` feature):
+```
+Package              Current      Latest Matching    Latest Available
+-------              -------      ---------------    ----------------
+utils                1.0.0        1.3.0              2.0.0
+helpers              2.1.0        2.1.0              2.1.0  (up to date)
+```

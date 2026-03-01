@@ -277,6 +277,17 @@ fn fetch_registry_impl(name: &str, version_req: &str, cache: &PackageCache) -> R
     })
 }
 
+/// Read and parse the full manifest (tl.toml) from a package directory.
+/// Returns None if no tl.toml exists.
+pub fn read_package_manifest(dir: &std::path::Path) -> Option<Manifest> {
+    let manifest_path = dir.join("tl.toml");
+    if !manifest_path.exists() {
+        return None;
+    }
+    let content = std::fs::read_to_string(&manifest_path).ok()?;
+    toml::from_str(&content).ok()
+}
+
 /// Read the version from a package's tl.toml.
 fn read_package_version(dir: &std::path::Path, name: &str) -> Result<String, String> {
     let manifest_path = dir.join("tl.toml");

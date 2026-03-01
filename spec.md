@@ -1328,8 +1328,13 @@ tl playground                    # Browser-based playground
 # Package Management
 tl add postgres-connector        # Add dependency
 tl remove redis-connector        # Remove dependency
-tl update                        # Update all dependencies
+tl install                       # Install all dependencies
+tl update                        # Update all (shows version diffs)
+tl update utils                  # Update a specific dependency
+tl update --dry-run              # Preview updates without changes
+tl outdated                      # Show outdated dependencies
 tl publish                       # Publish package to registry
+tl search "data utils"           # Search the package registry
 
 # DevOps
 tl deploy pipeline.tl --target docker   # Generate Dockerfile
@@ -1684,24 +1689,24 @@ Deferred:
   ◻ Monitoring dashboard (web UI)
 ```
 
-### Phase 5: Ecosystem & Community (Future)
+### Phase 5: Ecosystem & Community (→ Phase 33 ✅)
 
 **Goal:** Ready for external adoption
 
 ```
 Deliverables:
-  ✦ Package registry (packages.thinkinglang.dev)
-  ✦ VS Code extension with full LSP (→ see Phase 12/14 for LSP implementation)
-  ✦ tl notebook (interactive notebooks)
-  ✦ Comprehensive documentation site
-  ✦ Tutorial series (20+ tutorials)
-  ✦ Playground (browser-based, WASM)
-  ✦ 10+ connector packages
-  ✦ Open source launch (GitHub + announcement)
-  ✦ Community Discord / forum
+  ✅ Package registry (tl-registry crate, HTTP server)        → Phase 33
+  ✅ VS Code extension with full LSP                           → Phase 14
+  ✅ tl notebook (interactive TUI notebooks)                   → Phase 33
+  ✅ Playground (browser-based, WASM)                          → Phase 31
+  ✅ SQLite connector (6th database connector)                 → Phase 33
+  ✦ Comprehensive documentation site                          → Phase 34
+  ✦ Tutorial series (20+ tutorials)                           → Phase 34
+  ✦ Open source launch (GitHub + announcement)                → Phase 34
+  ✦ Community Discord / forum                                 → Phase 34
 ```
 
-### Phase 6: Production & Scale (Future)
+### Phase 6: Production & Scale (→ Phase 34, Future)
 
 **Goal:** Enterprise-ready
 
@@ -1710,7 +1715,6 @@ Deliverables:
   ✦ Distributed execution (multi-node pipelines)
   ✦ Role-based access control for data sources
   ✦ Audit logging
-  ✦ SOC 2 compliance considerations
   ✦ Enterprise connectors (Salesforce, SAP, Oracle)
   ✦ Performance: within 1.5x of hand-written Rust for data operations
   ✦ 1.0 stable release
@@ -1944,25 +1948,30 @@ Deliverables:
 
 ```
 Deliverables:
-  ✅ New crate: tl-package (manifest, version, lockfile, cache, fetch, resolver)
+  ✅ New crate: tl-package (manifest, version, lockfile, cache, fetch, resolver, outdated)
   ✅ tl.toml [dependencies] — Simple, Detailed (git/path/version) specs
-  ✅ tl.lock — Lock file for reproducible builds
+  ✅ tl.lock — Lock file with transitive dependency tracking (direct, dependencies fields)
   ✅ Package cache — ~/.tl/packages/<name>/<version>/
   ✅ Git dependency fetcher (git clone --depth 1)
   ✅ Path dependency fetcher (symlink to local)
   ✅ Registry stub — helpful error messages pointing to git/path
   ✅ Module resolver integration — `use pkg_name.module` resolves packages
   ✅ Underscore-to-hyphen name mapping (TL identifiers → package names)
-  ✅ CLI: tl add, tl remove, tl install, tl update
+  ✅ CLI: tl add, tl remove, tl install, tl update, tl outdated
   ✅ CLI: tl publish, tl search (stubs with helpful messages)
   ✅ Build integration — tl build auto-installs deps, wires package_roots
   ✅ tl init generates [dependencies] section
-  ✅ Tab completion: add, remove, install, update, publish, search
+  ✅ Tab completion: add, remove, install, update, publish, search, outdated
   ✅ Package roots propagated through sub-VM/interpreter imports
+  ✅ Transitive dependency resolution (BFS, cycle detection, diamond dedup)
+  ✅ Version conflict detection across dependency tree
+  ✅ tl update — version diffs (added/updated/removed with summary)
+  ✅ tl update --dry-run — preview changes without modifying tl.lock
+  ✅ tl outdated — show outdated deps (current vs latest matching vs latest available)
+  ✅ ResolveReport / DepChange types for structured upgrade reporting
 
-New crate: tl-package (manifest.rs, version.rs, lockfile.rs, cache.rs, fetch.rs, resolver.rs)
+New crate: tl-package (manifest.rs, version.rs, lockfile.rs, cache.rs, fetch.rs, resolver.rs, outdated.rs)
 New file: crates/tl-cli/src/package.rs
-Tests: 780 existing + 48 new = 828 passed, 1 ignored
 ```
 
 ### Phase 17: Pattern Matching & Destructuring ✅
@@ -3376,7 +3385,7 @@ TL draws inspiration from the best ideas in existing languages and tools:
 
 ---
 
-## Phase 22: Advanced Type System
+## Phase 22: Advanced Type System ✅
 
 ### Decimal Type
 
@@ -3426,7 +3435,7 @@ type Bad = list<Bad>  // Error: recursive type alias
 
 ---
 
-## Phase 23: Security & Access Control
+## Phase 23: Security & Access Control ✅
 
 ### Secret Vault
 
@@ -3485,7 +3494,7 @@ schema Credentials {
 
 ---
 
-## Phase 24: Async/Await & Runtime
+## Phase 24: Async/Await & Runtime ✅
 
 ### Async Functions
 
@@ -3519,6 +3528,419 @@ async_filter(list, pred)   // Concurrent filter
 ### Type Checker
 
 The type checker warns if `await` is used outside of an `async fn`.
+
+---
+
+## Phase 25: Tokio Async Runtime ✅
+
+Feature gate: `async-runtime`
+
+Replaces Phase 24's stub async I/O with real tokio-backed implementations.
+
+### Async I/O Builtins
+
+```tl
+// File I/O
+let content = await async_read_file("data.csv")
+await async_write_file("output.txt", content)
+
+// HTTP
+let body = await async_http_get("https://api.example.com/data")
+let resp = await async_http_post("https://api.example.com/submit", payload)
+
+// Timing
+await async_sleep(1000)  // sleep for 1000ms
+```
+
+### Async Combinators
+
+```tl
+// Race: return first completed task
+let first = await select(task1, task2)
+let winner = await race_all([task1, task2, task3])
+
+// Concurrent collection processing
+let results = await async_map(urls, |url| async_http_get(url))
+let valid = await async_filter(items, |item| validate(item))
+```
+
+All async builtins return `Task` values. Without the `async-runtime` feature, they return a stub error.
+
+---
+
+## Phase 26: VM Upvalue Fix ✅
+
+Internal correctness fix — no user-facing API changes.
+
+When closures return from `do_call()`, all Open upvalues (referencing stack slots) are promoted to Closed (capturing the value) via `close_upvalues_in_value()` before stack truncation. This prevents dangling references when closures escape their defining scope.
+
+---
+
+## Phase 27: Data Error Hierarchy ✅
+
+### Structured Error Enums
+
+Three built-in error enums registered as globals in both VM and interpreter:
+
+```tl
+// Data processing errors
+DataError::ParseError(message, source)
+DataError::SchemaError(details)
+DataError::ValidationError(field, reason)
+DataError::NotFound(entity)
+
+// Network errors
+NetworkError::ConnectionError(host)
+NetworkError::TimeoutError(message)
+NetworkError::HttpError(status, url)
+
+// Connector errors
+ConnectorError::AuthError(message, connector)
+ConnectorError::QueryError(sql, details)
+ConnectorError::ConfigError(setting, connector)
+```
+
+### Error Handling
+
+```tl
+try {
+    let data = read_csv("bad.csv")
+} catch e {
+    match e {
+        DataError::ParseError(msg, src) => println("Parse failed: {msg}")
+        NetworkError::TimeoutError(msg) => println("Timed out: {msg}")
+        _ => println("Unknown error")
+    }
+}
+```
+
+### Introspection Builtins
+
+```tl
+is_error(value)       // true if value is a DataError/NetworkError/ConnectorError variant
+error_type(value)     // "DataError", "NetworkError", or "ConnectorError"
+```
+
+---
+
+## Phase 28: Ownership & Move Semantics ✅
+
+### Pipe Moves
+
+The pipe operator `|>` moves the left-hand value, preventing reuse:
+
+```tl
+let data = read_csv("file.csv")
+let result = data |> filter(|r| r.age > 25) |> select("name", "age")
+// data is now <moved> — using it again is a compile-time error
+```
+
+### Clone (Deep Copy)
+
+```tl
+let orig = [1, 2, [3, 4]]
+let copy = orig.clone()     // recursive deep copy
+orig[0] = 99
+println(copy[0])            // 1 — unaffected
+```
+
+### References (Read-Only)
+
+```tl
+let x = 42
+let r = &x          // read-only reference
+println(r)          // 42 — transparent read
+// r.field = 5      // Error: cannot mutate through a reference
+```
+
+### Parallel For
+
+```tl
+parallel for item in items {
+    process(item)
+}
+```
+
+Reserved opcode (`ParallelFor = 66`) for future rayon-backed parallel iteration.
+
+---
+
+## Phase 29: TL-IR Intermediate Representation ✅
+
+Crate: `tl-ir`
+
+An intermediate representation for optimizing table pipe chains. The compiler automatically uses the IR path for eligible pipe chains and falls back to legacy compilation otherwise.
+
+### QueryPlan Variants
+
+| Variant | Description |
+|---------|-------------|
+| `Scan` | Table source |
+| `Filter` | Row predicate |
+| `Project` | Column selection/aliasing |
+| `Sort` | ORDER BY with direction |
+| `Join` | Inner/Left/Right/Full joins |
+| `Aggregate` | GROUP BY + aggregate functions (Sum, Count, Avg, Min, Max) |
+| `Limit` | Head/Take N rows |
+| `Show` | Terminal display |
+| `Collect` | Materialize to memory |
+| `Union` | Set union |
+| `Window` | Partitioned window functions |
+
+### Optimization Pipeline
+
+1. **Filter Merge** — combine consecutive `|> filter(...)` calls
+2. **Predicate Pushdown** — move filters before projections and joins
+3. **Column Pruning** — remove unused columns early
+4. **CSE** — common subexpression elimination
+
+Transparent to users — pipe chains like `table |> filter(...) |> select(...) |> sort(...)` are automatically optimized.
+
+---
+
+## Phase 30: LLVM Backend ✅
+
+Feature gate: `llvm-backend`
+
+Ahead-of-time native compilation via LLVM 19 (inkwell 0.8).
+
+### CLI Commands
+
+```bash
+# Run with LLVM backend
+tl run script.tl --backend llvm
+
+# Compile to native object file
+tl compile script.tl
+tl compile script.tl --output script.o
+
+# Emit LLVM IR for inspection
+tl compile script.tl --emit-ir
+```
+
+### Three-Tier Opcode Support
+
+| Tier | Strategy | Coverage |
+|------|----------|----------|
+| Tier 1 | Runtime helpers | Allocation, comparison, string ops |
+| Tier 2 | Direct dispatch | Control flow, function calls |
+| Tier 3 | VM fallback | Complex/unimplemented opcodes |
+
+### Execution Model
+
+Compiled code runs via MCJIT with registered runtime symbols. The main function uses a `VmContext` for accessing globals, builtins, and the data engine.
+
+---
+
+## Phase 31: WASM Backend ✅
+
+Crate: `tl-wasm`
+
+Browser execution via wasm-bindgen. Enables an interactive playground at `playground.thinkinglang.dev`.
+
+### Exported Functions
+
+```javascript
+import init, { execute, check } from './tl_wasm.js';
+
+await init();
+
+// Execute TL source, returns output or throws
+let output = execute('let x = 42\nprintln(x)');
+
+// Type-check source, returns "OK" or diagnostics
+let result = check('let x: int = "hello"');
+```
+
+### Build
+
+```bash
+wasm-pack build --target web crates/tl-wasm
+```
+
+Data operations, connectors, and AI builtins are not available in WASM — they return descriptive errors.
+
+---
+
+## Phase 32: GPU Tensor Support ✅
+
+Feature gate: `gpu`
+
+Cross-platform GPU acceleration via wgpu 24 (Vulkan/Metal/DX12/WebGPU).
+
+### GPU Builtins
+
+```tl
+// Check if GPU is available
+gpu_available()                    // true/false
+
+// Transfer data between CPU and GPU
+let g = to_gpu(cpu_tensor)        // CPU tensor → GPU tensor (f64 → f32)
+let c = g.to_cpu()                // GPU tensor → CPU tensor (f32 → f64)
+
+// Matrix multiplication
+let result = gpu_matmul(A, B)     // GPU matrix product
+```
+
+### Auto-Dispatch Binary Operations
+
+```tl
+let a = to_gpu(tensor([1.0, 2.0, 3.0]))
+let b = to_gpu(tensor([4.0, 5.0, 6.0]))
+
+let sum = a + b          // GPU element-wise addition
+let prod = a * b         // GPU element-wise multiplication
+```
+
+If either operand is a GPU tensor, binary operations automatically route through GPU compute shaders.
+
+### Compute Shaders (WGSL)
+
+| Shader | Operation |
+|--------|-----------|
+| Add | Element-wise addition |
+| Multiply | Element-wise multiplication |
+| MatMul | Matrix multiplication |
+| Sum | Row/column reduction |
+| Transpose | Memory layout reorder |
+
+### Limitations
+
+- GPU storage is f32 only (f64 values are converted on upload/download)
+- GPU device is a lazy singleton — initialized on first use
+- Staging buffer readback for CPU transfer
+
+---
+
+## Phase 33: Ecosystem & Community ✅
+
+### SQLite Connector
+
+Feature gate: `sqlite`
+
+```tl
+// Read from SQLite database
+let users = read_sqlite("data.db", "SELECT * FROM users")
+users |> show()
+
+// Write a table to SQLite
+write_sqlite(results, "output.db", "results_table")
+```
+
+Uses rusqlite 0.32 with bundled SQLite (zero system dependencies). Types are inferred from actual row data (INTEGER → Int64, REAL → Float64, TEXT → Utf8, BLOB → Binary).
+
+### Package Registry
+
+Feature gate: `registry`
+
+#### Registry Server (`tl-registry` crate)
+
+```bash
+# Start the registry server (default port 3333)
+tl-registry
+TL_REGISTRY_PORT=8080 tl-registry   # custom port
+```
+
+REST API:
+- `POST /api/v1/packages` — publish a package
+- `GET /api/v1/packages/:name` — get package metadata
+- `GET /api/v1/packages/:name/:version/download` — download tarball
+- `GET /api/v1/search?q=query` — search packages
+
+Storage: filesystem at `~/.tl/registry/packages/<name>/`
+
+#### CLI Commands
+
+```bash
+# Publish current project to the registry
+tl publish
+
+# Search for packages
+tl search "data utils"
+```
+
+Registry URL defaults to `http://localhost:3333`, override via `TL_REGISTRY_URL` env var.
+
+#### Registry Dependencies
+
+```toml
+# tl.toml — simple version spec fetches from registry
+[dependencies]
+utils = "^1.0"
+```
+
+When the `registry` feature is enabled, `tl install` downloads from the registry with SHA-256 verification. Without the feature, registry deps show a helpful error suggesting git/path alternatives.
+
+#### Transitive Dependencies & Conflict Detection
+
+Dependencies are resolved transitively — when package A depends on B, and B depends on C, all three are installed. The resolver uses BFS traversal with:
+
+- **Cycle detection** — circular dependencies are handled without infinite loops
+- **Diamond dedup** — if A→B and A→C both depend on D, D is resolved once
+- **Conflict detection** — if two packages require incompatible versions of the same dependency, an error is raised
+
+Lock file entries track `direct` (true for your deps, false for transitive) and `dependencies` (list of sub-dependency names).
+
+#### Upgrade Commands
+
+```bash
+# Show what would change
+tl update --dry-run
+
+# Update with version diffs
+tl update
+#   + newpkg v1.0.0 (new)
+#   utils: 1.0.0 -> 1.2.0
+#   - oldpkg v2.0.0 (removed)
+
+# Check for newer versions
+tl outdated
+#  Package    Current    Latest Matching    Latest Available
+#  utils      1.0.0      1.3.0              2.0.0
+```
+
+### TL Notebook
+
+Feature gate: `notebook`
+
+Interactive notebook interface with persistent VM state across cells.
+
+#### Usage
+
+```bash
+# Open or create a notebook (TUI)
+tl notebook analysis.tlnb
+
+# Export all code cells to a .tl file
+tl notebook analysis.tlnb --export
+```
+
+#### .tlnb Format
+
+```json
+{
+  "metadata": { "tl_version": "0.1.0", "created": "...", "modified": "..." },
+  "cells": [
+    { "cell_type": "code", "source": "let x = 42", "outputs": [{"output_type": "result", "text": "42"}], "execution_count": 1 },
+    { "cell_type": "markdown", "source": "# Analysis notes", "outputs": [] }
+  ]
+}
+```
+
+#### Key Bindings (Normal Mode)
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Navigate cells |
+| `Enter` | Execute current cell |
+| `e` | Edit cell source |
+| `a` / `A` | Add code / markdown cell |
+| `d` | Delete cell |
+| `s` | Save notebook |
+| `x` | Export to .tl |
+| `q` | Quit |
+
+In Edit mode: type normally, `Esc` to save, `Ctrl-C` to cancel.
 
 ---
 

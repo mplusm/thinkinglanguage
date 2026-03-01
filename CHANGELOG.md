@@ -159,8 +159,13 @@ All notable changes to ThinkingLanguage are documented here, organized by implem
 
 - tl-package crate for dependency management
 - Dependency sources: version, git, path, registry
-- CLI commands: tl add, tl remove, tl install, tl update
-- Lock file generation
+- CLI commands: tl add, tl remove, tl install, tl update, tl outdated
+- Lock file generation with transitive dependency tracking
+- Transitive dependency resolution (BFS with cycle detection)
+- Version conflict detection across transitive dependency tree
+- `tl update` shows version diffs (added/updated/removed)
+- `tl update --dry-run` previews changes without modifying tl.lock
+- `tl outdated` shows which dependencies have newer versions available
 
 ### Phase 19 — Documentation Generation
 
