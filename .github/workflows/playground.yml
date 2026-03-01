@@ -1,0 +1,49 @@
+name: Playground
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - crates/tl-wasm/**
+      - crates/tl-lexer/**
+      - crates/tl-ast/**
+      - crates/tl-parser/**
+      - crates/tl-interpreter/**
+      - crates/tl-errors/**
+      - crates/tl-types/**
+      - .github/workflows/playground.yml
+
+permissions:
+  pages: write
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+    environment: github-pages
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack
+
+      - name: Build WASM
+        run: wasm-pack build --target web crates/tl-wasm
+
+      - name: Prepare deploy directory
+        run: |
+          mkdir deploy
+          cp crates/tl-wasm/playground/index.html deploy/
+          cp -r crates/tl-wasm/pkg deploy/pkg
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: deploy
+
+      - uses: actions/deploy-pages@v4
