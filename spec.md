@@ -5,9 +5,9 @@ markdown
 ### A Purpose-Built Language for Data Engineering & Artificial Intelligence
 
 **Version:** 0.1.0-draft
-**Author:** Mallesh, Founder — ThinkingDBx Private Limited
+**Author:** Mallesh Madapathi, Founder — ThinkingDBx Private Limited
 **Date:** February 2026
-**Status:** Design Phase
+**Status:** Implementation Complete
 
 ---
 
