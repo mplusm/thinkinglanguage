@@ -421,6 +421,9 @@ pub struct Vm {
     runtime: Option<Arc<tokio::runtime::Runtime>>,
     /// Stashed thrown value for structured error preservation in try/catch
     thrown_value: Option<VmValue>,
+    /// GPU operations dispatcher (lazily initialized)
+    #[cfg(feature = "gpu")]
+    gpu_ops: Option<tl_gpu::GpuOps>,
 }
 
 impl Vm {
@@ -447,6 +450,8 @@ impl Vm {
             #[cfg(feature = "async-runtime")]
             runtime: None,
             thrown_value: None,
+            #[cfg(feature = "gpu")]
+            gpu_ops: None,
         };
         // Phase 27: Register built-in error enum definitions
         vm.globals.insert("DataError".into(), VmValue::EnumDef(Arc::new(VmEnumDef {
@@ -489,6 +494,32 @@ impl Vm {
             ));
         }
         self.runtime.as_ref().unwrap().clone()
+    }
+
+    /// Lazily initialize and return the GPU ops dispatcher.
+    #[cfg(feature = "gpu")]
+    fn get_gpu_ops(&mut self) -> Result<&tl_gpu::GpuOps, TlError> {
+        if self.gpu_ops.is_none() {
+            let device = tl_gpu::GpuDevice::get()
+                .ok_or_else(|| runtime_err("No GPU device available"))?;
+            self.gpu_ops = Some(tl_gpu::GpuOps::new(device));
+        }
+        Ok(self.gpu_ops.as_ref().unwrap())
+    }
+
+    /// Extract a GpuTensor from a VmValue, auto-uploading CPU tensors if needed.
+    #[cfg(feature = "gpu")]
+    fn ensure_gpu_tensor(&mut self, val: &VmValue) -> Result<Arc<tl_gpu::GpuTensor>, TlError> {
+        match val {
+            VmValue::GpuTensor(gt) => Ok(gt.clone()),
+            #[cfg(feature = "native")]
+            VmValue::Tensor(t) => {
+                let device = tl_gpu::GpuDevice::get()
+                    .ok_or_else(|| runtime_err("No GPU device available"))?;
+                Ok(Arc::new(tl_gpu::GpuTensor::from_cpu(t, device)))
+            }
+            _ => Err(runtime_err(format!("Expected tensor or gpu_tensor, got {}", val.type_name()))),
+        }
     }
 
     #[cfg(feature = "native")]
@@ -1690,7 +1721,7 @@ impl Vm {
 
     // ── Arithmetic helpers ──
 
-    fn vm_add(&self, base: usize, b: u8, c: u8) -> Result<VmValue, TlError> {
+    fn vm_add(&mut self, base: usize, b: u8, c: u8) -> Result<VmValue, TlError> {
         let left = &self.stack[base + b as usize];
         let right = &self.stack[base + c as usize];
         match (left, right) {
@@ -1700,6 +1731,24 @@ impl Vm {
             (VmValue::Float(a), VmValue::Int(b)) => Ok(VmValue::Float(a + *b as f64)),
             (VmValue::String(a), VmValue::String(b)) => {
                 Ok(VmValue::String(Arc::from(format!("{a}{b}").as_str())))
+            }
+            #[cfg(feature = "gpu")]
+            (VmValue::GpuTensor(a), VmValue::GpuTensor(b)) => {
+                let a = a.clone();
+                let b = b.clone();
+                let ops = self.get_gpu_ops()?;
+                let result = ops.add(&a, &b).map_err(|e| runtime_err(e))?;
+                Ok(VmValue::GpuTensor(Arc::new(result)))
+            }
+            #[cfg(feature = "gpu")]
+            (VmValue::GpuTensor(_), VmValue::Tensor(_)) | (VmValue::Tensor(_), VmValue::GpuTensor(_)) => {
+                let lv = self.stack[base + b as usize].clone();
+                let rv = self.stack[base + c as usize].clone();
+                let a = self.ensure_gpu_tensor(&lv)?;
+                let b_val = self.ensure_gpu_tensor(&rv)?;
+                let ops = self.get_gpu_ops()?;
+                let result = ops.add(&a, &b_val).map_err(|e| runtime_err(e))?;
+                Ok(VmValue::GpuTensor(Arc::new(result)))
             }
             #[cfg(feature = "native")]
             (VmValue::Tensor(a), VmValue::Tensor(b)) => {
@@ -1719,7 +1768,7 @@ impl Vm {
         }
     }
 
-    fn vm_sub(&self, base: usize, b: u8, c: u8) -> Result<VmValue, TlError> {
+    fn vm_sub(&mut self, base: usize, b: u8, c: u8) -> Result<VmValue, TlError> {
         let left = &self.stack[base + b as usize];
         let right = &self.stack[base + c as usize];
         match (left, right) {
@@ -1727,6 +1776,24 @@ impl Vm {
             (VmValue::Float(a), VmValue::Float(b)) => Ok(VmValue::Float(a - b)),
             (VmValue::Int(a), VmValue::Float(b)) => Ok(VmValue::Float(*a as f64 - b)),
             (VmValue::Float(a), VmValue::Int(b)) => Ok(VmValue::Float(a - *b as f64)),
+            #[cfg(feature = "gpu")]
+            (VmValue::GpuTensor(a), VmValue::GpuTensor(b)) => {
+                let a = a.clone();
+                let b = b.clone();
+                let ops = self.get_gpu_ops()?;
+                let result = ops.sub(&a, &b).map_err(|e| runtime_err(e))?;
+                Ok(VmValue::GpuTensor(Arc::new(result)))
+            }
+            #[cfg(feature = "gpu")]
+            (VmValue::GpuTensor(_), VmValue::Tensor(_)) | (VmValue::Tensor(_), VmValue::GpuTensor(_)) => {
+                let lv = self.stack[base + b as usize].clone();
+                let rv = self.stack[base + c as usize].clone();
+                let a = self.ensure_gpu_tensor(&lv)?;
+                let b_val = self.ensure_gpu_tensor(&rv)?;
+                let ops = self.get_gpu_ops()?;
+                let result = ops.sub(&a, &b_val).map_err(|e| runtime_err(e))?;
+                Ok(VmValue::GpuTensor(Arc::new(result)))
+            }
             #[cfg(feature = "native")]
             (VmValue::Tensor(a), VmValue::Tensor(b)) => {
                 let result = a.sub(b).map_err(|e| runtime_err(format!("{e}")))?;
@@ -1744,7 +1811,7 @@ impl Vm {
         }
     }
 
-    fn vm_mul(&self, base: usize, b: u8, c: u8) -> Result<VmValue, TlError> {
+    fn vm_mul(&mut self, base: usize, b: u8, c: u8) -> Result<VmValue, TlError> {
         let left = &self.stack[base + b as usize];
         let right = &self.stack[base + c as usize];
         match (left, right) {
@@ -1754,6 +1821,32 @@ impl Vm {
             (VmValue::Float(a), VmValue::Int(b)) => Ok(VmValue::Float(a * *b as f64)),
             (VmValue::String(a), VmValue::Int(b)) => {
                 Ok(VmValue::String(Arc::from(a.repeat(*b as usize).as_str())))
+            }
+            #[cfg(feature = "gpu")]
+            (VmValue::GpuTensor(a), VmValue::GpuTensor(b)) => {
+                let a = a.clone();
+                let b = b.clone();
+                let ops = self.get_gpu_ops()?;
+                let result = ops.mul(&a, &b).map_err(|e| runtime_err(e))?;
+                Ok(VmValue::GpuTensor(Arc::new(result)))
+            }
+            #[cfg(feature = "gpu")]
+            (VmValue::GpuTensor(_), VmValue::Tensor(_)) | (VmValue::Tensor(_), VmValue::GpuTensor(_)) => {
+                let lv = self.stack[base + b as usize].clone();
+                let rv = self.stack[base + c as usize].clone();
+                let a = self.ensure_gpu_tensor(&lv)?;
+                let b_val = self.ensure_gpu_tensor(&rv)?;
+                let ops = self.get_gpu_ops()?;
+                let result = ops.mul(&a, &b_val).map_err(|e| runtime_err(e))?;
+                Ok(VmValue::GpuTensor(Arc::new(result)))
+            }
+            #[cfg(feature = "gpu")]
+            (VmValue::GpuTensor(t), VmValue::Float(s)) | (VmValue::Float(s), VmValue::GpuTensor(t)) => {
+                let t = t.clone();
+                let s = *s;
+                let ops = self.get_gpu_ops()?;
+                let result = ops.scale(&t, s as f32);
+                Ok(VmValue::GpuTensor(Arc::new(result)))
             }
             #[cfg(feature = "native")]
             (VmValue::Tensor(a), VmValue::Tensor(b)) => {
@@ -1777,7 +1870,7 @@ impl Vm {
         }
     }
 
-    fn vm_div(&self, base: usize, b: u8, c: u8) -> Result<VmValue, TlError> {
+    fn vm_div(&mut self, base: usize, b: u8, c: u8) -> Result<VmValue, TlError> {
         let left = &self.stack[base + b as usize];
         let right = &self.stack[base + c as usize];
         match (left, right) {
@@ -1790,6 +1883,24 @@ impl Vm {
             (VmValue::Float(a), VmValue::Int(b)) => {
                 if *b == 0 { return Err(runtime_err("Division by zero")); }
                 Ok(VmValue::Float(a / *b as f64))
+            }
+            #[cfg(feature = "gpu")]
+            (VmValue::GpuTensor(a), VmValue::GpuTensor(b)) => {
+                let a = a.clone();
+                let b = b.clone();
+                let ops = self.get_gpu_ops()?;
+                let result = ops.div(&a, &b).map_err(|e| runtime_err(e))?;
+                Ok(VmValue::GpuTensor(Arc::new(result)))
+            }
+            #[cfg(feature = "gpu")]
+            (VmValue::GpuTensor(_), VmValue::Tensor(_)) | (VmValue::Tensor(_), VmValue::GpuTensor(_)) => {
+                let lv = self.stack[base + b as usize].clone();
+                let rv = self.stack[base + c as usize].clone();
+                let a = self.ensure_gpu_tensor(&lv)?;
+                let b_val = self.ensure_gpu_tensor(&rv)?;
+                let ops = self.get_gpu_ops()?;
+                let result = ops.div(&a, &b_val).map_err(|e| runtime_err(e))?;
+                Ok(VmValue::GpuTensor(Arc::new(result)))
             }
             #[cfg(feature = "native")]
             (VmValue::Tensor(a), VmValue::Tensor(b)) => {
@@ -4302,6 +4413,78 @@ impl Vm {
                     _ => Ok(VmValue::None),
                 }
             }
+
+            // Phase 32: GPU Tensor Support
+            #[cfg(feature = "gpu")]
+            BuiltinId::GpuAvailable => {
+                Ok(VmValue::Bool(tl_gpu::GpuDevice::is_available()))
+            }
+            #[cfg(not(feature = "gpu"))]
+            BuiltinId::GpuAvailable => {
+                Ok(VmValue::Bool(false))
+            }
+
+            #[cfg(feature = "gpu")]
+            BuiltinId::ToGpu => {
+                if args.is_empty() { return Err(runtime_err("to_gpu() expects 1 argument (tensor)")); }
+                let gt = self.ensure_gpu_tensor(&args[0])?;
+                Ok(VmValue::GpuTensor(gt))
+            }
+            #[cfg(not(feature = "gpu"))]
+            BuiltinId::ToGpu => {
+                Err(runtime_err("GPU operations not available. Build with --features gpu"))
+            }
+
+            #[cfg(feature = "gpu")]
+            BuiltinId::ToCpu => {
+                if args.is_empty() { return Err(runtime_err("to_cpu() expects 1 argument (gpu_tensor)")); }
+                match &args[0] {
+                    VmValue::GpuTensor(gt) => {
+                        let cpu = gt.to_cpu().map_err(|e| runtime_err(e))?;
+                        Ok(VmValue::Tensor(Arc::new(cpu)))
+                    }
+                    _ => Err(runtime_err(format!("to_cpu() expects a gpu_tensor, got {}", args[0].type_name()))),
+                }
+            }
+            #[cfg(not(feature = "gpu"))]
+            BuiltinId::ToCpu => {
+                Err(runtime_err("GPU operations not available. Build with --features gpu"))
+            }
+
+            #[cfg(feature = "gpu")]
+            BuiltinId::GpuMatmul => {
+                if args.len() < 2 { return Err(runtime_err("gpu_matmul() expects 2 arguments")); }
+                let a = self.ensure_gpu_tensor(&args[0])?;
+                let b = self.ensure_gpu_tensor(&args[1])?;
+                let ops = self.get_gpu_ops()?;
+                let result = ops.matmul(&a, &b).map_err(|e| runtime_err(e))?;
+                Ok(VmValue::GpuTensor(Arc::new(result)))
+            }
+            #[cfg(not(feature = "gpu"))]
+            BuiltinId::GpuMatmul => {
+                Err(runtime_err("GPU operations not available. Build with --features gpu"))
+            }
+
+            #[cfg(feature = "gpu")]
+            BuiltinId::GpuBatchPredict => {
+                if args.len() < 2 { return Err(runtime_err("gpu_batch_predict() expects 2-3 arguments")); }
+                match (&args[0], &args[1]) {
+                    (VmValue::Model(model), VmValue::Tensor(input)) => {
+                        let batch_size = args.get(2).and_then(|v| match v {
+                            VmValue::Int(n) => Some(*n as usize),
+                            _ => None,
+                        });
+                        let result = tl_gpu::BatchInference::batch_predict(model, input, batch_size)
+                            .map_err(|e| runtime_err(e))?;
+                        Ok(VmValue::Tensor(Arc::new(result)))
+                    }
+                    _ => Err(runtime_err("gpu_batch_predict() expects (model, tensor, [batch_size])")),
+                }
+            }
+            #[cfg(not(feature = "gpu"))]
+            BuiltinId::GpuBatchPredict => {
+                Err(runtime_err("GPU operations not available. Build with --features gpu"))
+            }
         }
     }
 
@@ -4968,6 +5151,11 @@ impl Vm {
                     fields: cloned_fields?,
                 })))
             }
+            #[cfg(feature = "gpu")]
+            VmValue::GpuTensor(gt) => {
+                let cloned = tl_gpu::GpuTensor::clone(gt.as_ref());
+                Ok(VmValue::GpuTensor(Arc::new(cloned)))
+            }
             VmValue::Ref(inner) => self.deep_clone_value(inner),
             VmValue::Moved => Err(runtime_err("Cannot clone a moved value".to_string())),
             VmValue::Task(_) => Err(runtime_err("Cannot clone a task".to_string())),
@@ -5013,6 +5201,25 @@ impl Vm {
             #[cfg(feature = "python")]
             VmValue::PyObject(wrapper) => {
                 crate::python::py_call_method(wrapper, method, args)
+            }
+            #[cfg(feature = "gpu")]
+            VmValue::GpuTensor(gt) => {
+                match method {
+                    "to_cpu" => {
+                        let cpu = gt.to_cpu().map_err(|e| runtime_err(e))?;
+                        Ok(VmValue::Tensor(Arc::new(cpu)))
+                    }
+                    "shape" => {
+                        let shape_list = gt.shape.iter()
+                            .map(|&d| VmValue::Int(d as i64))
+                            .collect();
+                        Ok(VmValue::List(shape_list))
+                    }
+                    "dtype" => {
+                        Ok(VmValue::String(Arc::from(format!("{}", gt.dtype).as_str())))
+                    }
+                    _ => Err(runtime_err(format!("No method '{}' on gpu_tensor", method))),
+                }
             }
             _ => {
                 // Try looking up Type::method from type_name

@@ -1,0 +1,16 @@
+[package]
+name = "tl-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "GPU tensor compute for ThinkingLanguage via wgpu"
+
+[dependencies]
+tl-ai = { path = "../tl-ai" }
+ndarray = "0.15"
+wgpu = "24"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.4"
+
+[dev-dependencies]
+env_logger = "0.11"

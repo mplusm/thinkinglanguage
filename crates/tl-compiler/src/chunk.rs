@@ -572,6 +572,12 @@ pub enum BuiltinId {
     // Phase 27: Data Error Hierarchy
     IsError = 173,
     ErrorType = 174,
+    // Phase 32: GPU Tensor Support
+    GpuAvailable = 175,
+    ToGpu = 176,
+    ToCpu = 177,
+    GpuMatmul = 178,
+    GpuBatchPredict = 179,
 }
 
 impl BuiltinId {
@@ -759,6 +765,12 @@ impl BuiltinId {
             // Phase 27: Data Error Hierarchy
             "is_error" => Some(BuiltinId::IsError),
             "error_type" => Some(BuiltinId::ErrorType),
+            // Phase 32: GPU Tensor Support
+            "gpu_available" => Some(BuiltinId::GpuAvailable),
+            "to_gpu" => Some(BuiltinId::ToGpu),
+            "to_cpu" => Some(BuiltinId::ToCpu),
+            "gpu_matmul" => Some(BuiltinId::GpuMatmul),
+            "gpu_batch_predict" => Some(BuiltinId::GpuBatchPredict),
             _ => None,
         }
     }
@@ -947,6 +959,12 @@ impl BuiltinId {
             // Phase 27
             BuiltinId::IsError => "is_error",
             BuiltinId::ErrorType => "error_type",
+            // Phase 32: GPU
+            BuiltinId::GpuAvailable => "gpu_available",
+            BuiltinId::ToGpu => "to_gpu",
+            BuiltinId::ToCpu => "to_cpu",
+            BuiltinId::GpuMatmul => "gpu_matmul",
+            BuiltinId::GpuBatchPredict => "gpu_batch_predict",
         }
     }
 }

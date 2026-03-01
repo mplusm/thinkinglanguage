@@ -11,6 +11,8 @@ use tl_data::{ArrowSchema, DataFrame};
 use tl_ai::{TlTensor, TlModel};
 #[cfg(feature = "native")]
 use tl_stream::{ConnectorConfig, PipelineDef, StreamDef, PipelineResult};
+#[cfg(feature = "gpu")]
+use tl_gpu::GpuTensor;
 
 use crate::chunk::{BuiltinId, Prototype};
 
@@ -78,6 +80,9 @@ pub enum VmValue {
     /// An opaque Python object (feature-gated)
     #[cfg(feature = "python")]
     PyObject(Arc<crate::python::PyObjectWrapper>),
+    /// A GPU-resident tensor (feature-gated)
+    #[cfg(feature = "gpu")]
+    GpuTensor(Arc<GpuTensor>),
     /// Tombstone for a value consumed by pipe-move
     Moved,
     /// Read-only reference wrapper
@@ -302,6 +307,8 @@ impl VmValue {
             VmValue::Decimal(d) => !d.is_zero(),
             #[cfg(feature = "python")]
             VmValue::PyObject(_) => true,
+            #[cfg(feature = "gpu")]
+            VmValue::GpuTensor(_) => true,
             VmValue::Moved => false,
             VmValue::Ref(inner) => inner.is_truthy(),
             _ => true,
@@ -348,6 +355,8 @@ impl VmValue {
             VmValue::Secret(_) => "secret",
             #[cfg(feature = "python")]
             VmValue::PyObject(_) => "pyobject",
+            #[cfg(feature = "gpu")]
+            VmValue::GpuTensor(_) => "gpu_tensor",
             VmValue::Moved => "<moved>",
             VmValue::Ref(inner) => inner.type_name(),
         }
@@ -425,6 +434,8 @@ impl fmt::Debug for VmValue {
             VmValue::Secret(_) => write!(f, "Secret(***)"),
             #[cfg(feature = "python")]
             VmValue::PyObject(w) => write!(f, "PyObject({w:?})"),
+            #[cfg(feature = "gpu")]
+            VmValue::GpuTensor(t) => write!(f, "{t:?}"),
             VmValue::Moved => write!(f, "<moved>"),
             VmValue::Ref(inner) => write!(f, "&{inner:?}"),
         }
@@ -522,6 +533,8 @@ impl fmt::Display for VmValue {
             VmValue::Secret(_) => write!(f, "***"),
             #[cfg(feature = "python")]
             VmValue::PyObject(w) => write!(f, "{w}"),
+            #[cfg(feature = "gpu")]
+            VmValue::GpuTensor(t) => write!(f, "{t}"),
             VmValue::Moved => write!(f, "<moved>"),
             VmValue::Ref(inner) => write!(f, "{inner}"),
         }

@@ -16,6 +16,7 @@ members = [
     "crates/tl-ir",
     "crates/tl-llvm",
     "crates/tl-wasm",
+    "crates/tl-gpu",
     "benchmarks",
 ]
 resolver = "2"
