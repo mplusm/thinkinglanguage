@@ -1,6 +1,6 @@
 // BatchInference — auto-batching for GPU inference
 
-use tl_ai::{TlTensor, TlModel, predict_batch};
+use tl_ai::{TlModel, TlTensor, predict_batch};
 
 /// Batch inference helper. Currently delegates to CPU-based predict_batch.
 /// Future: keep intermediate data on GPU between batches.

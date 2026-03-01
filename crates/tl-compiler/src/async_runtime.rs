@@ -4,14 +4,14 @@
 // Phase 25: Real async I/O implementations for the 9 async builtins.
 // Feature-gated behind `async-runtime`.
 
-use std::sync::{Arc, mpsc};
 use std::collections::HashMap;
+use std::sync::{Arc, mpsc};
 
+use tl_errors::{RuntimeError, TlError};
 use tokio::runtime::Runtime;
-use tl_errors::{TlError, RuntimeError};
 
 use crate::security::SecurityPolicy;
-use crate::value::{VmValue, VmTask, VmClosure, UpvalueRef};
+use crate::value::{UpvalueRef, VmClosure, VmTask, VmValue};
 use crate::vm::Vm;
 
 fn runtime_err(msg: impl Into<String>) -> TlError {
@@ -24,13 +24,17 @@ fn runtime_err(msg: impl Into<String>) -> TlError {
 
 /// Close all upvalues (Open → Closed) using current stack values.
 fn close_upvalues(closure: &VmClosure, stack: &[VmValue]) -> Vec<UpvalueRef> {
-    closure.upvalues.iter().map(|uv| match uv {
-        UpvalueRef::Open { stack_index } => {
-            let val = stack.get(*stack_index).cloned().unwrap_or(VmValue::None);
-            UpvalueRef::Closed(val)
-        }
-        UpvalueRef::Closed(v) => UpvalueRef::Closed(v.clone()),
-    }).collect()
+    closure
+        .upvalues
+        .iter()
+        .map(|uv| match uv {
+            UpvalueRef::Open { stack_index } => {
+                let val = stack.get(*stack_index).cloned().unwrap_or(VmValue::None);
+                UpvalueRef::Closed(val)
+            }
+            UpvalueRef::Closed(v) => UpvalueRef::Closed(v.clone()),
+        })
+        .collect()
 }
 
 // ── async_read_file ────────────────────────────────────────────────
@@ -47,16 +51,20 @@ pub fn async_read_file_impl(
 
     if let Some(policy) = security_policy {
         if !policy.check("file_read") {
-            return Err(runtime_err("async_read_file: file_read not allowed by security policy"));
+            return Err(runtime_err(
+                "async_read_file: file_read not allowed by security policy",
+            ));
         }
     }
 
     let (tx, rx) = mpsc::channel();
     rt.spawn(async move {
         let result = tokio::fs::read_to_string(path.as_ref()).await;
-        let _ = tx.send(result
-            .map(|s| VmValue::String(Arc::from(s.as_str())))
-            .map_err(|e| format!("async_read_file error: {e}")));
+        let _ = tx.send(
+            result
+                .map(|s| VmValue::String(Arc::from(s.as_str())))
+                .map_err(|e| format!("async_read_file error: {e}")),
+        );
     });
     Ok(VmValue::Task(Arc::new(VmTask::new(rx))))
 }
@@ -74,21 +82,29 @@ pub fn async_write_file_impl(
     };
     let content = match args.get(1) {
         Some(VmValue::String(s)) => s.clone(),
-        _ => return Err(runtime_err("async_write_file() expects string content as second argument")),
+        _ => {
+            return Err(runtime_err(
+                "async_write_file() expects string content as second argument",
+            ));
+        }
     };
 
     if let Some(policy) = security_policy {
         if !policy.check("file_write") {
-            return Err(runtime_err("async_write_file: file_write not allowed by security policy"));
+            return Err(runtime_err(
+                "async_write_file: file_write not allowed by security policy",
+            ));
         }
     }
 
     let (tx, rx) = mpsc::channel();
     rt.spawn(async move {
         let result = tokio::fs::write(path.as_ref(), content.as_ref().as_bytes()).await;
-        let _ = tx.send(result
-            .map(|_| VmValue::None)
-            .map_err(|e| format!("async_write_file error: {e}")));
+        let _ = tx.send(
+            result
+                .map(|_| VmValue::None)
+                .map_err(|e| format!("async_write_file error: {e}")),
+        );
     });
     Ok(VmValue::Task(Arc::new(VmTask::new(rx))))
 }
@@ -107,19 +123,24 @@ pub fn async_http_get_impl(
 
     if let Some(policy) = security_policy {
         if !policy.check("network") {
-            return Err(runtime_err("async_http_get: network not allowed by security policy"));
+            return Err(runtime_err(
+                "async_http_get: network not allowed by security policy",
+            ));
         }
     }
 
     let (tx, rx) = mpsc::channel();
     rt.spawn(async move {
         let result: Result<VmValue, String> = async {
-            let body = reqwest::get(url.as_ref()).await
+            let body = reqwest::get(url.as_ref())
+                .await
                 .map_err(|e| format!("async_http_get error: {e}"))?
-                .text().await
+                .text()
+                .await
                 .map_err(|e| format!("async_http_get response error: {e}"))?;
             Ok(VmValue::String(Arc::from(body.as_str())))
-        }.await;
+        }
+        .await;
         let _ = tx.send(result);
     });
     Ok(VmValue::Task(Arc::new(VmTask::new(rx))))
@@ -138,12 +159,18 @@ pub fn async_http_post_impl(
     };
     let body = match args.get(1) {
         Some(VmValue::String(s)) => s.clone(),
-        _ => return Err(runtime_err("async_http_post() expects string body as second argument")),
+        _ => {
+            return Err(runtime_err(
+                "async_http_post() expects string body as second argument",
+            ));
+        }
     };
 
     if let Some(policy) = security_policy {
         if !policy.check("network") {
-            return Err(runtime_err("async_http_post: network not allowed by security policy"));
+            return Err(runtime_err(
+                "async_http_post: network not allowed by security policy",
+            ));
         }
     }
 
@@ -153,12 +180,15 @@ pub fn async_http_post_impl(
             let resp = reqwest::Client::new()
                 .post(url.as_ref())
                 .body(body.to_string())
-                .send().await
+                .send()
+                .await
                 .map_err(|e| format!("async_http_post error: {e}"))?
-                .text().await
+                .text()
+                .await
                 .map_err(|e| format!("async_http_post response error: {e}"))?;
             Ok(VmValue::String(Arc::from(resp.as_str())))
-        }.await;
+        }
+        .await;
         let _ = tx.send(result);
     });
     Ok(VmValue::Task(Arc::new(VmTask::new(rx))))
@@ -166,13 +196,14 @@ pub fn async_http_post_impl(
 
 // ── async_sleep ────────────────────────────────────────────────────
 
-pub fn async_sleep_impl(
-    rt: &Runtime,
-    args: &[VmValue],
-) -> Result<VmValue, TlError> {
+pub fn async_sleep_impl(rt: &Runtime, args: &[VmValue]) -> Result<VmValue, TlError> {
     let ms = match args.first() {
         Some(VmValue::Int(n)) => *n as u64,
-        _ => return Err(runtime_err("async_sleep() expects an integer (milliseconds)")),
+        _ => {
+            return Err(runtime_err(
+                "async_sleep() expects an integer (milliseconds)",
+            ));
+        }
     };
 
     let (tx, rx) = mpsc::channel();
@@ -203,7 +234,9 @@ pub fn select_impl(args: &[VmValue]) -> Result<VmValue, TlError> {
                 };
                 match rx {
                     Some(r) => receivers.push(r),
-                    None => return Err(runtime_err(format!("select: task {} already consumed", i))),
+                    None => {
+                        return Err(runtime_err(format!("select: task {} already consumed", i)));
+                    }
                 }
             }
             _ => return Err(runtime_err(format!("select: argument {} is not a task", i))),
@@ -250,10 +283,20 @@ pub fn race_all_impl(args: &[VmValue]) -> Result<VmValue, TlError> {
                 };
                 match rx {
                     Some(r) => receivers.push(r),
-                    None => return Err(runtime_err(format!("race_all: task {} already consumed", i))),
+                    None => {
+                        return Err(runtime_err(format!(
+                            "race_all: task {} already consumed",
+                            i
+                        )));
+                    }
                 }
             }
-            _ => return Err(runtime_err(format!("race_all: element {} is not a task", i))),
+            _ => {
+                return Err(runtime_err(format!(
+                    "race_all: element {} is not a task",
+                    i
+                )));
+            }
         }
     }
 
@@ -287,7 +330,11 @@ pub fn async_map_impl(
     };
     let closure = match args.get(1) {
         Some(VmValue::Function(c)) => c.clone(),
-        _ => return Err(runtime_err("async_map() expects a function as second argument")),
+        _ => {
+            return Err(runtime_err(
+                "async_map() expects a function as second argument",
+            ));
+        }
     };
 
     let closed_upvalues = close_upvalues(&closure, stack);
@@ -341,11 +388,19 @@ pub fn async_filter_impl(
 ) -> Result<VmValue, TlError> {
     let items = match args.first() {
         Some(VmValue::List(list)) => list.clone(),
-        _ => return Err(runtime_err("async_filter() expects a list as first argument")),
+        _ => {
+            return Err(runtime_err(
+                "async_filter() expects a list as first argument",
+            ));
+        }
     };
     let closure = match args.get(1) {
         Some(VmValue::Function(c)) => c.clone(),
-        _ => return Err(runtime_err("async_filter() expects a function as second argument")),
+        _ => {
+            return Err(runtime_err(
+                "async_filter() expects a function as second argument",
+            ));
+        }
     };
 
     let closed_upvalues = close_upvalues(&closure, stack);

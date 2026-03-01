@@ -12,8 +12,8 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::Module;
 
 use crate::chunk::Prototype;
-use crate::value::VmValue;
 use crate::jit_runtime;
+use crate::value::VmValue;
 
 /// JIT-compiled function signature:
 /// extern "C" fn(args: *const VmValue, nargs: usize) -> VmValue
@@ -31,9 +31,11 @@ pub struct JitCompiler {
 impl JitCompiler {
     pub fn new() -> Result<Self, String> {
         let mut flag_builder = settings::builder();
-        flag_builder.set("use_colocated_libcalls", "false")
+        flag_builder
+            .set("use_colocated_libcalls", "false")
             .map_err(|e| format!("JIT settings error: {e}"))?;
-        flag_builder.set("is_pic", "false")
+        flag_builder
+            .set("is_pic", "false")
             .map_err(|e| format!("JIT settings error: {e}"))?;
 
         let isa_builder = cranelift_codegen::isa::lookup(target_lexicon::Triple::host())
@@ -72,7 +74,7 @@ impl JitCompiler {
     /// Returns None if the function is too complex to JIT (e.g. uses table ops).
     pub fn compile_function(&mut self, proto: &Prototype) -> Result<Option<*const u8>, String> {
         // For now, only JIT simple numeric functions (no table ops, no closures)
-        if proto.upvalue_defs.len() > 0 {
+        if !proto.upvalue_defs.is_empty() {
             return Ok(None); // Skip closures for now
         }
 
@@ -80,10 +82,10 @@ impl JitCompiler {
         for &inst in &proto.code {
             let op = crate::opcode::decode_op(inst);
             match op {
-                crate::opcode::Op::TablePipe |
-                crate::opcode::Op::Interpolate |
-                crate::opcode::Op::NewMap |
-                crate::opcode::Op::GetMember => {
+                crate::opcode::Op::TablePipe
+                | crate::opcode::Op::Interpolate
+                | crate::opcode::Op::NewMap
+                | crate::opcode::Op::GetMember => {
                     return Ok(None); // Too complex for baseline JIT
                 }
                 _ => {}

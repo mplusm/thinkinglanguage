@@ -18,17 +18,19 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
 
-use tl_errors::{report_parser_error, report_runtime_error, report_type_error, report_type_warning, TlError};
+use tl_compiler::{Vm, VmValue, compile, compile_with_source};
+use tl_errors::{
+    TlError, report_parser_error, report_runtime_error, report_type_error, report_type_warning,
+};
 use tl_interpreter::Interpreter;
-use tl_compiler::{compile, compile_with_source, Vm, VmValue};
 use tl_parser::parse;
 use tl_types::checker::{CheckerConfig, check_program};
 
 mod deploy;
-mod package;
 mod notebook;
 #[cfg(feature = "notebook")]
 mod notebook_tui;
+mod package;
 
 // ---------------------------------------------------------------------------
 // Tab-completion helper
@@ -42,43 +44,214 @@ impl TlHelper {
     fn new() -> Self {
         let mut completions: Vec<String> = [
             // Keywords
-            "let", "fn", "if", "else", "while", "for", "in", "return", "true", "false", "none",
-            "struct", "enum", "impl", "try", "catch", "throw", "import", "test", "break", "continue",
-            "and", "or", "not", "mut", "await", "yield", "match", "schema", "pipeline", "stream",
-            "source", "sink", "use", "pub", "mod", "trait", "where", "type", "check", "lsp", "fmt", "lint",
-            "add", "remove", "install", "update", "publish", "search", "doc",
+            "let",
+            "fn",
+            "if",
+            "else",
+            "while",
+            "for",
+            "in",
+            "return",
+            "true",
+            "false",
+            "none",
+            "struct",
+            "enum",
+            "impl",
+            "try",
+            "catch",
+            "throw",
+            "import",
+            "test",
+            "break",
+            "continue",
+            "and",
+            "or",
+            "not",
+            "mut",
+            "await",
+            "yield",
+            "match",
+            "schema",
+            "pipeline",
+            "stream",
+            "source",
+            "sink",
+            "use",
+            "pub",
+            "mod",
+            "trait",
+            "where",
+            "type",
+            "check",
+            "lsp",
+            "fmt",
+            "lint",
+            "add",
+            "remove",
+            "install",
+            "update",
+            "publish",
+            "search",
+            "doc",
             // Builtin functions
-            "print", "println", "len", "str", "int", "float", "abs", "min", "max", "range",
-            "push", "type_of", "map", "filter", "reduce", "sum", "any", "all",
-            "read_csv", "read_parquet", "write_csv", "write_parquet", "collect", "show",
-            "describe", "head", "sqrt", "pow", "floor", "ceil", "round", "sin", "cos", "tan",
-            "log", "log2", "log10", "join", "assert", "assert_eq",
-            "json_parse", "json_stringify", "map_from", "read_file", "write_file", "append_file",
-            "file_exists", "list_dir", "env_get", "env_set", "regex_match", "regex_find",
-            "regex_replace", "now", "date_format", "date_parse", "zip", "enumerate", "bool",
-            "spawn", "sleep", "channel", "send", "recv", "try_recv", "await_all", "pmap", "timeout",
-            "next", "is_generator", "iter", "take", "skip", "gen_collect", "gen_map", "gen_filter",
-            "chain", "gen_zip", "gen_enumerate",
-            "Ok", "Err", "is_ok", "is_err", "unwrap",
-            "set_from", "set_add", "set_remove", "set_contains", "set_union", "set_intersection", "set_difference",
+            "print",
+            "println",
+            "len",
+            "str",
+            "int",
+            "float",
+            "abs",
+            "min",
+            "max",
+            "range",
+            "push",
+            "type_of",
+            "map",
+            "filter",
+            "reduce",
+            "sum",
+            "any",
+            "all",
+            "read_csv",
+            "read_parquet",
+            "write_csv",
+            "write_parquet",
+            "collect",
+            "show",
+            "describe",
+            "head",
+            "sqrt",
+            "pow",
+            "floor",
+            "ceil",
+            "round",
+            "sin",
+            "cos",
+            "tan",
+            "log",
+            "log2",
+            "log10",
+            "join",
+            "assert",
+            "assert_eq",
+            "json_parse",
+            "json_stringify",
+            "map_from",
+            "read_file",
+            "write_file",
+            "append_file",
+            "file_exists",
+            "list_dir",
+            "env_get",
+            "env_set",
+            "regex_match",
+            "regex_find",
+            "regex_replace",
+            "now",
+            "date_format",
+            "date_parse",
+            "zip",
+            "enumerate",
+            "bool",
+            "spawn",
+            "sleep",
+            "channel",
+            "send",
+            "recv",
+            "try_recv",
+            "await_all",
+            "pmap",
+            "timeout",
+            "next",
+            "is_generator",
+            "iter",
+            "take",
+            "skip",
+            "gen_collect",
+            "gen_map",
+            "gen_filter",
+            "chain",
+            "gen_zip",
+            "gen_enumerate",
+            "Ok",
+            "Err",
+            "is_ok",
+            "is_err",
+            "unwrap",
+            "set_from",
+            "set_add",
+            "set_remove",
+            "set_contains",
+            "set_union",
+            "set_intersection",
+            "set_difference",
             // Phase 15: Data Quality & Connectors
-            "fill_null", "drop_null", "dedup", "clamp", "data_profile", "row_count", "null_rate", "is_unique",
-            "is_email", "is_url", "is_phone", "is_between", "levenshtein", "soundex",
-            "read_mysql", "redis_connect", "redis_get", "redis_set", "redis_del", "graphql_query", "register_s3",
+            "fill_null",
+            "drop_null",
+            "dedup",
+            "clamp",
+            "data_profile",
+            "row_count",
+            "null_rate",
+            "is_unique",
+            "is_email",
+            "is_url",
+            "is_phone",
+            "is_between",
+            "levenshtein",
+            "soundex",
+            "read_mysql",
+            "redis_connect",
+            "redis_get",
+            "redis_set",
+            "redis_del",
+            "graphql_query",
+            "register_s3",
             // Phase 20: Python FFI
-            "py_import", "py_call", "py_eval", "py_getattr", "py_setattr", "py_to_tl",
+            "py_import",
+            "py_call",
+            "py_eval",
+            "py_getattr",
+            "py_setattr",
+            "py_to_tl",
             // Phase 21: Schema Evolution
-            "schema_register", "schema_get", "schema_latest", "schema_history",
-            "schema_check", "schema_diff", "schema_versions", "schema_fields", "migrate",
+            "schema_register",
+            "schema_get",
+            "schema_latest",
+            "schema_history",
+            "schema_check",
+            "schema_diff",
+            "schema_versions",
+            "schema_fields",
+            "migrate",
             // Phase 22: Advanced Types
             "decimal",
             // Phase 23: Security & Access Control
-            "secret_get", "secret_set", "secret_delete", "secret_list",
-            "check_permission", "mask_email", "mask_phone", "mask_cc", "redact", "hash",
+            "secret_get",
+            "secret_set",
+            "secret_delete",
+            "secret_list",
+            "check_permission",
+            "mask_email",
+            "mask_phone",
+            "mask_cc",
+            "redact",
+            "hash",
             // Phase 24: Async/Await
-            "async_read_file", "async_write_file", "async_http_get", "async_http_post",
-            "async_sleep", "select", "async_map", "async_filter", "race_all",
-        ].iter().map(|s| String::from(*s)).collect();
+            "async_read_file",
+            "async_write_file",
+            "async_http_get",
+            "async_http_post",
+            "async_sleep",
+            "select",
+            "async_map",
+            "async_filter",
+            "race_all",
+        ]
+        .iter()
+        .map(|s| String::from(*s))
+        .collect();
         completions.sort();
         TlHelper { completions }
     }
@@ -181,7 +354,11 @@ fn history_path() -> std::path::PathBuf {
 // ---------------------------------------------------------------------------
 
 #[derive(Parser)]
-#[command(name = "tl", version, about = "ThinkingLanguage -- Data Engineering & AI")]
+#[command(
+    name = "tl",
+    version,
+    about = "ThinkingLanguage -- Data Engineering & AI"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -482,10 +659,10 @@ fn find_manifest(start: &Path) -> Option<PathBuf> {
 /// Parse a tl.toml file into a TlManifest (legacy, used by tests).
 #[allow(dead_code)]
 fn parse_manifest(path: &Path) -> Result<TlManifest, String> {
-    let content = fs::read_to_string(path)
-        .map_err(|e| format!("Cannot read '{}': {e}", path.display()))?;
-    let manifest: TlManifest = toml::from_str(&content)
-        .map_err(|e| format!("Invalid tl.toml: {e}"))?;
+    let content =
+        fs::read_to_string(path).map_err(|e| format!("Cannot read '{}': {e}", path.display()))?;
+    let manifest: TlManifest =
+        toml::from_str(&content).map_err(|e| format!("Invalid tl.toml: {e}"))?;
     Ok(manifest)
 }
 
@@ -493,10 +670,30 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Run { file, backend, dump_bytecode, no_check, strict, sandbox, allow_connectors }) => run_file(&file, &backend, dump_bytecode, no_check, strict, sandbox, &allow_connectors),
+        Some(Commands::Run {
+            file,
+            backend,
+            dump_bytecode,
+            no_check,
+            strict,
+            sandbox,
+            allow_connectors,
+        }) => run_file(
+            &file,
+            &backend,
+            dump_bytecode,
+            no_check,
+            strict,
+            sandbox,
+            &allow_connectors,
+        ),
         Some(Commands::Shell { backend }) => run_repl(&backend),
         Some(Commands::Models { action }) => run_models(action),
-        Some(Commands::Deploy { file, target, output }) => run_deploy(&file, &target, &output),
+        Some(Commands::Deploy {
+            file,
+            target,
+            output,
+        }) => run_deploy(&file, &target, &output),
         Some(Commands::Lineage { file, format }) => run_lineage(&file, &format),
         Some(Commands::Disasm { file }) => run_disasm(&file),
         Some(Commands::Check { file, strict }) => run_check(&file, strict),
@@ -505,10 +702,32 @@ fn main() {
         Some(Commands::Lsp) => run_lsp(),
         Some(Commands::Fmt { path, check }) => run_fmt(&path, check),
         Some(Commands::Lint { path, strict }) => run_lint(&path, strict),
-        Some(Commands::Build { backend, dump_bytecode, no_check, strict }) => run_build(&backend, dump_bytecode, no_check, strict),
-        Some(Commands::Doc { path, format, output, public_only }) => run_doc(&path, &format, output.as_deref(), public_only),
-        Some(Commands::Add { name, version, git, branch, path }) => {
-            package::cmd_add(&name, version.as_deref(), git.as_deref(), branch.as_deref(), path.as_deref());
+        Some(Commands::Build {
+            backend,
+            dump_bytecode,
+            no_check,
+            strict,
+        }) => run_build(&backend, dump_bytecode, no_check, strict),
+        Some(Commands::Doc {
+            path,
+            format,
+            output,
+            public_only,
+        }) => run_doc(&path, &format, output.as_deref(), public_only),
+        Some(Commands::Add {
+            name,
+            version,
+            git,
+            branch,
+            path,
+        }) => {
+            package::cmd_add(
+                &name,
+                version.as_deref(),
+                git.as_deref(),
+                branch.as_deref(),
+                path.as_deref(),
+            );
         }
         Some(Commands::Remove { name }) => package::cmd_remove(&name),
         Some(Commands::Install) => package::cmd_install(),
@@ -518,15 +737,38 @@ fn main() {
         Some(Commands::Notebook { file, export }) => cmd_notebook(&file, export),
         Some(Commands::Publish) => package::cmd_publish(),
         Some(Commands::Search { query }) => package::cmd_search(&query),
-        Some(Commands::Compile { file, output, emit_ir }) => run_compile(&file, output.as_deref(), emit_ir),
+        Some(Commands::Compile {
+            file,
+            output,
+            emit_ir,
+        }) => run_compile(&file, output.as_deref(), emit_ir),
         None => run_repl("vm"), // Default to REPL with VM backend
     }
 }
 
-fn run_file(path: &str, backend: &str, dump_bytecode: bool, no_check: bool, strict: bool, sandbox: bool, allow_connectors: &[String]) {
-    run_file_with_packages(path, backend, dump_bytecode, no_check, strict, None, None, sandbox, allow_connectors);
+fn run_file(
+    path: &str,
+    backend: &str,
+    dump_bytecode: bool,
+    no_check: bool,
+    strict: bool,
+    sandbox: bool,
+    allow_connectors: &[String],
+) {
+    run_file_with_packages(
+        path,
+        backend,
+        dump_bytecode,
+        no_check,
+        strict,
+        None,
+        None,
+        sandbox,
+        allow_connectors,
+    );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_file_with_packages(
     path: &str,
     backend: &str,
@@ -564,24 +806,32 @@ fn run_file_with_packages(
         let result = check_program(&program, &config);
 
         for warning in &result.warnings {
-            report_type_warning(&source, path, &tl_errors::TypeError {
-                message: warning.message.clone(),
-                span: warning.span,
-                expected: warning.expected.clone(),
-                found: warning.found.clone(),
-                hint: warning.hint.clone(),
-            });
+            report_type_warning(
+                &source,
+                path,
+                &tl_errors::TypeError {
+                    message: warning.message.clone(),
+                    span: warning.span,
+                    expected: warning.expected.clone(),
+                    found: warning.found.clone(),
+                    hint: warning.hint.clone(),
+                },
+            );
         }
 
         if result.has_errors() {
             for error in &result.errors {
-                report_type_error(&source, path, &tl_errors::TypeError {
-                    message: error.message.clone(),
-                    span: error.span,
-                    expected: error.expected.clone(),
-                    found: error.found.clone(),
-                    hint: error.hint.clone(),
-                });
+                report_type_error(
+                    &source,
+                    path,
+                    &tl_errors::TypeError {
+                        message: error.message.clone(),
+                        span: error.span,
+                        expected: error.expected.clone(),
+                        found: error.found.clone(),
+                        hint: error.hint.clone(),
+                    },
+                );
             }
             process::exit(1);
         }
@@ -733,23 +983,31 @@ fn run_check(path: &str, strict: bool) {
     let result = check_program(&program, &config);
 
     for warning in &result.warnings {
-        report_type_warning(&source, path, &tl_errors::TypeError {
-            message: warning.message.clone(),
-            span: warning.span,
-            expected: warning.expected.clone(),
-            found: warning.found.clone(),
-            hint: warning.hint.clone(),
-        });
+        report_type_warning(
+            &source,
+            path,
+            &tl_errors::TypeError {
+                message: warning.message.clone(),
+                span: warning.span,
+                expected: warning.expected.clone(),
+                found: warning.found.clone(),
+                hint: warning.hint.clone(),
+            },
+        );
     }
 
     for error in &result.errors {
-        report_type_error(&source, path, &tl_errors::TypeError {
-            message: error.message.clone(),
-            span: error.span,
-            expected: error.expected.clone(),
-            found: error.found.clone(),
-            hint: error.hint.clone(),
-        });
+        report_type_error(
+            &source,
+            path,
+            &tl_errors::TypeError {
+                message: error.message.clone(),
+                span: error.span,
+                expected: error.expected.clone(),
+                found: error.found.clone(),
+                hint: error.hint.clone(),
+            },
+        );
     }
 
     let warning_count = result.warnings.len();
@@ -816,9 +1074,7 @@ fn run_repl(backend: &str) {
     println!("ThinkingLanguage v0.1.0 -- REPL (backend: {backend})");
     println!("Type expressions or statements. Press Ctrl+D to exit.\n");
 
-    let config = Config::builder()
-        .auto_add_history(false)
-        .build();
+    let config = Config::builder().auto_add_history(false).build();
     let mut editor = match Editor::with_config(config) {
         Ok(e) => e,
         Err(e) => {
@@ -873,22 +1129,30 @@ fn run_repl_vm(editor: &mut Editor<TlHelper, DefaultHistory>) {
                         // Type check (warnings only in REPL — don't block execution)
                         let check_result = check_program(&program, &CheckerConfig::default());
                         for warning in &check_result.warnings {
-                            report_type_warning(&input, "<repl>", &tl_errors::TypeError {
-                                message: warning.message.clone(),
-                                span: warning.span,
-                                expected: warning.expected.clone(),
-                                found: warning.found.clone(),
-                                hint: warning.hint.clone(),
-                            });
+                            report_type_warning(
+                                &input,
+                                "<repl>",
+                                &tl_errors::TypeError {
+                                    message: warning.message.clone(),
+                                    span: warning.span,
+                                    expected: warning.expected.clone(),
+                                    found: warning.found.clone(),
+                                    hint: warning.hint.clone(),
+                                },
+                            );
                         }
                         for error in &check_result.errors {
-                            report_type_error(&input, "<repl>", &tl_errors::TypeError {
-                                message: error.message.clone(),
-                                span: error.span,
-                                expected: error.expected.clone(),
-                                found: error.found.clone(),
-                                hint: error.hint.clone(),
-                            });
+                            report_type_error(
+                                &input,
+                                "<repl>",
+                                &tl_errors::TypeError {
+                                    message: error.message.clone(),
+                                    span: error.span,
+                                    expected: error.expected.clone(),
+                                    found: error.found.clone(),
+                                    hint: error.hint.clone(),
+                                },
+                            );
                         }
 
                         let proto = match compile(&program) {
@@ -961,32 +1225,40 @@ fn run_repl_interp(editor: &mut Editor<TlHelper, DefaultHistory>) {
                         // Type check (warnings only in REPL — don't block execution)
                         let check_result = check_program(&program, &CheckerConfig::default());
                         for warning in &check_result.warnings {
-                            report_type_warning(&input, "<repl>", &tl_errors::TypeError {
-                                message: warning.message.clone(),
-                                span: warning.span,
-                                expected: warning.expected.clone(),
-                                found: warning.found.clone(),
-                                hint: warning.hint.clone(),
-                            });
+                            report_type_warning(
+                                &input,
+                                "<repl>",
+                                &tl_errors::TypeError {
+                                    message: warning.message.clone(),
+                                    span: warning.span,
+                                    expected: warning.expected.clone(),
+                                    found: warning.found.clone(),
+                                    hint: warning.hint.clone(),
+                                },
+                            );
                         }
                         for error in &check_result.errors {
-                            report_type_error(&input, "<repl>", &tl_errors::TypeError {
-                                message: error.message.clone(),
-                                span: error.span,
-                                expected: error.expected.clone(),
-                                found: error.found.clone(),
-                                hint: error.hint.clone(),
-                            });
+                            report_type_error(
+                                &input,
+                                "<repl>",
+                                &tl_errors::TypeError {
+                                    message: error.message.clone(),
+                                    span: error.span,
+                                    expected: error.expected.clone(),
+                                    found: error.found.clone(),
+                                    hint: error.hint.clone(),
+                                },
+                            );
                         }
 
                         for stmt in &program.statements {
                             match interp.execute_stmt(stmt) {
                                 Ok(val) => {
                                     // Only print non-None values for expression statements
-                                    if let tl_ast::StmtKind::Expr(_) = &stmt.kind {
-                                        if !matches!(val, tl_interpreter::Value::None) {
-                                            println!("{val}");
-                                        }
+                                    if let tl_ast::StmtKind::Expr(_) = &stmt.kind
+                                        && !matches!(val, tl_interpreter::Value::None)
+                                    {
+                                        println!("{val}");
                                     }
                                 }
                                 Err(TlError::Runtime(ref re)) => {
@@ -1033,27 +1305,23 @@ fn run_models(action: ModelsAction) {
                 println!("\n{} model(s) total", names.len());
             }
         }
-        ModelsAction::Info { name } => {
-            match registry.get(&name) {
-                Ok(model) => {
-                    println!("Model: {name}");
-                    println!("{model}");
-                }
-                Err(e) => {
-                    eprintln!("Error: {e}");
-                    process::exit(1);
-                }
+        ModelsAction::Info { name } => match registry.get(&name) {
+            Ok(model) => {
+                println!("Model: {name}");
+                println!("{model}");
             }
-        }
-        ModelsAction::Delete { name } => {
-            match registry.delete(&name) {
-                Ok(()) => println!("Deleted model '{name}'"),
-                Err(e) => {
-                    eprintln!("Error: {e}");
-                    process::exit(1);
-                }
+            Err(e) => {
+                eprintln!("Error: {e}");
+                process::exit(1);
             }
-        }
+        },
+        ModelsAction::Delete { name } => match registry.delete(&name) {
+            Ok(()) => println!("Deleted model '{name}'"),
+            Err(e) => {
+                eprintln!("Error: {e}");
+                process::exit(1);
+            }
+        },
     }
 }
 
@@ -1089,12 +1357,8 @@ fn run_lineage(file: &str, format: &str) {
     let mut tracker = tl_stream::LineageTracker::new();
     for (i, stmt) in program.statements.iter().enumerate() {
         if let tl_ast::StmtKind::Pipeline { name, .. } = &stmt.kind {
-            let extract_id = tracker.record(
-                &format!("{name}/extract"),
-                "Read source data",
-                None,
-                vec![],
-            );
+            let extract_id =
+                tracker.record(&format!("{name}/extract"), "Read source data", None, vec![]);
             let transform_id = tracker.record(
                 &format!("{name}/transform"),
                 "Transform data",
@@ -1108,12 +1372,7 @@ fn run_lineage(file: &str, format: &str) {
                 vec![transform_id],
             );
         } else {
-            tracker.record(
-                &format!("stmt_{i}"),
-                "Execute statement",
-                None,
-                vec![],
-            );
+            tracker.record(&format!("stmt_{i}"), "Execute statement", None, vec![]);
         }
     }
 
@@ -1177,7 +1436,10 @@ fn run_tests(path: &str, backend: &str) {
         for stmt in &program.statements {
             if let tl_ast::StmtKind::Test { name, body } = &stmt.kind {
                 total += 1;
-                let test_program = tl_ast::Program { statements: body.clone(), module_doc: None };
+                let test_program = tl_ast::Program {
+                    statements: body.clone(),
+                    module_doc: None,
+                };
 
                 let result = match backend {
                     "vm" => {
@@ -1195,7 +1457,9 @@ fn run_tests(path: &str, backend: &str) {
                     }
                     _ => {
                         let mut interp = Interpreter::new();
-                        interp.execute(&test_program).map(|_| tl_compiler::VmValue::None)
+                        interp
+                            .execute(&test_program)
+                            .map(|_| tl_compiler::VmValue::None)
                     }
                 };
 
@@ -1330,23 +1594,31 @@ fn run_lint(path: &str, strict: bool) {
     let result = check_program(&program, &config);
 
     for warning in &result.warnings {
-        report_type_warning(&source, path, &tl_errors::TypeError {
-            message: warning.message.clone(),
-            span: warning.span,
-            expected: warning.expected.clone(),
-            found: warning.found.clone(),
-            hint: warning.hint.clone(),
-        });
+        report_type_warning(
+            &source,
+            path,
+            &tl_errors::TypeError {
+                message: warning.message.clone(),
+                span: warning.span,
+                expected: warning.expected.clone(),
+                found: warning.found.clone(),
+                hint: warning.hint.clone(),
+            },
+        );
     }
 
     for error in &result.errors {
-        report_type_error(&source, path, &tl_errors::TypeError {
-            message: error.message.clone(),
-            span: error.span,
-            expected: error.expected.clone(),
-            found: error.found.clone(),
-            hint: error.hint.clone(),
-        });
+        report_type_error(
+            &source,
+            path,
+            &tl_errors::TypeError {
+                message: error.message.clone(),
+                span: error.span,
+                expected: error.expected.clone(),
+                found: error.found.clone(),
+                hint: error.hint.clone(),
+            },
+        );
     }
 
     let warning_count = result.warnings.len();
@@ -1512,7 +1784,10 @@ fn run_build(backend: &str, dump_bytecode: bool, no_check: bool, strict: bool) {
 
     if !entry.exists() {
         eprintln!("Entry point not found: {}", entry.display());
-        eprintln!("Expected src/main.tl in project '{}'", manifest.project.name);
+        eprintln!(
+            "Expected src/main.tl in project '{}'",
+            manifest.project.name
+        );
         process::exit(1);
     }
 
@@ -1533,7 +1808,10 @@ fn run_build(backend: &str, dump_bytecode: bool, no_check: bool, strict: bool) {
                         eprintln!("  {} v{}", pkg.name, pkg.version);
                     }
                 }
-                Some(tl_package::resolver::build_package_roots(project_root, &cache))
+                Some(tl_package::resolver::build_package_roots(
+                    project_root,
+                    &cache,
+                ))
             }
             Err(e) => {
                 eprintln!("Warning: dependency resolution failed: {e}");
@@ -1545,7 +1823,10 @@ fn run_build(backend: &str, dump_bytecode: bool, no_check: bool, strict: bool) {
     };
 
     let entry_str = entry.to_string_lossy().to_string();
-    println!("Building {} v{}", manifest.project.name, manifest.project.version);
+    println!(
+        "Building {} v{}",
+        manifest.project.name, manifest.project.version
+    );
     run_file_with_packages(
         &entry_str,
         backend,
@@ -1622,10 +1903,20 @@ fn run_migrate(action: MigrateAction) {
             println!("Checking schema compatibility in {}...", file);
             run_migrate_file(&file, &backend, true);
         }
-        MigrateAction::Diff { file, schema, v1, v2, backend } => {
+        MigrateAction::Diff {
+            file,
+            schema,
+            v1,
+            v2,
+            backend,
+        } => {
             run_migrate_diff(&file, &backend, &schema, v1, v2);
         }
-        MigrateAction::History { file, schema, backend } => {
+        MigrateAction::History {
+            file,
+            schema,
+            backend,
+        } => {
             run_migrate_history(&file, &backend, &schema);
         }
     }
@@ -1878,11 +2169,15 @@ mod tests {
     fn test_parse_manifest_basic() {
         let dir = tempfile::tempdir().unwrap();
         let toml_path = dir.path().join("tl.toml");
-        fs::write(&toml_path, r#"
+        fs::write(
+            &toml_path,
+            r#"
 [project]
 name = "myapp"
 version = "1.2.3"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let m = parse_manifest(&toml_path).unwrap();
         assert_eq!(m.project.name, "myapp");
         assert_eq!(m.project.version, "1.2.3");
@@ -1894,14 +2189,18 @@ version = "1.2.3"
     fn test_parse_manifest_all_fields() {
         let dir = tempfile::tempdir().unwrap();
         let toml_path = dir.path().join("tl.toml");
-        fs::write(&toml_path, r#"
+        fs::write(
+            &toml_path,
+            r#"
 [project]
 name = "myapp"
 version = "0.1.0"
 edition = "2024"
 authors = ["Alice", "Bob"]
 description = "A great project"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let m = parse_manifest(&toml_path).unwrap();
         assert_eq!(m.project.name, "myapp");
         assert_eq!(m.project.edition.as_deref(), Some("2024"));
@@ -1922,7 +2221,11 @@ description = "A great project"
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("a").join("b").join("c");
         fs::create_dir_all(&sub).unwrap();
-        fs::write(dir.path().join("tl.toml"), "[project]\nname = \"x\"\nversion = \"0.1.0\"\n").unwrap();
+        fs::write(
+            dir.path().join("tl.toml"),
+            "[project]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
         let found = find_manifest(&sub).unwrap();
         assert_eq!(found, dir.path().join("tl.toml"));
     }
@@ -1942,7 +2245,10 @@ description = "A great project"
         let program = tl_parser::parse(src).unwrap();
         let config = tl_types::checker::CheckerConfig::default();
         let result = tl_types::checker::check_program(&program, &config);
-        assert!(!result.has_errors(), "Type checker should pass through use/pub/mod");
+        assert!(
+            !result.has_errors(),
+            "Type checker should pass through use/pub/mod"
+        );
     }
 
     #[test]
@@ -1951,7 +2257,10 @@ description = "A great project"
         let program = tl_parser::parse(src).unwrap();
         let config = tl_types::checker::CheckerConfig::default();
         let result = tl_types::checker::check_program(&program, &config);
-        assert!(!result.has_errors(), "Type checker should handle pub struct/enum");
+        assert!(
+            !result.has_errors(),
+            "Type checker should handle pub struct/enum"
+        );
     }
 
     // -- Phase 13 Step 5: tl check subcommand tests --
@@ -1972,7 +2281,10 @@ description = "A great project"
         let program = tl_parser::parse(src).unwrap();
         let config = tl_types::checker::CheckerConfig { strict: true };
         let result = tl_types::checker::check_program(&program, &config);
-        assert!(result.has_errors(), "Strict mode should flag unannotated params");
+        assert!(
+            result.has_errors(),
+            "Strict mode should flag unannotated params"
+        );
     }
 
     #[test]
@@ -1981,7 +2293,10 @@ description = "A great project"
         let program = tl_parser::parse(src).unwrap();
         let config = tl_types::checker::CheckerConfig::default();
         let result = tl_types::checker::check_program(&program, &config);
-        assert!(!result.has_errors(), "Non-strict mode should allow unannotated params");
+        assert!(
+            !result.has_errors(),
+            "Non-strict mode should allow unannotated params"
+        );
     }
 
     #[test]
@@ -1991,8 +2306,16 @@ description = "A great project"
         let config = tl_types::checker::CheckerConfig::default();
         let result = tl_types::checker::check_program(&program, &config);
         assert!(!result.has_errors());
-        assert!(result.warnings.len() > 0, "Unused variable should produce warning");
-        assert!(result.warnings.iter().any(|w| w.message.contains("Unused variable")));
+        assert!(
+            result.warnings.len() > 0,
+            "Unused variable should produce warning"
+        );
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("Unused variable"))
+        );
     }
 
     #[test]
@@ -2002,8 +2325,13 @@ description = "A great project"
         let config = tl_types::checker::CheckerConfig::default();
         let result = tl_types::checker::check_program(&program, &config);
         assert!(!result.has_errors());
-        assert!(result.warnings.iter().any(|w| w.message.contains("Unreachable")),
-            "Should warn about unreachable code after return");
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("Unreachable")),
+            "Should warn about unreachable code after return"
+        );
     }
 
     // -- Phase 16: Package manager tests --
@@ -2021,11 +2349,18 @@ description = "A great project"
             "[project]\nname = \"{project_name}\"\nversion = \"0.1.0\"\n\n[dependencies]\n"
         );
         fs::write(project_dir.join("tl.toml"), &manifest).unwrap();
-        fs::write(src_dir.join("main.tl"), format!("print(\"Hello from {project_name}!\")\n")).unwrap();
+        fs::write(
+            src_dir.join("main.tl"),
+            format!("print(\"Hello from {project_name}!\")\n"),
+        )
+        .unwrap();
 
         // Verify the manifest has [dependencies] section
         let content = fs::read_to_string(project_dir.join("tl.toml")).unwrap();
-        assert!(content.contains("[dependencies]"), "tl init should include [dependencies] section");
+        assert!(
+            content.contains("[dependencies]"),
+            "tl init should include [dependencies] section"
+        );
 
         // Verify it parses correctly with tl_package::Manifest
         let m = tl_package::Manifest::from_toml(&content).unwrap();

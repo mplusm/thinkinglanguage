@@ -9,58 +9,149 @@ use crate::ast_util::{self, DefKind};
 
 /// Keywords in TL
 const KEYWORDS: &[&str] = &[
-    "let", "fn", "if", "else", "while", "for", "in", "return", "true", "false", "none",
-    "struct", "enum", "impl", "try", "catch", "throw", "import", "test", "break", "continue",
-    "and", "or", "not", "mut", "await", "yield", "match", "schema", "pipeline", "stream",
-    "source", "sink", "use", "pub", "mod", "trait", "where",
+    "let", "fn", "if", "else", "while", "for", "in", "return", "true", "false", "none", "struct",
+    "enum", "impl", "try", "catch", "throw", "import", "test", "break", "continue", "and", "or",
+    "not", "mut", "await", "yield", "match", "schema", "pipeline", "stream", "source", "sink",
+    "use", "pub", "mod", "trait", "where",
 ];
 
 /// Builtin functions in TL
 pub const BUILTINS: &[&str] = &[
-    "print", "println", "len", "str", "int", "float", "abs", "min", "max", "range",
-    "push", "type_of", "map", "filter", "reduce", "sum", "any", "all",
-    "read_csv", "read_parquet", "write_csv", "write_parquet", "collect", "show",
-    "describe", "head", "sqrt", "pow", "floor", "ceil", "round", "sin", "cos", "tan",
-    "log", "log2", "log10", "join", "assert", "assert_eq",
-    "json_parse", "json_stringify", "map_from", "read_file", "write_file", "append_file",
-    "file_exists", "list_dir", "env_get", "env_set", "regex_match", "regex_find",
-    "regex_replace", "now", "date_format", "date_parse", "zip", "enumerate", "bool",
-    "spawn", "sleep", "channel", "send", "recv", "try_recv", "await_all", "pmap", "timeout",
-    "next", "is_generator", "iter", "take", "skip", "gen_collect", "gen_map", "gen_filter",
-    "chain", "gen_zip", "gen_enumerate",
-    "Ok", "Err", "is_ok", "is_err", "unwrap",
-    "set_from", "set_add", "set_remove", "set_contains", "set_union", "set_intersection",
+    "print",
+    "println",
+    "len",
+    "str",
+    "int",
+    "float",
+    "abs",
+    "min",
+    "max",
+    "range",
+    "push",
+    "type_of",
+    "map",
+    "filter",
+    "reduce",
+    "sum",
+    "any",
+    "all",
+    "read_csv",
+    "read_parquet",
+    "write_csv",
+    "write_parquet",
+    "collect",
+    "show",
+    "describe",
+    "head",
+    "sqrt",
+    "pow",
+    "floor",
+    "ceil",
+    "round",
+    "sin",
+    "cos",
+    "tan",
+    "log",
+    "log2",
+    "log10",
+    "join",
+    "assert",
+    "assert_eq",
+    "json_parse",
+    "json_stringify",
+    "map_from",
+    "read_file",
+    "write_file",
+    "append_file",
+    "file_exists",
+    "list_dir",
+    "env_get",
+    "env_set",
+    "regex_match",
+    "regex_find",
+    "regex_replace",
+    "now",
+    "date_format",
+    "date_parse",
+    "zip",
+    "enumerate",
+    "bool",
+    "spawn",
+    "sleep",
+    "channel",
+    "send",
+    "recv",
+    "try_recv",
+    "await_all",
+    "pmap",
+    "timeout",
+    "next",
+    "is_generator",
+    "iter",
+    "take",
+    "skip",
+    "gen_collect",
+    "gen_map",
+    "gen_filter",
+    "chain",
+    "gen_zip",
+    "gen_enumerate",
+    "Ok",
+    "Err",
+    "is_ok",
+    "is_err",
+    "unwrap",
+    "set_from",
+    "set_add",
+    "set_remove",
+    "set_contains",
+    "set_union",
+    "set_intersection",
     "set_difference",
 ];
 
 /// String methods for dot-completion
 const STRING_METHODS: &[&str] = &[
-    "len", "split", "trim", "contains", "replace", "to_upper", "to_lower",
-    "starts_with", "ends_with", "chars", "repeat", "index_of", "substring",
-    "pad_left", "pad_right",
+    "len",
+    "split",
+    "trim",
+    "contains",
+    "replace",
+    "to_upper",
+    "to_lower",
+    "starts_with",
+    "ends_with",
+    "chars",
+    "repeat",
+    "index_of",
+    "substring",
+    "pad_left",
+    "pad_right",
 ];
 
 /// List methods for dot-completion
 const LIST_METHODS: &[&str] = &[
-    "len", "push", "map", "filter", "sort", "reverse", "contains", "index_of",
-    "slice", "flat_map", "reduce", "sum", "any", "all",
+    "len", "push", "map", "filter", "sort", "reverse", "contains", "index_of", "slice", "flat_map",
+    "reduce", "sum", "any", "all",
 ];
 
 /// Map methods for dot-completion
-const MAP_METHODS: &[&str] = &[
-    "keys", "values", "contains_key", "remove", "len",
-];
+const MAP_METHODS: &[&str] = &["keys", "values", "contains_key", "remove", "len"];
 
 /// Set methods for dot-completion
 const SET_METHODS: &[&str] = &[
-    "len", "add", "remove", "contains", "union", "intersection", "difference",
+    "len",
+    "add",
+    "remove",
+    "contains",
+    "union",
+    "intersection",
+    "difference",
 ];
 
 /// Generator methods for dot-completion
 #[allow(dead_code)]
-const GENERATOR_METHODS: &[&str] = &[
-    "next", "collect", "map", "filter", "take", "skip",
-];
+const GENERATOR_METHODS: &[&str] = &["next", "collect", "map", "filter", "take", "skip"];
 
 pub fn provide_completions(
     source: &str,
@@ -149,7 +240,7 @@ fn provide_dot_completions(
 
     // Try to infer the type of the expression before the dot
     // Simple heuristic: look at the identifier and check known types
-    if let Some(_) = trimmed.len().checked_sub(0) {
+    if trimmed.len().checked_sub(0).is_some() {
         let ident = extract_trailing_ident(trimmed);
 
         if let Some(ref name) = ident {
@@ -163,18 +254,26 @@ fn provide_dot_completions(
                 // First check: is the variable an instance of a struct?
                 let mut struct_name_for_var: Option<String> = None;
                 for stmt in &program.statements {
-                    if let tl_ast::StmtKind::Let { name: var_name, type_ann, value, .. } = &stmt.kind {
-                        if var_name == name {
-                            // Check type annotation
-                            if let Some(ann) = type_ann {
-                                return methods_for_type_expr(ann);
-                            }
-                            // Infer from value: StructInit
-                            if let tl_ast::Expr::StructInit { name: init_name, .. } = value {
-                                struct_name_for_var = Some(init_name.clone());
-                            } else {
-                                return methods_for_expr(value);
-                            }
+                    if let tl_ast::StmtKind::Let {
+                        name: var_name,
+                        type_ann,
+                        value,
+                        ..
+                    } = &stmt.kind
+                        && var_name == name
+                    {
+                        // Check type annotation
+                        if let Some(ann) = type_ann {
+                            return methods_for_type_expr(ann);
+                        }
+                        // Infer from value: StructInit
+                        if let tl_ast::Expr::StructInit {
+                            name: init_name, ..
+                        } = value
+                        {
+                            struct_name_for_var = Some(init_name.clone());
+                        } else {
+                            return methods_for_expr(value);
                         }
                     }
                 }
@@ -182,28 +281,42 @@ fn provide_dot_completions(
                 // If we found a struct instance, look up struct fields
                 if let Some(sname) = &struct_name_for_var {
                     for stmt in &program.statements {
-                        if let tl_ast::StmtKind::StructDecl { name: decl_name, fields, .. } = &stmt.kind {
-                            if decl_name == sname {
-                                return fields.iter().map(|f| CompletionItem {
+                        if let tl_ast::StmtKind::StructDecl {
+                            name: decl_name,
+                            fields,
+                            ..
+                        } = &stmt.kind
+                            && decl_name == sname
+                        {
+                            return fields
+                                .iter()
+                                .map(|f| CompletionItem {
                                     label: f.name.clone(),
                                     kind: Some(CompletionItemKind::FIELD),
                                     ..Default::default()
-                                }).collect();
-                            }
+                                })
+                                .collect();
                         }
                     }
                 }
 
                 // Check if this is a struct name directly
                 for stmt in &program.statements {
-                    if let tl_ast::StmtKind::StructDecl { name: struct_name, fields, .. } = &stmt.kind {
-                        if name == struct_name {
-                            return fields.iter().map(|f| CompletionItem {
+                    if let tl_ast::StmtKind::StructDecl {
+                        name: struct_name,
+                        fields,
+                        ..
+                    } = &stmt.kind
+                        && name == struct_name
+                    {
+                        return fields
+                            .iter()
+                            .map(|f| CompletionItem {
                                 label: f.name.clone(),
                                 kind: Some(CompletionItemKind::FIELD),
                                 ..Default::default()
-                            }).collect();
-                        }
+                            })
+                            .collect();
                     }
                 }
             }
@@ -271,7 +384,6 @@ fn methods_for_expr(expr: &tl_ast::Expr) -> Vec<CompletionItem> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,7 +403,10 @@ mod tests {
         let ast = tl_parser::parse(source).unwrap();
         let items = provide_completions(source, Some(&ast), None, Position::new(1, 0));
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(labels.contains(&"add"), "Function 'add' should appear in completions");
+        assert!(
+            labels.contains(&"add"),
+            "Function 'add' should appear in completions"
+        );
     }
 
     #[test]
@@ -304,8 +419,15 @@ mod tests {
         let source = "struct Point { x: int, y: int }\nlet p = Point { x: 1, y: 2 }\np.";
         let items = provide_completions(source, ast.as_ref(), None, Position::new(2, 2));
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(labels.contains(&"x"), "Struct field 'x' should appear after dot: {:?}", labels);
-        assert!(labels.contains(&"y"), "Struct field 'y' should appear after dot");
+        assert!(
+            labels.contains(&"x"),
+            "Struct field 'x' should appear after dot: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"y"),
+            "Struct field 'y' should appear after dot"
+        );
     }
 
     #[test]
@@ -315,7 +437,10 @@ mod tests {
         let items = provide_completions(source, ast.as_ref(), None, Position::new(1, 2));
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         assert!(labels.contains(&"len"), "String method 'len' should appear");
-        assert!(labels.contains(&"split"), "String method 'split' should appear");
+        assert!(
+            labels.contains(&"split"),
+            "String method 'split' should appear"
+        );
     }
 
     #[test]
@@ -326,6 +451,9 @@ mod tests {
         assert!(ast.is_none());
         let items = provide_completions(source, ast.as_ref(), None, Position::new(1, 3));
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(labels.contains(&"fn"), "Keywords should still be available on parse error");
+        assert!(
+            labels.contains(&"fn"),
+            "Keywords should still be available on parse error"
+        );
     }
 }

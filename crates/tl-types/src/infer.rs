@@ -95,11 +95,15 @@ pub fn infer_expr(expr: &Expr, env: &TypeEnv) -> Type {
                     "is_generator" | "file_exists" => Type::Bool,
                     "assert" | "assert_eq" => Type::Unit,
                     // Phase 15: Data Quality & Connectors
-                    "fill_null" | "drop_null" | "dedup" | "clamp" | "data_profile" | "read_mysql" => Type::Table { name: None, columns: None },
+                    "fill_null" | "drop_null" | "dedup" | "clamp" | "data_profile"
+                    | "read_mysql" => Type::Table {
+                        name: None,
+                        columns: None,
+                    },
                     // Phase 22: Advanced Types
                     "decimal" => Type::Decimal,
-                    "tensor" | "tensor_zeros" | "tensor_ones" | "tensor_reshape" | "tensor_transpose"
-                    | "tensor_dot" => Type::Tensor,
+                    "tensor" | "tensor_zeros" | "tensor_ones" | "tensor_reshape"
+                    | "tensor_transpose" | "tensor_dot" => Type::Tensor,
                     "tensor_shape" => Type::List(Box::new(Type::Int)),
                     "tensor_sum" | "tensor_mean" => Type::Float,
                     "row_count" | "levenshtein" => Type::Int,
@@ -113,7 +117,9 @@ pub fn infer_expr(expr: &Expr, env: &TypeEnv) -> Type {
                     "schema_register" => Type::Unit,
                     "schema_get" | "schema_latest" => Type::Any,
                     "schema_history" | "schema_versions" => Type::List(Box::new(Type::Int)),
-                    "schema_check" | "schema_diff" | "schema_fields" => Type::List(Box::new(Type::String)),
+                    "schema_check" | "schema_diff" | "schema_fields" => {
+                        Type::List(Box::new(Type::String))
+                    }
                     "schema_apply_migration" => Type::Unit,
                     // Phase 20: Python FFI
                     "py_import" => Type::PyObject,
@@ -126,7 +132,9 @@ pub fn infer_expr(expr: &Expr, env: &TypeEnv) -> Type {
                     "check_permission" => Type::Bool,
                     "mask_email" | "mask_phone" | "mask_cc" | "redact" | "hash" => Type::String,
                     // Phase 24: Async/Await
-                    "async_read_file" | "async_http_get" | "async_http_post" => Type::Task(Box::new(Type::String)),
+                    "async_read_file" | "async_http_get" | "async_http_post" => {
+                        Type::Task(Box::new(Type::String))
+                    }
                     "async_write_file" | "async_sleep" => Type::Task(Box::new(Type::Unit)),
                     "select" | "race_all" => Type::Any,
                     "async_map" => Type::List(Box::new(Type::Any)),
@@ -186,13 +194,18 @@ pub fn infer_expr(expr: &Expr, env: &TypeEnv) -> Type {
         }
 
         // Closure — infer param types from annotations and return type from body
-        Expr::Closure { params, body, return_type, .. } => {
+        Expr::Closure {
+            params,
+            body,
+            return_type,
+            ..
+        } => {
             let param_types: Vec<Type> = params
                 .iter()
                 .map(|p| {
                     p.type_ann
                         .as_ref()
-                        .map(|t| convert_type_expr(t))
+                        .map(convert_type_expr)
                         .unwrap_or(Type::Any)
                 })
                 .collect();
@@ -201,10 +214,16 @@ pub fn infer_expr(expr: &Expr, env: &TypeEnv) -> Type {
                 tl_ast::ClosureBody::Block { expr: Some(e), .. } => infer_expr(e, env),
                 tl_ast::ClosureBody::Block { expr: None, .. } => {
                     // If no tail expr, use return_type annotation or None
-                    return_type.as_ref().map(|t| convert_type_expr(t)).unwrap_or(Type::None)
+                    return_type
+                        .as_ref()
+                        .map(convert_type_expr)
+                        .unwrap_or(Type::None)
                 }
             };
-            Type::Function { params: param_types, ret: Box::new(ret) }
+            Type::Function {
+                params: param_types,
+                ret: Box::new(ret),
+            }
         }
 
         // Null coalesce: option<T> ?? T -> T
@@ -394,13 +413,13 @@ fn infer_binop(left: &Expr, op: &BinOp, right: &Expr, env: &TypeEnv) -> Type {
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::Pow => {
             match (&left_ty, &right_ty) {
                 (Type::Int, Type::Int) => Type::Int,
-                (Type::Float, Type::Float) | (Type::Int, Type::Float) | (Type::Float, Type::Int) => {
-                    Type::Float
-                }
+                (Type::Float, Type::Float)
+                | (Type::Int, Type::Float)
+                | (Type::Float, Type::Int) => Type::Float,
                 // Decimal arithmetic
-                (Type::Decimal, Type::Decimal) | (Type::Decimal, Type::Int) | (Type::Int, Type::Decimal) => {
-                    Type::Decimal
-                }
+                (Type::Decimal, Type::Decimal)
+                | (Type::Decimal, Type::Int)
+                | (Type::Int, Type::Decimal) => Type::Decimal,
                 // Decimal + Float => Float
                 (Type::Decimal, Type::Float) | (Type::Float, Type::Decimal) => Type::Float,
                 (Type::String, Type::String) if matches!(op, BinOp::Add) => Type::String,
@@ -496,10 +515,7 @@ mod tests {
         assert_eq!(infer_expr(&expr, &env), Type::List(Box::new(Type::Int)));
 
         let empty = Expr::List(vec![]);
-        assert_eq!(
-            infer_expr(&empty, &env),
-            Type::List(Box::new(Type::Any))
-        );
+        assert_eq!(infer_expr(&empty, &env), Type::List(Box::new(Type::Any)));
     }
 
     #[test]
@@ -604,10 +620,7 @@ mod tests {
             }),
             args: vec![Expr::String(",".into())],
         };
-        assert_eq!(
-            infer_expr(&expr, &env),
-            Type::List(Box::new(Type::String))
-        );
+        assert_eq!(infer_expr(&expr, &env), Type::List(Box::new(Type::String)));
 
         // s.len() -> int
         let expr = Expr::Call {
@@ -690,30 +703,21 @@ mod tests {
             function: Box::new(Expr::Ident("range".into())),
             args: vec![Expr::Int(0), Expr::Int(10)],
         };
-        assert_eq!(
-            infer_expr(&expr, &env),
-            Type::List(Box::new(Type::Int))
-        );
+        assert_eq!(infer_expr(&expr, &env), Type::List(Box::new(Type::Int)));
 
         // split -> list<string>
         let expr = Expr::Call {
             function: Box::new(Expr::Ident("split".into())),
             args: vec![Expr::String("a,b".into()), Expr::String(",".into())],
         };
-        assert_eq!(
-            infer_expr(&expr, &env),
-            Type::List(Box::new(Type::String))
-        );
+        assert_eq!(infer_expr(&expr, &env), Type::List(Box::new(Type::String)));
 
         // channel -> channel<any>
         let expr = Expr::Call {
             function: Box::new(Expr::Ident("channel".into())),
             args: vec![],
         };
-        assert_eq!(
-            infer_expr(&expr, &env),
-            Type::Channel(Box::new(Type::Any))
-        );
+        assert_eq!(infer_expr(&expr, &env), Type::Channel(Box::new(Type::Any)));
 
         // spawn -> task<any>
         let expr = Expr::Call {

@@ -17,16 +17,14 @@ fn run_output(source: &str) -> Vec<String> {
 
 #[test]
 fn test_schema_definition() {
-    let result = run(
-        r#"
+    let result = run(r#"
         schema User {
             id: int64,
             name: string,
             age: float64
         }
         type_of(User)
-    "#,
-    )
+    "#)
     .unwrap();
     assert!(matches!(result, Value::String(s) if s == "schema"));
 }
@@ -35,7 +33,11 @@ fn test_schema_definition() {
 fn test_read_csv() {
     let dir = tempfile::tempdir().unwrap();
     let csv_path = dir.path().join("test.csv");
-    fs::write(&csv_path, "id,name,age\n1,Alice,30\n2,Bob,25\n3,Charlie,35\n").unwrap();
+    fs::write(
+        &csv_path,
+        "id,name,age\n1,Alice,30\n2,Bob,25\n3,Charlie,35\n",
+    )
+    .unwrap();
 
     let source = format!(
         r#"let t = read_csv("{}")
@@ -50,7 +52,11 @@ fn test_read_csv() {
 fn test_filter_table() {
     let dir = tempfile::tempdir().unwrap();
     let csv_path = dir.path().join("test.csv");
-    fs::write(&csv_path, "id,name,age\n1,Alice,30\n2,Bob,25\n3,Charlie,35\n").unwrap();
+    fs::write(
+        &csv_path,
+        "id,name,age\n1,Alice,30\n2,Bob,25\n3,Charlie,35\n",
+    )
+    .unwrap();
 
     let source = format!(
         r#"let t = read_csv("{}")
@@ -89,7 +95,11 @@ fn test_select_columns() {
 fn test_sort_table() {
     let dir = tempfile::tempdir().unwrap();
     let csv_path = dir.path().join("test.csv");
-    fs::write(&csv_path, "id,name,age\n1,Alice,30\n2,Bob,25\n3,Charlie,35\n").unwrap();
+    fs::write(
+        &csv_path,
+        "id,name,age\n1,Alice,30\n2,Bob,25\n3,Charlie,35\n",
+    )
+    .unwrap();
 
     let source = format!(
         r#"let t = read_csv("{}")
@@ -153,11 +163,7 @@ fn test_aggregate() {
 fn test_head_limit() {
     let dir = tempfile::tempdir().unwrap();
     let csv_path = dir.path().join("test.csv");
-    fs::write(
-        &csv_path,
-        "id,name\n1,A\n2,B\n3,C\n4,D\n5,E\n",
-    )
-    .unwrap();
+    fs::write(&csv_path, "id,name\n1,A\n2,B\n3,C\n4,D\n5,E\n").unwrap();
 
     let source = format!(
         r#"let t = read_csv("{}")
@@ -180,7 +186,11 @@ fn test_join_tables() {
     let users_path = dir.path().join("users.csv");
     let orders_path = dir.path().join("orders.csv");
     fs::write(&users_path, "id,name\n1,Alice\n2,Bob\n").unwrap();
-    fs::write(&orders_path, "order_id,user_id,amount\n101,1,50\n102,1,30\n103,2,40\n").unwrap();
+    fs::write(
+        &orders_path,
+        "order_id,user_id,amount\n101,1,50\n102,1,30\n103,2,40\n",
+    )
+    .unwrap();
 
     let source = format!(
         r#"let users = read_csv("{}")

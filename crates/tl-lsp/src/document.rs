@@ -19,6 +19,12 @@ pub struct ServerState {
     pub documents: HashMap<Uri, DocumentData>,
 }
 
+impl Default for ServerState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ServerState {
     pub fn new() -> Self {
         ServerState {

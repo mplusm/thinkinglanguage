@@ -95,8 +95,7 @@ impl RegistryStorage {
     /// Save package metadata.
     fn save_metadata(&self, meta: &PackageMetadata) -> Result<(), String> {
         let dir = self.package_dir(&meta.name);
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("Failed to create package dir: {e}"))?;
+        std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create package dir: {e}"))?;
         let content = serde_json::to_string_pretty(meta)
             .map_err(|e| format!("Failed to serialize index: {e}"))?;
         std::fs::write(self.index_path(&meta.name), content)
@@ -118,10 +117,12 @@ impl RegistryStorage {
         let sha256 = format!("{:x}", hasher.finalize());
 
         // Load or create metadata
-        let mut meta = self.load_metadata(name)?.unwrap_or_else(|| PackageMetadata {
-            name: name.to_string(),
-            versions: Vec::new(),
-        });
+        let mut meta = self
+            .load_metadata(name)?
+            .unwrap_or_else(|| PackageMetadata {
+                name: name.to_string(),
+                versions: Vec::new(),
+            });
 
         // Check for duplicate version
         if meta.versions.iter().any(|v| v.version == version) {
@@ -132,8 +133,7 @@ impl RegistryStorage {
 
         // Write tarball
         let dir = self.package_dir(name);
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("Failed to create package dir: {e}"))?;
+        std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create package dir: {e}"))?;
         std::fs::write(self.tarball_path(name, version), tarball)
             .map_err(|e| format!("Failed to write tarball: {e}"))?;
 
@@ -153,12 +153,9 @@ impl RegistryStorage {
     pub fn download(&self, name: &str, version: &str) -> Result<Vec<u8>, String> {
         let path = self.tarball_path(name, version);
         if !path.exists() {
-            return Err(format!(
-                "Package '{name}' version '{version}' not found"
-            ));
+            return Err(format!("Package '{name}' version '{version}' not found"));
         }
-        std::fs::read(&path)
-            .map_err(|e| format!("Failed to read tarball: {e}"))
+        std::fs::read(&path).map_err(|e| format!("Failed to read tarball: {e}"))
     }
 
     /// Search packages by query (matches name or description).
@@ -220,14 +217,14 @@ impl RegistryStorage {
                 continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();
-            if let Ok(Some(meta)) = self.load_metadata(&name) {
-                if let Some(latest) = meta.versions.last() {
-                    results.push(SearchResult {
-                        name: meta.name.clone(),
-                        latest_version: latest.version.clone(),
-                        description: latest.description.clone(),
-                    });
-                }
+            if let Ok(Some(meta)) = self.load_metadata(&name)
+                && let Some(latest) = meta.versions.last()
+            {
+                results.push(SearchResult {
+                    name: meta.name.clone(),
+                    latest_version: latest.version.clone(),
+                    description: latest.description.clone(),
+                });
             }
         }
 
@@ -261,7 +258,10 @@ mod tests {
         assert_eq!(meta.name, "mylib");
         assert_eq!(meta.versions.len(), 1);
         assert_eq!(meta.versions[0].version, "1.0.0");
-        assert_eq!(meta.versions[0].description.as_deref(), Some("A test library"));
+        assert_eq!(
+            meta.versions[0].description.as_deref(),
+            Some("A test library")
+        );
 
         // Download tarball
         let data = storage.download("mylib", "1.0.0").unwrap();
@@ -271,9 +271,7 @@ mod tests {
     #[test]
     fn duplicate_version_rejected() {
         let (_tmp, storage) = test_storage();
-        storage
-            .publish("pkg", "1.0.0", None, b"data1")
-            .unwrap();
+        storage.publish("pkg", "1.0.0", None, b"data1").unwrap();
         let result = storage.publish("pkg", "1.0.0", None, b"data2");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("already published"));

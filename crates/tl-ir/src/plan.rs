@@ -35,20 +35,11 @@ pub enum IrScalar {
         right: Box<IrScalar>,
     },
     /// Unary operation
-    UnaryOp {
-        op: IrUnaryOp,
-        expr: Box<IrScalar>,
-    },
+    UnaryOp { op: IrUnaryOp, expr: Box<IrScalar> },
     /// Aggregate function call
-    Aggregate {
-        func: AggFunc,
-        arg: Box<IrScalar>,
-    },
+    Aggregate { func: AggFunc, arg: Box<IrScalar> },
     /// Aliased expression: `expr AS name`
-    Alias {
-        expr: Box<IrScalar>,
-        name: String,
-    },
+    Alias { expr: Box<IrScalar>, name: String },
     /// Variable reference (not a column — used for runtime values)
     Var(String),
 }
@@ -126,9 +117,7 @@ pub enum IrJoinKind {
 #[derive(Debug, Clone)]
 pub enum QueryPlan {
     /// Leaf: read from a table source
-    Scan {
-        source: TableSource,
-    },
+    Scan { source: TableSource },
     /// Filter rows by predicate
     Filter {
         predicate: IrScalar,
@@ -164,23 +153,13 @@ pub enum QueryPlan {
         right_cols: Vec<String>,
     },
     /// Limit number of rows
-    Limit {
-        count: usize,
-        input: Box<QueryPlan>,
-    },
+    Limit { count: usize, input: Box<QueryPlan> },
     /// Collect to string
-    Collect {
-        input: Box<QueryPlan>,
-    },
+    Collect { input: Box<QueryPlan> },
     /// Show (print) rows
-    Show {
-        limit: usize,
-        input: Box<QueryPlan>,
-    },
+    Show { limit: usize, input: Box<QueryPlan> },
     /// Describe schema
-    Describe {
-        input: Box<QueryPlan>,
-    },
+    Describe { input: Box<QueryPlan> },
     /// Write to CSV file
     WriteCsv {
         path: IrScalar,
@@ -216,13 +195,9 @@ pub enum QueryPlan {
         input: Box<QueryPlan>,
     },
     /// Data profiling
-    DataProfile {
-        input: Box<QueryPlan>,
-    },
+    DataProfile { input: Box<QueryPlan> },
     /// Row count
-    RowCount {
-        input: Box<QueryPlan>,
-    },
+    RowCount { input: Box<QueryPlan> },
     /// Null rate
     NullRate {
         column: String,

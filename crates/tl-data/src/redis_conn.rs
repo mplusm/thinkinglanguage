@@ -7,32 +7,32 @@ use redis::{Client, Commands};
 
 /// Validate a Redis URL and return it (for use as connection handle).
 pub fn redis_connect(url: &str) -> Result<String, String> {
-    let client = Client::open(url)
-        .map_err(|e| format!("Redis connection error: {e}"))?;
+    let client = Client::open(url).map_err(|e| format!("Redis connection error: {e}"))?;
     // Test the connection
-    let mut conn = client.get_connection()
+    let mut conn = client
+        .get_connection()
         .map_err(|e| format!("Redis connection error: {e}"))?;
-    let _: String = redis::cmd("PING").query(&mut conn)
+    let _: String = redis::cmd("PING")
+        .query(&mut conn)
         .map_err(|e| format!("Redis ping error: {e}"))?;
     Ok(url.to_string())
 }
 
 /// Get a value by key. Returns None if key doesn't exist.
 pub fn redis_get(url: &str, key: &str) -> Result<Option<String>, String> {
-    let client = Client::open(url)
+    let client = Client::open(url).map_err(|e| format!("Redis connection error: {e}"))?;
+    let mut conn = client
+        .get_connection()
         .map_err(|e| format!("Redis connection error: {e}"))?;
-    let mut conn = client.get_connection()
-        .map_err(|e| format!("Redis connection error: {e}"))?;
-    let result: Option<String> = conn.get(key)
-        .map_err(|e| format!("Redis GET error: {e}"))?;
+    let result: Option<String> = conn.get(key).map_err(|e| format!("Redis GET error: {e}"))?;
     Ok(result)
 }
 
 /// Set a key-value pair.
 pub fn redis_set(url: &str, key: &str, value: &str) -> Result<(), String> {
-    let client = Client::open(url)
-        .map_err(|e| format!("Redis connection error: {e}"))?;
-    let mut conn = client.get_connection()
+    let client = Client::open(url).map_err(|e| format!("Redis connection error: {e}"))?;
+    let mut conn = client
+        .get_connection()
         .map_err(|e| format!("Redis connection error: {e}"))?;
     conn.set::<_, _, ()>(key, value)
         .map_err(|e| format!("Redis SET error: {e}"))?;
@@ -41,12 +41,11 @@ pub fn redis_set(url: &str, key: &str, value: &str) -> Result<(), String> {
 
 /// Delete a key. Returns true if the key was deleted.
 pub fn redis_del(url: &str, key: &str) -> Result<bool, String> {
-    let client = Client::open(url)
+    let client = Client::open(url).map_err(|e| format!("Redis connection error: {e}"))?;
+    let mut conn = client
+        .get_connection()
         .map_err(|e| format!("Redis connection error: {e}"))?;
-    let mut conn = client.get_connection()
-        .map_err(|e| format!("Redis connection error: {e}"))?;
-    let deleted: i64 = conn.del(key)
-        .map_err(|e| format!("Redis DEL error: {e}"))?;
+    let deleted: i64 = conn.del(key).map_err(|e| format!("Redis DEL error: {e}"))?;
     Ok(deleted > 0)
 }
 

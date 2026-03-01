@@ -12,6 +12,5 @@ pub fn optimize(plan: QueryPlan) -> QueryPlan {
     let plan = merge_filters(plan);
     let plan = push_predicates_down(plan);
     let plan = prune_columns(plan);
-    let plan = eliminate_common_subexprs(plan);
-    plan
+    eliminate_common_subexprs(plan)
 }

@@ -17,7 +17,10 @@ impl fmt::Display for WindowType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             WindowType::Tumbling { duration_ms } => write!(f, "tumbling({duration_ms}ms)"),
-            WindowType::Sliding { window_ms, slide_ms } => {
+            WindowType::Sliding {
+                window_ms,
+                slide_ms,
+            } => {
                 write!(f, "sliding({window_ms}ms, {slide_ms}ms)")
             }
             WindowType::Session { gap_ms } => write!(f, "session({gap_ms}ms)"),
@@ -67,15 +70,9 @@ impl WindowState {
             return false;
         }
         match &self.window_type {
-            WindowType::Tumbling { duration_ms } => {
-                current_time >= self.window_start + duration_ms
-            }
-            WindowType::Sliding { slide_ms, .. } => {
-                current_time >= self.window_start + slide_ms
-            }
-            WindowType::Session { gap_ms } => {
-                current_time >= self.last_event_time + gap_ms
-            }
+            WindowType::Tumbling { duration_ms } => current_time >= self.window_start + duration_ms,
+            WindowType::Sliding { slide_ms, .. } => current_time >= self.window_start + slide_ms,
+            WindowType::Session { gap_ms } => current_time >= self.last_event_time + gap_ms,
         }
     }
 
@@ -185,7 +182,13 @@ mod tests {
             "tumbling(5000ms)"
         );
         assert_eq!(
-            format!("{}", WindowType::Sliding { window_ms: 10000, slide_ms: 1000 }),
+            format!(
+                "{}",
+                WindowType::Sliding {
+                    window_ms: 10000,
+                    slide_ms: 1000
+                }
+            ),
             "sliding(10000ms, 1000ms)"
         );
         assert_eq!(

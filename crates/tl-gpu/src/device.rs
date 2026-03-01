@@ -17,9 +17,7 @@ impl GpuDevice {
     /// Get or lazily initialize the GPU device singleton.
     /// Returns None if no GPU is available.
     pub fn get() -> Option<Arc<GpuDevice>> {
-        GPU_DEVICE.get_or_init(|| {
-            Self::init_device()
-        }).clone()
+        GPU_DEVICE.get_or_init(|| Self::init_device()).clone()
     }
 
     /// Check if a GPU device is available without full initialization.
@@ -50,7 +48,8 @@ impl GpuDevice {
                 ..Default::default()
             },
             None,
-        )).ok()?;
+        ))
+        .ok()?;
 
         Some(Arc::new(GpuDevice {
             device,

@@ -3,12 +3,12 @@
 //
 // Read MySQL tables into DataFusion DataFrames.
 
-use std::sync::Arc;
+use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
-use datafusion::arrow::array::RecordBatch;
 use mysql::prelude::*;
 use mysql::{Pool, Value as MysqlValue};
+use std::sync::Arc;
 
 use crate::engine::DataEngine;
 
@@ -33,12 +33,13 @@ impl DataEngine {
         conn_str: &str,
         query: &str,
     ) -> Result<datafusion::prelude::DataFrame, String> {
-        let pool = Pool::new(conn_str)
-            .map_err(|e| format!("MySQL connection error: {e}"))?;
-        let mut conn = pool.get_conn()
+        let pool = Pool::new(conn_str).map_err(|e| format!("MySQL connection error: {e}"))?;
+        let mut conn = pool
+            .get_conn()
             .map_err(|e| format!("MySQL connection error: {e}"))?;
 
-        let result: Vec<mysql::Row> = conn.query(query)
+        let result: Vec<mysql::Row> = conn
+            .query(query)
             .map_err(|e| format!("MySQL query error: {e}"))?;
 
         if result.is_empty() {
@@ -46,12 +47,15 @@ impl DataEngine {
         }
 
         let columns = result[0].columns_ref();
-        let fields: Vec<Field> = columns.iter()
-            .map(|c| Field::new(
-                c.name_str().to_string(),
-                mysql_type_to_arrow(c.column_type()),
-                true,
-            ))
+        let fields: Vec<Field> = columns
+            .iter()
+            .map(|c| {
+                Field::new(
+                    c.name_str().to_string(),
+                    mysql_type_to_arrow(c.column_type()),
+                    true,
+                )
+            })
             .collect();
         let schema = Arc::new(Schema::new(fields));
 
@@ -60,81 +64,88 @@ impl DataEngine {
             let arrow_type = mysql_type_to_arrow(col.column_type());
             let array: Arc<dyn Array> = match arrow_type {
                 DataType::Boolean => {
-                    let values: Vec<Option<bool>> = result.iter().map(|r| {
-                        match &r[col_idx] {
+                    let values: Vec<Option<bool>> = result
+                        .iter()
+                        .map(|r| match &r[col_idx] {
                             MysqlValue::Int(n) => Some(*n != 0),
                             MysqlValue::UInt(n) => Some(*n != 0),
                             MysqlValue::NULL => None,
                             _ => None,
-                        }
-                    }).collect();
+                        })
+                        .collect();
                     Arc::new(BooleanArray::from(values))
                 }
                 DataType::Int16 => {
-                    let values: Vec<Option<i16>> = result.iter().map(|r| {
-                        match &r[col_idx] {
+                    let values: Vec<Option<i16>> = result
+                        .iter()
+                        .map(|r| match &r[col_idx] {
                             MysqlValue::Int(n) => Some(*n as i16),
                             MysqlValue::UInt(n) => Some(*n as i16),
                             MysqlValue::NULL => None,
                             _ => None,
-                        }
-                    }).collect();
+                        })
+                        .collect();
                     Arc::new(Int16Array::from(values))
                 }
                 DataType::Int32 => {
-                    let values: Vec<Option<i32>> = result.iter().map(|r| {
-                        match &r[col_idx] {
+                    let values: Vec<Option<i32>> = result
+                        .iter()
+                        .map(|r| match &r[col_idx] {
                             MysqlValue::Int(n) => Some(*n as i32),
                             MysqlValue::UInt(n) => Some(*n as i32),
                             MysqlValue::NULL => None,
                             _ => None,
-                        }
-                    }).collect();
+                        })
+                        .collect();
                     Arc::new(Int32Array::from(values))
                 }
                 DataType::Int64 => {
-                    let values: Vec<Option<i64>> = result.iter().map(|r| {
-                        match &r[col_idx] {
+                    let values: Vec<Option<i64>> = result
+                        .iter()
+                        .map(|r| match &r[col_idx] {
                             MysqlValue::Int(n) => Some(*n),
                             MysqlValue::UInt(n) => Some(*n as i64),
                             MysqlValue::NULL => None,
                             _ => None,
-                        }
-                    }).collect();
+                        })
+                        .collect();
                     Arc::new(Int64Array::from(values))
                 }
                 DataType::Float32 => {
-                    let values: Vec<Option<f32>> = result.iter().map(|r| {
-                        match &r[col_idx] {
+                    let values: Vec<Option<f32>> = result
+                        .iter()
+                        .map(|r| match &r[col_idx] {
                             MysqlValue::Float(f) => Some(*f as f32),
                             MysqlValue::Double(f) => Some(*f as f32),
                             MysqlValue::Int(n) => Some(*n as f32),
                             MysqlValue::NULL => None,
                             _ => None,
-                        }
-                    }).collect();
+                        })
+                        .collect();
                     Arc::new(Float32Array::from(values))
                 }
                 DataType::Float64 => {
-                    let values: Vec<Option<f64>> = result.iter().map(|r| {
-                        match &r[col_idx] {
+                    let values: Vec<Option<f64>> = result
+                        .iter()
+                        .map(|r| match &r[col_idx] {
                             MysqlValue::Float(f) => Some(*f as f64),
                             MysqlValue::Double(f) => Some(*f),
                             MysqlValue::Int(n) => Some(*n as f64),
                             MysqlValue::NULL => None,
                             _ => None,
-                        }
-                    }).collect();
+                        })
+                        .collect();
                     Arc::new(Float64Array::from(values))
                 }
                 _ => {
-                    let values: Vec<Option<String>> = result.iter().map(|r| {
-                        match &r[col_idx] {
+                    let values: Vec<Option<String>> = result
+                        .iter()
+                        .map(|r| match &r[col_idx] {
                             MysqlValue::NULL => None,
                             MysqlValue::Bytes(b) => Some(String::from_utf8_lossy(b).to_string()),
                             other => Some(format!("{other:?}")),
-                        }
-                    }).collect();
+                        })
+                        .collect();
                     Arc::new(StringArray::from(values))
                 }
             };

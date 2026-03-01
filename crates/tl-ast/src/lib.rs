@@ -92,10 +92,7 @@ pub enum StmtKind {
     },
 
     /// `while cond { body }`
-    While {
-        condition: Expr,
-        body: Vec<Stmt>,
-    },
+    While { condition: Expr, body: Vec<Stmt> },
 
     /// `for name in iter { body }`
     For {
@@ -208,28 +205,16 @@ pub enum StmtKind {
     Throw(Expr),
 
     /// `import "path.tl"` or `import "path.tl" as name`
-    Import {
-        path: String,
-        alias: Option<String>,
-    },
+    Import { path: String, alias: Option<String> },
 
     /// `test "name" { ... }`
-    Test {
-        name: String,
-        body: Vec<Stmt>,
-    },
+    Test { name: String, body: Vec<Stmt> },
 
     /// `use data.transforms.clean_users` etc.
-    Use {
-        item: UseItem,
-        is_public: bool,
-    },
+    Use { item: UseItem, is_public: bool },
 
     /// `mod transforms` or `pub mod transforms`
-    ModDecl {
-        name: String,
-        is_public: bool,
-    },
+    ModDecl { name: String, is_public: bool },
 
     /// `trait Display<T> { fn show(self) -> string }`
     TraitDef {
@@ -339,7 +324,11 @@ pub struct MatchArm {
 #[derive(Debug, Clone)]
 pub enum MigrateOp {
     /// `add_column(name: type, default: expr)`
-    AddColumn { name: String, type_ann: TypeExpr, default: Option<Expr> },
+    AddColumn {
+        name: String,
+        type_ann: TypeExpr,
+        default: Option<Expr>,
+    },
     /// `drop_column(name)`
     DropColumn { name: String },
     /// `rename_column(old_name, new_name)`
@@ -358,7 +347,10 @@ pub enum ClosureBody {
     /// `(x) => x * 2`
     Expr(Box<Expr>),
     /// `(x) -> int64 { let y = x * 2; y + 1 }`
-    Block { stmts: Vec<Stmt>, expr: Option<Box<Expr>> },
+    Block {
+        stmts: Vec<Stmt>,
+        expr: Option<Box<Expr>>,
+    },
 }
 
 /// Expressions
@@ -577,10 +569,7 @@ pub enum TypeExpr {
     /// Named type: int64, string, bool, float64, User
     Named(String),
     /// Generic type: table<User>, list<int64>
-    Generic {
-        name: String,
-        args: Vec<TypeExpr>,
-    },
+    Generic { name: String, args: Vec<TypeExpr> },
     /// Optional type: T?
     Optional(Box<TypeExpr>),
     /// Function type: fn(int64, int64) -> int64

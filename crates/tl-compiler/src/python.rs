@@ -171,7 +171,8 @@ pub fn py_import_impl(args: &[VmValue]) -> Result<VmValue, TlError> {
         _ => return Err(runtime_err("py_import() expects a string module name")),
     };
     Python::with_gil(|py| {
-        let module = py.import(&*name)
+        let module = py
+            .import(&*name)
             .map_err(|e| runtime_err(format!("py_import('{name}'): {e}")))?;
         Ok(VmValue::PyObject(Arc::new(PyObjectWrapper {
             inner: module.into_any().unbind(),
@@ -189,10 +190,10 @@ pub fn py_eval_impl(args: &[VmValue]) -> Result<VmValue, TlError> {
         _ => return Err(runtime_err("py_eval() expects a string")),
     };
     Python::with_gil(|py| {
-        let result = py.eval(&std::ffi::CString::new(code.as_str()).unwrap(), None, None)
+        let result = py
+            .eval(&std::ffi::CString::new(code.as_str()).unwrap(), None, None)
             .map_err(|e| runtime_err(format!("py_eval(): {e}")))?;
-        py_to_vmvalue(py, &result)
-            .map_err(|e| runtime_err(format!("py_eval() conversion: {e}")))
+        py_to_vmvalue(py, &result).map_err(|e| runtime_err(format!("py_eval() conversion: {e}")))
     })
 }
 
@@ -203,7 +204,11 @@ pub fn py_call_impl(args: &[VmValue]) -> Result<VmValue, TlError> {
     }
     let callable = match &args[0] {
         VmValue::PyObject(w) => w.clone(),
-        _ => return Err(runtime_err("py_call() first argument must be a Python object")),
+        _ => {
+            return Err(runtime_err(
+                "py_call() first argument must be a Python object",
+            ));
+        }
     };
     let call_args = &args[1..];
     Python::with_gil(|py| {
@@ -214,7 +219,9 @@ pub fn py_call_impl(args: &[VmValue]) -> Result<VmValue, TlError> {
             .map_err(|e| runtime_err(format!("py_call() arg conversion: {e}")))?;
         let tuple = pyo3::types::PyTuple::new(py, &py_args)
             .map_err(|e| runtime_err(format!("py_call() tuple creation: {e}")))?;
-        let result = callable.inner.call1(py, tuple)
+        let result = callable
+            .inner
+            .call1(py, tuple)
             .map_err(|e| runtime_err(format!("py_call(): {e}")))?;
         py_to_vmvalue(py, result.bind(py))
             .map_err(|e| runtime_err(format!("py_call() result conversion: {e}")))
@@ -228,7 +235,11 @@ pub fn py_getattr_impl(args: &[VmValue]) -> Result<VmValue, TlError> {
     }
     let obj = match &args[0] {
         VmValue::PyObject(w) => w.clone(),
-        _ => return Err(runtime_err("py_getattr() first argument must be a Python object")),
+        _ => {
+            return Err(runtime_err(
+                "py_getattr() first argument must be a Python object",
+            ));
+        }
     };
     let attr_name = match &args[1] {
         VmValue::String(s) => s.to_string(),
@@ -236,10 +247,10 @@ pub fn py_getattr_impl(args: &[VmValue]) -> Result<VmValue, TlError> {
     };
     Python::with_gil(|py| {
         let bound = obj.inner.bind(py);
-        let attr = bound.getattr(attr_name.as_str())
+        let attr = bound
+            .getattr(attr_name.as_str())
             .map_err(|e| runtime_err(format!("py_getattr('{attr_name}'): {e}")))?;
-        py_to_vmvalue(py, &attr)
-            .map_err(|e| runtime_err(format!("py_getattr() conversion: {e}")))
+        py_to_vmvalue(py, &attr).map_err(|e| runtime_err(format!("py_getattr() conversion: {e}")))
     })
 }
 
@@ -250,7 +261,11 @@ pub fn py_setattr_impl(args: &[VmValue]) -> Result<VmValue, TlError> {
     }
     let obj = match &args[0] {
         VmValue::PyObject(w) => w.clone(),
-        _ => return Err(runtime_err("py_setattr() first argument must be a Python object")),
+        _ => {
+            return Err(runtime_err(
+                "py_setattr() first argument must be a Python object",
+            ));
+        }
     };
     let attr_name = match &args[1] {
         VmValue::String(s) => s.to_string(),
@@ -259,7 +274,9 @@ pub fn py_setattr_impl(args: &[VmValue]) -> Result<VmValue, TlError> {
     Python::with_gil(|py| {
         let py_val = vmvalue_to_py(py, &args[2])
             .map_err(|e| runtime_err(format!("py_setattr() value conversion: {e}")))?;
-        obj.inner.bind(py).setattr(attr_name.as_str(), py_val)
+        obj.inner
+            .bind(py)
+            .setattr(attr_name.as_str(), py_val)
             .map_err(|e| runtime_err(format!("py_setattr('{attr_name}'): {e}")))?;
         Ok(VmValue::None)
     })

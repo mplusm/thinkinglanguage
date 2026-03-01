@@ -8,10 +8,7 @@ use tl_ast::{Program, StmtKind};
 use crate::diagnostics::span_to_range;
 
 #[allow(deprecated)]
-pub fn provide_document_symbols(
-    source: &str,
-    ast: Option<&Program>,
-) -> Vec<SymbolInformation> {
+pub fn provide_document_symbols(source: &str, ast: Option<&Program>) -> Vec<SymbolInformation> {
     let mut symbols = Vec::new();
     let program = match ast {
         Some(p) => p,
@@ -25,38 +22,103 @@ pub fn provide_document_symbols(
         match &stmt.kind {
             StmtKind::FnDecl { name, params, .. } => {
                 let detail = format!("({} params)", params.len());
-                symbols.push(make_symbol(name, SymbolKind::FUNCTION, Some(detail), source, stmt.span, &uri));
+                symbols.push(make_symbol(
+                    name,
+                    SymbolKind::FUNCTION,
+                    Some(detail),
+                    source,
+                    stmt.span,
+                    &uri,
+                ));
             }
             StmtKind::StructDecl { name, fields, .. } => {
                 let detail = format!("({} fields)", fields.len());
-                symbols.push(make_symbol(name, SymbolKind::STRUCT, Some(detail), source, stmt.span, &uri));
+                symbols.push(make_symbol(
+                    name,
+                    SymbolKind::STRUCT,
+                    Some(detail),
+                    source,
+                    stmt.span,
+                    &uri,
+                ));
             }
             StmtKind::EnumDecl { name, variants, .. } => {
                 let detail = format!("({} variants)", variants.len());
-                symbols.push(make_symbol(name, SymbolKind::ENUM, Some(detail), source, stmt.span, &uri));
+                symbols.push(make_symbol(
+                    name,
+                    SymbolKind::ENUM,
+                    Some(detail),
+                    source,
+                    stmt.span,
+                    &uri,
+                ));
             }
             StmtKind::TraitDef { name, methods, .. } => {
                 let detail = format!("({} methods)", methods.len());
-                symbols.push(make_symbol(name, SymbolKind::INTERFACE, Some(detail), source, stmt.span, &uri));
+                symbols.push(make_symbol(
+                    name,
+                    SymbolKind::INTERFACE,
+                    Some(detail),
+                    source,
+                    stmt.span,
+                    &uri,
+                ));
             }
-            StmtKind::ImplBlock { type_name, methods, .. } => {
+            StmtKind::ImplBlock {
+                type_name, methods, ..
+            } => {
                 let detail = format!("impl ({} methods)", methods.len());
-                symbols.push(make_symbol(type_name, SymbolKind::CLASS, Some(detail), source, stmt.span, &uri));
+                symbols.push(make_symbol(
+                    type_name,
+                    SymbolKind::CLASS,
+                    Some(detail),
+                    source,
+                    stmt.span,
+                    &uri,
+                ));
             }
             StmtKind::Let { name, .. } => {
-                symbols.push(make_symbol(name, SymbolKind::VARIABLE, None, source, stmt.span, &uri));
+                symbols.push(make_symbol(
+                    name,
+                    SymbolKind::VARIABLE,
+                    None,
+                    source,
+                    stmt.span,
+                    &uri,
+                ));
             }
             StmtKind::Test { name, .. } => {
                 let detail = Some("test".to_string());
-                symbols.push(make_symbol(name, SymbolKind::FUNCTION, detail, source, stmt.span, &uri));
+                symbols.push(make_symbol(
+                    name,
+                    SymbolKind::FUNCTION,
+                    detail,
+                    source,
+                    stmt.span,
+                    &uri,
+                ));
             }
             StmtKind::Pipeline { name, .. } => {
                 let detail = Some("pipeline".to_string());
-                symbols.push(make_symbol(name, SymbolKind::FUNCTION, detail, source, stmt.span, &uri));
+                symbols.push(make_symbol(
+                    name,
+                    SymbolKind::FUNCTION,
+                    detail,
+                    source,
+                    stmt.span,
+                    &uri,
+                ));
             }
             StmtKind::Schema { name, fields, .. } => {
                 let detail = format!("({} fields)", fields.len());
-                symbols.push(make_symbol(name, SymbolKind::STRUCT, Some(detail), source, stmt.span, &uri));
+                symbols.push(make_symbol(
+                    name,
+                    SymbolKind::STRUCT,
+                    Some(detail),
+                    source,
+                    stmt.span,
+                    &uri,
+                ));
             }
             _ => {}
         }

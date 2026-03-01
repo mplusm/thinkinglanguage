@@ -27,10 +27,8 @@ async fn main() {
             std::process::exit(1);
         });
 
-    axum::serve(listener, app)
-        .await
-        .unwrap_or_else(|e| {
-            eprintln!("Server error: {e}");
-            std::process::exit(1);
-        });
+    axum::serve(listener, app).await.unwrap_or_else(|e| {
+        eprintln!("Server error: {e}");
+        std::process::exit(1);
+    });
 }

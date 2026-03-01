@@ -119,8 +119,8 @@ pub fn report_parser_error(source: &str, filename: &str, error: &ParserError) {
 
 /// Pretty-print a type error with source context using ariadne
 pub fn report_type_error(source: &str, filename: &str, error: &TypeError) {
-    let mut builder = Report::build(ReportKind::Error, filename, error.span.start)
-        .with_message(&error.message);
+    let mut builder =
+        Report::build(ReportKind::Error, filename, error.span.start).with_message(&error.message);
 
     let mut label_msg = error.message.clone();
     if let (Some(expected), Some(found)) = (&error.expected, &error.found) {
@@ -145,8 +145,8 @@ pub fn report_type_error(source: &str, filename: &str, error: &TypeError) {
 
 /// Pretty-print a type warning with source context using ariadne
 pub fn report_type_warning(source: &str, filename: &str, error: &TypeError) {
-    let mut builder = Report::build(ReportKind::Warning, filename, error.span.start)
-        .with_message(&error.message);
+    let mut builder =
+        Report::build(ReportKind::Warning, filename, error.span.start).with_message(&error.message);
 
     let mut label_msg = error.message.clone();
     if let (Some(expected), Some(found)) = (&error.expected, &error.found) {
@@ -211,7 +211,9 @@ pub fn report_runtime_error(source: &str, filename: &str, error: &RuntimeError) 
         eprintln!("Runtime error: {}", error.message);
     }
     // Print stack trace if available (skip if only one frame at top-level)
-    if error.stack_trace.len() > 1 || (error.stack_trace.len() == 1 && error.stack_trace[0].function != "<main>") {
+    if error.stack_trace.len() > 1
+        || (error.stack_trace.len() == 1 && error.stack_trace[0].function != "<main>")
+    {
         eprintln!("Stack trace:");
         for frame in &error.stack_trace {
             if frame.line > 0 {

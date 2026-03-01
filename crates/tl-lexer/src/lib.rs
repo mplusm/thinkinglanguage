@@ -9,8 +9,8 @@ use tl_errors::Span;
 
 /// All tokens in the ThinkingLanguage grammar.
 #[derive(Logos, Debug, Clone, PartialEq)]
-#[logos(skip r"[ \t]+")]        // Skip whitespace (not newlines — they're significant)
-#[logos(skip r"//[^\n]*")]      // Skip line comments (doc comments /// and //! matched by token rules with higher priority)
+#[logos(skip r"[ \t]+")] // Skip whitespace (not newlines — they're significant)
+#[logos(skip r"//[^\n]*")] // Skip line comments (doc comments /// and //! matched by token rules with higher priority)
 pub enum Token {
     // ── Doc Comments ────────────────────────────────────────
     /// `/// doc text` — documentation comment for the following item
@@ -22,7 +22,6 @@ pub enum Token {
     InnerDocComment(String),
 
     // ── Literals ─────────────────────────────────────────────
-
     /// Integer literal: 42, 1_000_000
     #[regex(r"[0-9][0-9_]*", |lex| lex.slice().replace('_', "").parse::<i64>().ok())]
     Int(i64),
@@ -261,7 +260,6 @@ pub enum Token {
     Ampersand,
 
     // ── Punctuation ──────────────────────────────────────────
-
     #[token("(")]
     LParen,
     #[token(")")]
@@ -290,7 +288,6 @@ pub enum Token {
     Newline,
 
     // ── Identifier ───────────────────────────────────────────
-
     /// Identifier: variable names, function names, type names
     #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.slice().to_string(), priority = 1)]
     Ident(String),
@@ -347,10 +344,7 @@ pub fn tokenize(source: &str) -> Result<Vec<SpannedToken>, tl_errors::TlError> {
             }
             Err(()) => {
                 return Err(tl_errors::TlError::Lexer(tl_errors::LexerError {
-                    message: format!(
-                        "Unexpected character: '{}'",
-                        &source[span.start..span.end]
-                    ),
+                    message: format!("Unexpected character: '{}'", &source[span.start..span.end]),
                     span,
                 }));
             }
@@ -410,10 +404,14 @@ pub fn tokenize_with_trivia(source: &str) -> Vec<TriviaOrToken> {
             // skip string literals
             i += 1;
             while i < bytes.len() && bytes[i] != b'"' {
-                if bytes[i] == b'\\' { i += 1; }
+                if bytes[i] == b'\\' {
+                    i += 1;
+                }
                 i += 1;
             }
-            if i < bytes.len() { i += 1; }
+            if i < bytes.len() {
+                i += 1;
+            }
         } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' {
             // Skip doc comments (/// and //!) — they're tokens, not trivia
             if i + 2 < bytes.len() && (bytes[i + 2] == b'/' || bytes[i + 2] == b'!') {
@@ -672,14 +670,19 @@ mod tests {
     #[test]
     fn test_trivia_comment_preserved() {
         let items = tokenize_with_trivia("let x = 5 // comment");
-        let has_comment = items.iter().any(|it| matches!(it, TriviaOrToken::Trivia(Trivia::Comment(c), _) if c == "// comment"));
+        let has_comment = items.iter().any(
+            |it| matches!(it, TriviaOrToken::Trivia(Trivia::Comment(c), _) if c == "// comment"),
+        );
         assert!(has_comment, "Comment should be preserved in trivia output");
     }
 
     #[test]
     fn test_trivia_newlines_preserved() {
         let items = tokenize_with_trivia("let x = 5\nlet y = 10");
-        let newline_count = items.iter().filter(|it| matches!(it, TriviaOrToken::Trivia(Trivia::Newline, _))).count();
+        let newline_count = items
+            .iter()
+            .filter(|it| matches!(it, TriviaOrToken::Trivia(Trivia::Newline, _)))
+            .count();
         assert!(newline_count >= 1, "Newlines should be preserved");
     }
 
@@ -688,16 +691,22 @@ mod tests {
     #[test]
     fn test_doc_comment_token() {
         let tokens = tokenize("/// Adds two numbers\nfn add() {}").unwrap();
-        assert!(matches!(&tokens[0].token, Token::DocComment(s) if s == " Adds two numbers"),
-            "/// should produce DocComment token, got {:?}", tokens[0].token);
+        assert!(
+            matches!(&tokens[0].token, Token::DocComment(s) if s == " Adds two numbers"),
+            "/// should produce DocComment token, got {:?}",
+            tokens[0].token
+        );
         assert!(matches!(&tokens[1].token, Token::Fn));
     }
 
     #[test]
     fn test_inner_doc_comment_token() {
         let tokens = tokenize("//! Module docs\nfn foo() {}").unwrap();
-        assert!(matches!(&tokens[0].token, Token::InnerDocComment(s) if s == " Module docs"),
-            "//! should produce InnerDocComment token, got {:?}", tokens[0].token);
+        assert!(
+            matches!(&tokens[0].token, Token::InnerDocComment(s) if s == " Module docs"),
+            "//! should produce InnerDocComment token, got {:?}",
+            tokens[0].token
+        );
     }
 
     #[test]
@@ -724,11 +733,18 @@ mod tests {
             .collect();
 
         // Should have same number of tokens (minus EOF in regular)
-        assert_eq!(trivia_tokens.len(), regular_tokens.len() - 1, "Token count should match (excluding EOF)");
+        assert_eq!(
+            trivia_tokens.len(),
+            regular_tokens.len() - 1,
+            "Token count should match (excluding EOF)"
+        );
 
         // Spans should match
         for (tt, rt) in trivia_tokens.iter().zip(regular_tokens.iter()) {
-            assert_eq!(tt.span.start, rt.span.start, "Token start spans should match");
+            assert_eq!(
+                tt.span.start, rt.span.start,
+                "Token start spans should match"
+            );
             assert_eq!(tt.span.end, rt.span.end, "Token end spans should match");
         }
     }

@@ -1,9 +1,9 @@
 // Scalar benchmarks: interpreter vs VM on compute-intensive tasks.
 
-use criterion::{criterion_group, criterion_main, Criterion};
-use tl_parser::parse;
+use criterion::{Criterion, criterion_group, criterion_main};
+use tl_compiler::{Vm, compile};
 use tl_interpreter::Interpreter;
-use tl_compiler::{compile, Vm};
+use tl_parser::parse;
 
 fn fib_source() -> &'static str {
     r#"

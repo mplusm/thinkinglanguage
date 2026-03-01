@@ -4,20 +4,20 @@
 // Phase 4: Provides streaming data processing, ETL pipelines,
 // connectors, windowing, lineage tracking, alerting, and metrics.
 
+pub mod alert;
 pub mod connector;
+pub mod lineage;
+pub mod metrics;
 pub mod pipeline;
+pub mod schedule;
 pub mod stream;
 pub mod window;
-pub mod lineage;
-pub mod alert;
-pub mod schedule;
-pub mod metrics;
 
-pub use connector::{Connector, ConnectorConfig, ChannelConnector, create_connector};
-pub use pipeline::{PipelineDef, PipelineStatus, PipelineResult, PipelineRunner};
-pub use stream::{StreamDef, StreamEvent, StreamRunner};
-pub use window::{WindowType, WindowState};
-pub use lineage::{LineageTracker, LineageNode};
 pub use alert::{AlertTarget, send_alert};
-pub use schedule::parse_duration;
+pub use connector::{ChannelConnector, Connector, ConnectorConfig, create_connector};
+pub use lineage::{LineageNode, LineageTracker};
 pub use metrics::MetricsRegistry;
+pub use pipeline::{PipelineDef, PipelineResult, PipelineRunner, PipelineStatus};
+pub use schedule::parse_duration;
+pub use stream::{StreamDef, StreamEvent, StreamRunner};
+pub use window::{WindowState, WindowType};

@@ -1,7 +1,7 @@
 // ThinkingLanguage — Stream processing definitions
 
+use crate::window::{WindowEvent, WindowState, WindowType};
 use std::fmt;
-use crate::window::{WindowType, WindowState, WindowEvent};
 
 /// Definition of a stream processor.
 #[derive(Debug, Clone)]
@@ -63,10 +63,10 @@ impl StreamRunner {
 
     /// Force-flush any remaining window state.
     pub fn flush(&mut self) -> Option<Vec<WindowEvent>> {
-        if let Some(ref mut state) = self.window_state {
-            if !state.is_empty() {
-                return Some(state.fire());
-            }
+        if let Some(ref mut state) = self.window_state
+            && !state.is_empty()
+        {
+            return Some(state.fire());
         }
         None
     }

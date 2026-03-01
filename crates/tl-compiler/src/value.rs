@@ -2,17 +2,17 @@
 // Optimized for the bytecode VM: Arc<str> strings, Arc<Prototype> functions.
 
 use std::fmt;
-use std::sync::{Arc, Mutex, mpsc};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 
 #[cfg(feature = "native")]
+use tl_ai::{TlModel, TlTensor};
+#[cfg(feature = "native")]
 use tl_data::{ArrowSchema, DataFrame};
-#[cfg(feature = "native")]
-use tl_ai::{TlTensor, TlModel};
-#[cfg(feature = "native")]
-use tl_stream::{ConnectorConfig, PipelineDef, StreamDef, PipelineResult};
 #[cfg(feature = "gpu")]
 use tl_gpu::GpuTensor;
+#[cfg(feature = "native")]
+use tl_stream::{ConnectorConfig, PipelineDef, PipelineResult, StreamDef};
 
 use crate::chunk::{BuiltinId, Prototype};
 
@@ -200,19 +200,41 @@ pub enum GeneratorKind {
     /// Built-in iterator over a list
     ListIter { items: Vec<VmValue>, index: usize },
     /// Take at most N items from a source generator
-    Take { source: Arc<Mutex<VmGenerator>>, remaining: usize },
+    Take {
+        source: Arc<Mutex<VmGenerator>>,
+        remaining: usize,
+    },
     /// Skip the first N items from a source generator
-    Skip { source: Arc<Mutex<VmGenerator>>, remaining: usize },
+    Skip {
+        source: Arc<Mutex<VmGenerator>>,
+        remaining: usize,
+    },
     /// Map a function over each yielded value
-    Map { source: Arc<Mutex<VmGenerator>>, func: VmValue },
+    Map {
+        source: Arc<Mutex<VmGenerator>>,
+        func: VmValue,
+    },
     /// Filter values using a predicate function
-    Filter { source: Arc<Mutex<VmGenerator>>, func: VmValue },
+    Filter {
+        source: Arc<Mutex<VmGenerator>>,
+        func: VmValue,
+    },
     /// Chain two generators: yield from first, then second
-    Chain { first: Arc<Mutex<VmGenerator>>, second: Arc<Mutex<VmGenerator>>, on_second: bool },
+    Chain {
+        first: Arc<Mutex<VmGenerator>>,
+        second: Arc<Mutex<VmGenerator>>,
+        on_second: bool,
+    },
     /// Zip two generators: yield [a, b] pairs
-    Zip { first: Arc<Mutex<VmGenerator>>, second: Arc<Mutex<VmGenerator>> },
+    Zip {
+        first: Arc<Mutex<VmGenerator>>,
+        second: Arc<Mutex<VmGenerator>>,
+    },
     /// Enumerate: yield [index, value] pairs
-    Enumerate { source: Arc<Mutex<VmGenerator>>, index: usize },
+    Enumerate {
+        source: Arc<Mutex<VmGenerator>>,
+        index: usize,
+    },
 }
 
 impl fmt::Debug for GeneratorKind {
@@ -394,7 +416,9 @@ impl fmt::Debug for VmValue {
             VmValue::StructInstance(s) => {
                 write!(f, "{} {{ ", s.type_name)?;
                 for (i, (k, v)) in s.fields.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{k}: {v:?}")?;
                 }
                 write!(f, " }}")
@@ -411,7 +435,9 @@ impl fmt::Debug for VmValue {
             VmValue::Map(pairs) => {
                 write!(f, "Map{{")?;
                 for (i, (k, v)) in pairs.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{k:?}: {v:?}")?;
                 }
                 write!(f, "}}")
@@ -425,7 +451,9 @@ impl fmt::Debug for VmValue {
             VmValue::Set(items) => {
                 write!(f, "Set{{")?;
                 for (i, v) in items.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{v:?}")?;
                 }
                 write!(f, "}}")
@@ -488,7 +516,9 @@ impl fmt::Display for VmValue {
             VmValue::StructInstance(s) => {
                 write!(f, "{} {{ ", s.type_name)?;
                 for (i, (k, v)) in s.fields.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{k}: {v}")?;
                 }
                 write!(f, " }}")
@@ -499,7 +529,9 @@ impl fmt::Display for VmValue {
                 if !e.fields.is_empty() {
                     write!(f, "(")?;
                     for (i, v) in e.fields.iter().enumerate() {
-                        if i > 0 { write!(f, ", ")?; }
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
                         write!(f, "{v}")?;
                     }
                     write!(f, ")")?;
@@ -510,7 +542,9 @@ impl fmt::Display for VmValue {
             VmValue::Map(pairs) => {
                 write!(f, "{{")?;
                 for (i, (k, v)) in pairs.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{k}: {v}")?;
                 }
                 write!(f, "}}")
@@ -524,7 +558,9 @@ impl fmt::Display for VmValue {
             VmValue::Set(items) => {
                 write!(f, "{{")?;
                 for (i, v) in items.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{v}")?;
                 }
                 write!(f, "}}")

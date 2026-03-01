@@ -4,7 +4,7 @@
 // Extracts structured documentation from AST nodes with doc comments.
 // Generates HTML, Markdown, and JSON output formats.
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use tl_ast::*;
 
 // ── Data Structures ─────────────────────────────────────────────────────
@@ -214,9 +214,16 @@ pub fn format_type_expr(te: &TypeExpr) -> String {
             format!("{}<{}>", name, args_str.join(", "))
         }
         TypeExpr::Optional(inner) => format!("{}?", format_type_expr(inner)),
-        TypeExpr::Function { params, return_type } => {
+        TypeExpr::Function {
+            params,
+            return_type,
+        } => {
             let params_str: Vec<String> = params.iter().map(format_type_expr).collect();
-            format!("fn({}) -> {}", params_str.join(", "), format_type_expr(return_type))
+            format!(
+                "fn({}) -> {}",
+                params_str.join(", "),
+                format_type_expr(return_type)
+            )
         }
     }
 }
@@ -233,23 +240,37 @@ pub fn extract_docs(program: &Program, path: Option<&str>) -> ModuleDoc {
     // First pass: collect all items and impl blocks
     for stmt in &program.statements {
         match &stmt.kind {
-            StmtKind::FnDecl { name, type_params, params, return_type, is_public, .. } => {
-                let doc_params: Vec<DocParam> = params.iter().map(|p| DocParam {
-                    name: p.name.clone(),
-                    type_ann: p.type_ann.as_ref().map(format_type_expr),
-                    description: None,
-                }).collect();
+            StmtKind::FnDecl {
+                name,
+                type_params,
+                params,
+                return_type,
+                is_public,
+                ..
+            } => {
+                let doc_params: Vec<DocParam> = params
+                    .iter()
+                    .map(|p| DocParam {
+                        name: p.name.clone(),
+                        type_ann: p.type_ann.as_ref().map(format_type_expr),
+                        description: None,
+                    })
+                    .collect();
 
                 let ret_str = return_type.as_ref().map(format_type_expr);
 
-                let params_sig: Vec<String> = params.iter().map(|p| {
-                    if let Some(ann) = &p.type_ann {
-                        format!("{}: {}", p.name, format_type_expr(ann))
-                    } else {
-                        p.name.clone()
-                    }
-                }).collect();
-                let ret_sig = ret_str.as_ref()
+                let params_sig: Vec<String> = params
+                    .iter()
+                    .map(|p| {
+                        if let Some(ann) = &p.type_ann {
+                            format!("{}: {}", p.name, format_type_expr(ann))
+                        } else {
+                            p.name.clone()
+                        }
+                    })
+                    .collect();
+                let ret_sig = ret_str
+                    .as_ref()
                     .map(|r| format!(" -> {}", r))
                     .unwrap_or_default();
                 let tp_sig = if type_params.is_empty() {
@@ -257,10 +278,16 @@ pub fn extract_docs(program: &Program, path: Option<&str>) -> ModuleDoc {
                 } else {
                     format!("<{}>", type_params.join(", "))
                 };
-                let signature = format!("fn {}{}{}{}", name, tp_sig, format!("({})", params_sig.join(", ")), ret_sig);
+                let signature = format!(
+                    "fn {}{}({}){}",
+                    name,
+                    tp_sig,
+                    params_sig.join(", "),
+                    ret_sig
+                );
 
                 let doc = stmt.doc_comment.as_ref().map(|s| {
-                    let mut parsed = parse_doc_comment(s);
+                    let parsed = parse_doc_comment(s);
                     // Merge @param descriptions into doc_params
                     for (pname, pdesc) in &parsed.params {
                         // Will be applied below
@@ -293,13 +320,22 @@ pub fn extract_docs(program: &Program, path: Option<&str>) -> ModuleDoc {
                     methods: Vec::new(),
                 });
             }
-            StmtKind::StructDecl { name, type_params, fields, is_public } => {
-                let doc_fields: Vec<DocField> = fields.iter().map(|f| DocField {
-                    name: f.name.clone(),
-                    type_ann: format_type_expr(&f.type_ann),
-                }).collect();
+            StmtKind::StructDecl {
+                name,
+                type_params,
+                fields,
+                is_public,
+            } => {
+                let doc_fields: Vec<DocField> = fields
+                    .iter()
+                    .map(|f| DocField {
+                        name: f.name.clone(),
+                        type_ann: format_type_expr(&f.type_ann),
+                    })
+                    .collect();
 
-                let fields_sig: Vec<String> = fields.iter()
+                let fields_sig: Vec<String> = fields
+                    .iter()
                     .map(|f| format!("  {}: {}", f.name, format_type_expr(&f.type_ann)))
                     .collect();
                 let tp_sig = if type_params.is_empty() {
@@ -307,7 +343,12 @@ pub fn extract_docs(program: &Program, path: Option<&str>) -> ModuleDoc {
                 } else {
                     format!("<{}>", type_params.join(", "))
                 };
-                let signature = format!("struct {}{} {{\n{}\n}}", name, tp_sig, fields_sig.join(",\n"));
+                let signature = format!(
+                    "struct {}{} {{\n{}\n}}",
+                    name,
+                    tp_sig,
+                    fields_sig.join(",\n")
+                );
 
                 items.push(DocItem {
                     name: name.clone(),
@@ -323,26 +364,43 @@ pub fn extract_docs(program: &Program, path: Option<&str>) -> ModuleDoc {
                     methods: Vec::new(),
                 });
             }
-            StmtKind::EnumDecl { name, type_params, variants, is_public } => {
-                let doc_variants: Vec<DocVariant> = variants.iter().map(|v| DocVariant {
-                    name: v.name.clone(),
-                    fields: v.fields.iter().map(format_type_expr).collect(),
-                }).collect();
+            StmtKind::EnumDecl {
+                name,
+                type_params,
+                variants,
+                is_public,
+            } => {
+                let doc_variants: Vec<DocVariant> = variants
+                    .iter()
+                    .map(|v| DocVariant {
+                        name: v.name.clone(),
+                        fields: v.fields.iter().map(format_type_expr).collect(),
+                    })
+                    .collect();
 
-                let variants_sig: Vec<String> = variants.iter().map(|v| {
-                    if v.fields.is_empty() {
-                        format!("  {}", v.name)
-                    } else {
-                        let fields: Vec<String> = v.fields.iter().map(format_type_expr).collect();
-                        format!("  {}({})", v.name, fields.join(", "))
-                    }
-                }).collect();
+                let variants_sig: Vec<String> = variants
+                    .iter()
+                    .map(|v| {
+                        if v.fields.is_empty() {
+                            format!("  {}", v.name)
+                        } else {
+                            let fields: Vec<String> =
+                                v.fields.iter().map(format_type_expr).collect();
+                            format!("  {}({})", v.name, fields.join(", "))
+                        }
+                    })
+                    .collect();
                 let tp_sig = if type_params.is_empty() {
                     String::new()
                 } else {
                     format!("<{}>", type_params.join(", "))
                 };
-                let signature = format!("enum {}{} {{\n{}\n}}", name, tp_sig, variants_sig.join(",\n"));
+                let signature = format!(
+                    "enum {}{} {{\n{}\n}}",
+                    name,
+                    tp_sig,
+                    variants_sig.join(",\n")
+                );
 
                 items.push(DocItem {
                     name: name.clone(),
@@ -358,27 +416,46 @@ pub fn extract_docs(program: &Program, path: Option<&str>) -> ModuleDoc {
                     methods: Vec::new(),
                 });
             }
-            StmtKind::TraitDef { name, type_params, methods, is_public } => {
-                let methods_sig: Vec<String> = methods.iter().map(|m| {
-                    let params: Vec<String> = m.params.iter().map(|p| {
-                        if let Some(ann) = &p.type_ann {
-                            format!("{}: {}", p.name, format_type_expr(ann))
-                        } else {
-                            p.name.clone()
-                        }
-                    }).collect();
-                    let ret = m.return_type.as_ref()
-                        .map(|t| format!(" -> {}", format_type_expr(t)))
-                        .unwrap_or_default();
-                    format!("  fn {}({}){}", m.name, params.join(", "), ret)
-                }).collect();
+            StmtKind::TraitDef {
+                name,
+                type_params,
+                methods,
+                is_public,
+            } => {
+                let methods_sig: Vec<String> = methods
+                    .iter()
+                    .map(|m| {
+                        let params: Vec<String> = m
+                            .params
+                            .iter()
+                            .map(|p| {
+                                if let Some(ann) = &p.type_ann {
+                                    format!("{}: {}", p.name, format_type_expr(ann))
+                                } else {
+                                    p.name.clone()
+                                }
+                            })
+                            .collect();
+                        let ret = m
+                            .return_type
+                            .as_ref()
+                            .map(|t| format!(" -> {}", format_type_expr(t)))
+                            .unwrap_or_default();
+                        format!("  fn {}({}){}", m.name, params.join(", "), ret)
+                    })
+                    .collect();
 
                 let tp_sig = if type_params.is_empty() {
                     String::new()
                 } else {
                     format!("<{}>", type_params.join(", "))
                 };
-                let signature = format!("trait {}{} {{\n{}\n}}", name, tp_sig, methods_sig.join("\n"));
+                let signature = format!(
+                    "trait {}{} {{\n{}\n}}",
+                    name,
+                    tp_sig,
+                    methods_sig.join("\n")
+                );
 
                 items.push(DocItem {
                     name: name.clone(),
@@ -394,13 +471,22 @@ pub fn extract_docs(program: &Program, path: Option<&str>) -> ModuleDoc {
                     methods: Vec::new(),
                 });
             }
-            StmtKind::Schema { name, fields, is_public, .. } => {
-                let doc_fields: Vec<DocField> = fields.iter().map(|f| DocField {
-                    name: f.name.clone(),
-                    type_ann: format_type_expr(&f.type_ann),
-                }).collect();
+            StmtKind::Schema {
+                name,
+                fields,
+                is_public,
+                ..
+            } => {
+                let doc_fields: Vec<DocField> = fields
+                    .iter()
+                    .map(|f| DocField {
+                        name: f.name.clone(),
+                        type_ann: format_type_expr(&f.type_ann),
+                    })
+                    .collect();
 
-                let fields_sig: Vec<String> = fields.iter()
+                let fields_sig: Vec<String> = fields
+                    .iter()
                     .map(|f| format!("  {}: {}", f.name, format_type_expr(&f.type_ann)))
                     .collect();
                 let signature = format!("schema {} {{\n{}\n}}", name, fields_sig.join(",\n"));
@@ -419,7 +505,12 @@ pub fn extract_docs(program: &Program, path: Option<&str>) -> ModuleDoc {
                     methods: Vec::new(),
                 });
             }
-            StmtKind::TypeAlias { name, type_params, value, is_public } => {
+            StmtKind::TypeAlias {
+                name,
+                type_params,
+                value,
+                is_public,
+            } => {
                 let tp_sig = if type_params.is_empty() {
                     String::new()
                 } else {
@@ -441,8 +532,15 @@ pub fn extract_docs(program: &Program, path: Option<&str>) -> ModuleDoc {
                     methods: Vec::new(),
                 });
             }
-            StmtKind::Let { name, type_ann, is_public, mutable, .. } if !mutable => {
-                let type_str = type_ann.as_ref()
+            StmtKind::Let {
+                name,
+                type_ann,
+                is_public,
+                mutable,
+                ..
+            } if !mutable => {
+                let type_str = type_ann
+                    .as_ref()
                     .map(format_type_expr)
                     .unwrap_or_else(|| "any".to_string());
                 let signature = format!("let {}: {}", name, type_str);
@@ -463,15 +561,26 @@ pub fn extract_docs(program: &Program, path: Option<&str>) -> ModuleDoc {
                     });
                 }
             }
-            StmtKind::ImplBlock { type_name, methods, .. } => {
+            StmtKind::ImplBlock {
+                type_name, methods, ..
+            } => {
                 let mut doc_methods = Vec::new();
                 for method in methods {
-                    if let StmtKind::FnDecl { name, params, return_type, .. } = &method.kind {
-                        let method_params: Vec<DocParam> = params.iter().map(|p| DocParam {
-                            name: p.name.clone(),
-                            type_ann: p.type_ann.as_ref().map(format_type_expr),
-                            description: None,
-                        }).collect();
+                    if let StmtKind::FnDecl {
+                        name,
+                        params,
+                        return_type,
+                        ..
+                    } = &method.kind
+                    {
+                        let method_params: Vec<DocParam> = params
+                            .iter()
+                            .map(|p| DocParam {
+                                name: p.name.clone(),
+                                type_ann: p.type_ann.as_ref().map(format_type_expr),
+                                description: None,
+                            })
+                            .collect();
                         doc_methods.push(DocMethod {
                             name: name.clone(),
                             params: method_params,
@@ -511,7 +620,10 @@ pub fn extract_public_docs(program: &Program, path: Option<&str>) -> ModuleDoc {
 
 /// Generate standalone HTML documentation from a ModuleDoc
 pub fn generate_html(module: &ModuleDoc) -> String {
-    let title = module.source_path.as_deref().unwrap_or("Module Documentation");
+    let title = module
+        .source_path
+        .as_deref()
+        .unwrap_or("Module Documentation");
     let mut html = String::new();
 
     html.push_str(&format!(r#"<!DOCTYPE html>
@@ -563,7 +675,9 @@ code {{ font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monos
     ];
 
     for (label, kind) in &kinds {
-        let matching: Vec<&DocItem> = module.items.iter()
+        let matching: Vec<&DocItem> = module
+            .items
+            .iter()
             .filter(|i| std::mem::discriminant(&i.kind) == std::mem::discriminant(kind))
             .collect();
         if !matching.is_empty() {
@@ -587,19 +701,25 @@ code {{ font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monos
     // Items
     for item in &module.items {
         html.push_str(&format!("<div class=\"item\" id=\"{}\">\n", item.name));
-        html.push_str(&format!("<h3><a href=\"#{}\"><code>{}</code></a>", item.name, item.name));
+        html.push_str(&format!(
+            "<h3><a href=\"#{}\"><code>{}</code></a>",
+            item.name, item.name
+        ));
         if item.is_public {
             html.push_str("<span class=\"badge badge-pub\">pub</span>");
         }
-        if let Some(ref doc) = item.doc {
-            if doc.deprecated.is_some() {
-                html.push_str("<span class=\"badge badge-deprecated\">deprecated</span>");
-            }
+        if let Some(ref doc) = item.doc
+            && doc.deprecated.is_some()
+        {
+            html.push_str("<span class=\"badge badge-deprecated\">deprecated</span>");
         }
         html.push_str("</h3>\n");
 
         // Signature
-        html.push_str(&format!("<pre><code>{}</code></pre>\n", html_escape(&item.signature)));
+        html.push_str(&format!(
+            "<pre><code>{}</code></pre>\n",
+            html_escape(&item.signature)
+        ));
 
         // Documentation
         if let Some(ref doc) = item.doc {
@@ -607,7 +727,10 @@ code {{ font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monos
                 html.push_str(&format!("<p>{}</p>\n", html_escape(&doc.description)));
             }
             if let Some(ref dep) = doc.deprecated {
-                html.push_str(&format!("<div class=\"deprecated\"><strong>Deprecated:</strong> {}</div>\n", html_escape(dep)));
+                html.push_str(&format!(
+                    "<div class=\"deprecated\"><strong>Deprecated:</strong> {}</div>\n",
+                    html_escape(dep)
+                ));
             }
         }
 
@@ -617,19 +740,26 @@ code {{ font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monos
             for p in &item.params {
                 let type_str = p.type_ann.as_deref().unwrap_or("any");
                 let desc_str = p.description.as_deref().unwrap_or("");
-                html.push_str(&format!("<tr><td><code>{}</code></td><td><code>{}</code></td><td>{}</td></tr>\n",
-                    html_escape(&p.name), html_escape(type_str), html_escape(desc_str)));
+                html.push_str(&format!(
+                    "<tr><td><code>{}</code></td><td><code>{}</code></td><td>{}</td></tr>\n",
+                    html_escape(&p.name),
+                    html_escape(type_str),
+                    html_escape(desc_str)
+                ));
             }
             html.push_str("</table>\n");
         }
 
         // Return type
         if let Some(ref ret) = item.return_type {
-            html.push_str(&format!("<h4>Returns</h4>\n<p><code>{}</code>", html_escape(ret)));
-            if let Some(ref doc) = item.doc {
-                if let Some(ref returns_desc) = doc.returns {
-                    html.push_str(&format!(" — {}", html_escape(returns_desc)));
-                }
+            html.push_str(&format!(
+                "<h4>Returns</h4>\n<p><code>{}</code>",
+                html_escape(ret)
+            ));
+            if let Some(ref doc) = item.doc
+                && let Some(ref returns_desc) = doc.returns
+            {
+                html.push_str(&format!(" — {}", html_escape(returns_desc)));
             }
             html.push_str("</p>\n");
         }
@@ -638,8 +768,11 @@ code {{ font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monos
         if !item.fields.is_empty() {
             html.push_str("<h4>Fields</h4>\n<table class=\"params-table\">\n<tr><th>Name</th><th>Type</th></tr>\n");
             for f in &item.fields {
-                html.push_str(&format!("<tr><td><code>{}</code></td><td><code>{}</code></td></tr>\n",
-                    html_escape(&f.name), html_escape(&f.type_ann)));
+                html.push_str(&format!(
+                    "<tr><td><code>{}</code></td><td><code>{}</code></td></tr>\n",
+                    html_escape(&f.name),
+                    html_escape(&f.type_ann)
+                ));
             }
             html.push_str("</table>\n");
         }
@@ -651,8 +784,15 @@ code {{ font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monos
                 if v.fields.is_empty() {
                     html.push_str(&format!("<li><code>{}</code></li>\n", html_escape(&v.name)));
                 } else {
-                    html.push_str(&format!("<li><code>{}({})</code></li>\n",
-                        html_escape(&v.name), v.fields.iter().map(|f| html_escape(f)).collect::<Vec<_>>().join(", ")));
+                    html.push_str(&format!(
+                        "<li><code>{}({})</code></li>\n",
+                        html_escape(&v.name),
+                        v.fields
+                            .iter()
+                            .map(|f| html_escape(f))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
                 }
             }
             html.push_str("</ul>\n");
@@ -662,16 +802,28 @@ code {{ font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monos
         if !item.methods.is_empty() {
             html.push_str("<h4>Methods</h4>\n");
             for m in &item.methods {
-                let params_str: Vec<String> = m.params.iter().map(|p| {
-                    if let Some(ref t) = p.type_ann {
-                        format!("{}: {}", p.name, t)
-                    } else {
-                        p.name.clone()
-                    }
-                }).collect();
-                let ret_str = m.return_type.as_ref().map(|r| format!(" -> {}", r)).unwrap_or_default();
-                html.push_str(&format!("<pre><code>fn {}({}){}</code></pre>\n",
-                    html_escape(&m.name), html_escape(&params_str.join(", ")), html_escape(&ret_str)));
+                let params_str: Vec<String> = m
+                    .params
+                    .iter()
+                    .map(|p| {
+                        if let Some(ref t) = p.type_ann {
+                            format!("{}: {}", p.name, t)
+                        } else {
+                            p.name.clone()
+                        }
+                    })
+                    .collect();
+                let ret_str = m
+                    .return_type
+                    .as_ref()
+                    .map(|r| format!(" -> {}", r))
+                    .unwrap_or_default();
+                html.push_str(&format!(
+                    "<pre><code>fn {}({}){}</code></pre>\n",
+                    html_escape(&m.name),
+                    html_escape(&params_str.join(", ")),
+                    html_escape(&ret_str)
+                ));
                 if let Some(ref doc) = m.doc {
                     html.push_str(&format!("<p>{}</p>\n", html_escape(doc)));
                 }
@@ -679,12 +831,15 @@ code {{ font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monos
         }
 
         // Examples
-        if let Some(ref doc) = item.doc {
-            if !doc.examples.is_empty() {
-                html.push_str("<h4>Examples</h4>\n");
-                for ex in &doc.examples {
-                    html.push_str(&format!("<div class=\"example\"><pre><code>{}</code></pre></div>\n", html_escape(ex)));
-                }
+        if let Some(ref doc) = item.doc
+            && !doc.examples.is_empty()
+        {
+            html.push_str("<h4>Examples</h4>\n");
+            for ex in &doc.examples {
+                html.push_str(&format!(
+                    "<div class=\"example\"><pre><code>{}</code></pre></div>\n",
+                    html_escape(ex)
+                ));
             }
         }
 
@@ -697,9 +852,9 @@ code {{ font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monos
 
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
-     .replace('<', "&lt;")
-     .replace('>', "&gt;")
-     .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 // ── Markdown Generation ─────────────────────────────────────────────────
@@ -707,7 +862,10 @@ fn html_escape(s: &str) -> String {
 /// Generate Markdown documentation from a ModuleDoc
 pub fn generate_markdown(module: &ModuleDoc) -> String {
     let mut md = String::new();
-    let title = module.source_path.as_deref().unwrap_or("Module Documentation");
+    let title = module
+        .source_path
+        .as_deref()
+        .unwrap_or("Module Documentation");
 
     md.push_str(&format!("# {title}\n\n"));
 
@@ -733,7 +891,7 @@ pub fn generate_markdown(module: &ModuleDoc) -> String {
             let anchor = item.name.to_lowercase();
             md.push_str(&format!("- [{} `{}`](#{})\n", kind_str, item.name, anchor));
         }
-        md.push_str("\n");
+        md.push('\n');
     }
 
     // Items
@@ -759,18 +917,21 @@ pub fn generate_markdown(module: &ModuleDoc) -> String {
             for p in &item.params {
                 let type_str = p.type_ann.as_deref().unwrap_or("any");
                 let desc_str = p.description.as_deref().unwrap_or("");
-                md.push_str(&format!("| `{}` | `{}` | {} |\n", p.name, type_str, desc_str));
+                md.push_str(&format!(
+                    "| `{}` | `{}` | {} |\n",
+                    p.name, type_str, desc_str
+                ));
             }
-            md.push_str("\n");
+            md.push('\n');
         }
 
         // Return type
         if let Some(ref ret) = item.return_type {
             md.push_str(&format!("**Returns:** `{}`", ret));
-            if let Some(ref doc) = item.doc {
-                if let Some(ref returns_desc) = doc.returns {
-                    md.push_str(&format!(" — {}", returns_desc));
-                }
+            if let Some(ref doc) = item.doc
+                && let Some(ref returns_desc) = doc.returns
+            {
+                md.push_str(&format!(" — {}", returns_desc));
             }
             md.push_str("\n\n");
         }
@@ -783,7 +944,7 @@ pub fn generate_markdown(module: &ModuleDoc) -> String {
             for f in &item.fields {
                 md.push_str(&format!("| `{}` | `{}` |\n", f.name, f.type_ann));
             }
-            md.push_str("\n");
+            md.push('\n');
         }
 
         // Variants
@@ -796,39 +957,52 @@ pub fn generate_markdown(module: &ModuleDoc) -> String {
                     md.push_str(&format!("- `{}({})`\n", v.name, v.fields.join(", ")));
                 }
             }
-            md.push_str("\n");
+            md.push('\n');
         }
 
         // Methods
         if !item.methods.is_empty() {
             md.push_str("**Methods:**\n\n");
             for m in &item.methods {
-                let params_str: Vec<String> = m.params.iter().map(|p| {
-                    if let Some(ref t) = p.type_ann {
-                        format!("{}: {}", p.name, t)
-                    } else {
-                        p.name.clone()
-                    }
-                }).collect();
-                let ret_str = m.return_type.as_ref().map(|r| format!(" -> {}", r)).unwrap_or_default();
-                md.push_str(&format!("- `fn {}({}){}`", m.name, params_str.join(", "), ret_str));
+                let params_str: Vec<String> = m
+                    .params
+                    .iter()
+                    .map(|p| {
+                        if let Some(ref t) = p.type_ann {
+                            format!("{}: {}", p.name, t)
+                        } else {
+                            p.name.clone()
+                        }
+                    })
+                    .collect();
+                let ret_str = m
+                    .return_type
+                    .as_ref()
+                    .map(|r| format!(" -> {}", r))
+                    .unwrap_or_default();
+                md.push_str(&format!(
+                    "- `fn {}({}){}`",
+                    m.name,
+                    params_str.join(", "),
+                    ret_str
+                ));
                 if let Some(ref doc) = m.doc {
                     md.push_str(&format!(" — {}", doc));
                 }
-                md.push_str("\n");
+                md.push('\n');
             }
-            md.push_str("\n");
+            md.push('\n');
         }
 
         // Examples
-        if let Some(ref doc) = item.doc {
-            if !doc.examples.is_empty() {
-                md.push_str("**Examples:**\n\n");
-                for ex in &doc.examples {
-                    md.push_str("```tl\n");
-                    md.push_str(ex);
-                    md.push_str("\n```\n\n");
-                }
+        if let Some(ref doc) = item.doc
+            && !doc.examples.is_empty()
+        {
+            md.push_str("**Examples:**\n\n");
+            for ex in &doc.examples {
+                md.push_str("```tl\n");
+                md.push_str(ex);
+                md.push_str("\n```\n\n");
             }
         }
     }
@@ -905,20 +1079,30 @@ code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monosp
     for module in &project.modules {
         let name = module.source_path.as_deref().unwrap_or("unknown");
         let anchor = name.replace(['/', '\\', '.'], "_");
-        html.push_str(&format!("<a href=\"#mod_{}\">{}</a>\n", anchor, html_escape(name)));
+        html.push_str(&format!(
+            "<a href=\"#mod_{}\">{}</a>\n",
+            anchor,
+            html_escape(name)
+        ));
     }
 
     html.push_str("</nav>\n<main class=\"content\">\n<h1>Project Documentation</h1>\n");
 
     // Collect all known names for cross-referencing
-    let known_names: Vec<String> = project.modules.iter()
+    let known_names: Vec<String> = project
+        .modules
+        .iter()
         .flat_map(|m| m.items.iter().map(|i| i.name.clone()))
         .collect();
 
     for module in &project.modules {
         let name = module.source_path.as_deref().unwrap_or("unknown");
         let anchor = name.replace(['/', '\\', '.'], "_");
-        html.push_str(&format!("<h2 id=\"mod_{}\">{}</h2>\n", anchor, html_escape(name)));
+        html.push_str(&format!(
+            "<h2 id=\"mod_{}\">{}</h2>\n",
+            anchor,
+            html_escape(name)
+        ));
 
         if let Some(ref doc) = module.module_doc {
             let desc = linkify_types(&html_escape(&doc.description), &known_names);
@@ -927,13 +1111,19 @@ code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monosp
 
         for item in &module.items {
             html.push_str(&format!("<div class=\"item\" id=\"{}\">\n", item.name));
-            html.push_str(&format!("<h3><code>{}</code></h3>\n", html_escape(&item.name)));
-            html.push_str(&format!("<pre><code>{}</code></pre>\n", html_escape(&item.signature)));
-            if let Some(ref doc) = item.doc {
-                if !doc.description.is_empty() {
-                    let desc = linkify_types(&html_escape(&doc.description), &known_names);
-                    html.push_str(&format!("<p>{}</p>\n", desc));
-                }
+            html.push_str(&format!(
+                "<h3><code>{}</code></h3>\n",
+                html_escape(&item.name)
+            ));
+            html.push_str(&format!(
+                "<pre><code>{}</code></pre>\n",
+                html_escape(&item.signature)
+            ));
+            if let Some(ref doc) = item.doc
+                && !doc.description.is_empty()
+            {
+                let desc = linkify_types(&html_escape(&doc.description), &known_names);
+                html.push_str(&format!("<p>{}</p>\n", desc));
             }
             html.push_str("</div>\n");
         }
@@ -955,7 +1145,7 @@ pub fn generate_project_markdown(project: &ProjectDoc) -> String {
         let anchor = name.replace(['/', '\\', '.'], "-").to_lowercase();
         md.push_str(&format!("- [{}](#{})\n", name, anchor));
     }
-    md.push_str("\n");
+    md.push('\n');
 
     for module in &project.modules {
         let name = module.source_path.as_deref().unwrap_or("unknown");
@@ -967,11 +1157,11 @@ pub fn generate_project_markdown(project: &ProjectDoc) -> String {
         for item in &module.items {
             md.push_str(&format!("### {}\n\n", item.name));
             md.push_str(&format!("```tl\n{}\n```\n\n", item.signature));
-            if let Some(ref doc) = item.doc {
-                if !doc.description.is_empty() {
-                    md.push_str(&doc.description);
-                    md.push_str("\n\n");
-                }
+            if let Some(ref doc) = item.doc
+                && !doc.description.is_empty()
+            {
+                md.push_str(&doc.description);
+                md.push_str("\n\n");
             }
         }
     }
@@ -1005,11 +1195,19 @@ mod tests {
 
     #[test]
     fn test_parse_doc_with_params() {
-        let doc = parse_doc_comment("Adds numbers\n@param a The first number\n@param b The second number");
+        let doc = parse_doc_comment(
+            "Adds numbers\n@param a The first number\n@param b The second number",
+        );
         assert_eq!(doc.summary, "Adds numbers");
         assert_eq!(doc.params.len(), 2);
-        assert_eq!(doc.params[0], ("a".to_string(), "The first number".to_string()));
-        assert_eq!(doc.params[1], ("b".to_string(), "The second number".to_string()));
+        assert_eq!(
+            doc.params[0],
+            ("a".to_string(), "The first number".to_string())
+        );
+        assert_eq!(
+            doc.params[1],
+            ("b".to_string(), "The second number".to_string())
+        );
     }
 
     #[test]
@@ -1042,7 +1240,9 @@ mod tests {
 
     #[test]
     fn test_extract_fn_doc() {
-        let program = parse_source("/// Adds two numbers\n/// @param a First number\n/// @param b Second number\n/// @returns The sum\nfn add(a: int, b: int) -> int { a + b }");
+        let program = parse_source(
+            "/// Adds two numbers\n/// @param a First number\n/// @param b Second number\n/// @returns The sum\nfn add(a: int, b: int) -> int { a + b }",
+        );
         let docs = extract_docs(&program, None);
         assert_eq!(docs.items.len(), 1);
         let item = &docs.items[0];
@@ -1108,10 +1308,14 @@ mod tests {
 
     #[test]
     fn test_extract_module_doc() {
-        let program = parse_source("//! This module provides math utilities\nfn add(a, b) { a + b }");
+        let program =
+            parse_source("//! This module provides math utilities\nfn add(a, b) { a + b }");
         let docs = extract_docs(&program, None);
         assert!(docs.module_doc.is_some());
-        assert_eq!(docs.module_doc.as_ref().unwrap().summary, "This module provides math utilities");
+        assert_eq!(
+            docs.module_doc.as_ref().unwrap().summary,
+            "This module provides math utilities"
+        );
     }
 
     #[test]
@@ -1145,28 +1349,46 @@ mod tests {
     #[test]
     fn test_html_contains_title() {
         let html = generate_html(&sample_module());
-        assert!(html.contains("math.tl"), "HTML should contain source path as title");
+        assert!(
+            html.contains("math.tl"),
+            "HTML should contain source path as title"
+        );
     }
 
     #[test]
     fn test_html_contains_sidebar() {
         let html = generate_html(&sample_module());
-        assert!(html.contains("class=\"sidebar\""), "HTML should have sidebar");
+        assert!(
+            html.contains("class=\"sidebar\""),
+            "HTML should have sidebar"
+        );
         assert!(html.contains("href=\"#add\""), "Sidebar should link to add");
-        assert!(html.contains("href=\"#Point\""), "Sidebar should link to Point");
+        assert!(
+            html.contains("href=\"#Point\""),
+            "Sidebar should link to Point"
+        );
     }
 
     #[test]
     fn test_html_contains_signatures() {
         let html = generate_html(&sample_module());
-        assert!(html.contains("fn add"), "HTML should contain function signature");
-        assert!(html.contains("struct Point"), "HTML should contain struct signature");
+        assert!(
+            html.contains("fn add"),
+            "HTML should contain function signature"
+        );
+        assert!(
+            html.contains("struct Point"),
+            "HTML should contain struct signature"
+        );
     }
 
     #[test]
     fn test_html_contains_fields() {
         let html = generate_html(&sample_module());
-        assert!(html.contains("<code>x</code>"), "HTML should contain field names");
+        assert!(
+            html.contains("<code>x</code>"),
+            "HTML should contain field names"
+        );
     }
 
     #[test]
@@ -1179,14 +1401,23 @@ mod tests {
     #[test]
     fn test_html_contains_example() {
         let html = generate_html(&sample_module());
-        assert!(html.contains("add(1, 2)"), "HTML should contain example code");
+        assert!(
+            html.contains("add(1, 2)"),
+            "HTML should contain example code"
+        );
     }
 
     #[test]
     fn test_html_contains_deprecated() {
         let html = generate_html(&sample_module());
-        assert!(html.contains("Deprecated"), "HTML should show deprecated notice");
-        assert!(html.contains("Use new_fn"), "HTML should show deprecation reason");
+        assert!(
+            html.contains("Deprecated"),
+            "HTML should show deprecated notice"
+        );
+        assert!(
+            html.contains("Use new_fn"),
+            "HTML should show deprecation reason"
+        );
     }
 
     // -- Markdown generation tests --
@@ -1201,13 +1432,19 @@ mod tests {
     #[test]
     fn test_markdown_code_fences() {
         let md = generate_markdown(&sample_module());
-        assert!(md.contains("```tl\nfn add"), "MD should have fenced code blocks");
+        assert!(
+            md.contains("```tl\nfn add"),
+            "MD should have fenced code blocks"
+        );
     }
 
     #[test]
     fn test_markdown_param_table() {
         let md = generate_markdown(&sample_module());
-        assert!(md.contains("| `a` | `int` |"), "MD should have parameter table");
+        assert!(
+            md.contains("| `a` | `int` |"),
+            "MD should have parameter table"
+        );
     }
 
     // -- JSON generation tests --
@@ -1216,14 +1453,21 @@ mod tests {
     fn test_json_valid_structure() {
         let json = generate_json(&sample_module());
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("JSON should be valid");
-        assert!(parsed.get("items").is_some(), "JSON should have items array");
-        assert!(parsed.get("module_doc").is_some(), "JSON should have module_doc");
+        assert!(
+            parsed.get("items").is_some(),
+            "JSON should have items array"
+        );
+        assert!(
+            parsed.get("module_doc").is_some(),
+            "JSON should have module_doc"
+        );
     }
 
     #[test]
     fn test_json_deserializable() {
         let json = generate_json(&sample_module());
-        let _: ModuleDoc = serde_json::from_str(&json).expect("JSON should deserialize to ModuleDoc");
+        let _: ModuleDoc =
+            serde_json::from_str(&json).expect("JSON should deserialize to ModuleDoc");
     }
 
     #[test]
@@ -1232,8 +1476,14 @@ mod tests {
         let program = parse_source(source);
         let docs = extract_public_docs(&program, None);
         let html = generate_html(&docs);
-        assert!(html.contains("greet"), "Public-only HTML should contain public items");
-        assert!(!html.contains("helper"), "Public-only HTML should not contain private items");
+        assert!(
+            html.contains("greet"),
+            "Public-only HTML should contain public items"
+        );
+        assert!(
+            !html.contains("helper"),
+            "Public-only HTML should not contain private items"
+        );
     }
 
     // -- Step 5: Integration tests --
@@ -1242,8 +1492,14 @@ mod tests {
     fn test_cross_reference_links() {
         let names = vec!["Point".to_string(), "add".to_string()];
         let result = linkify_types("Uses `Point` and `add` for math", &names);
-        assert!(result.contains("<a href=\"#Point\">Point</a>"), "Should linkify Point: {result}");
-        assert!(result.contains("<a href=\"#add\">add</a>"), "Should linkify add: {result}");
+        assert!(
+            result.contains("<a href=\"#Point\">Point</a>"),
+            "Should linkify Point: {result}"
+        );
+        assert!(
+            result.contains("<a href=\"#add\">add</a>"),
+            "Should linkify add: {result}"
+        );
     }
 
     #[test]
@@ -1254,12 +1510,26 @@ mod tests {
         let p2 = parse_source(src2);
         let m1 = extract_docs(&p1, Some("math.tl"));
         let m2 = extract_docs(&p2, Some("string.tl"));
-        let project = ProjectDoc { modules: vec![m1, m2] };
+        let project = ProjectDoc {
+            modules: vec![m1, m2],
+        };
         let html = generate_project_html(&project);
-        assert!(html.contains("math.tl"), "Project HTML should contain module names");
-        assert!(html.contains("string.tl"), "Project HTML should contain module names");
-        assert!(html.contains("add"), "Project HTML should contain item names");
-        assert!(html.contains("greet"), "Project HTML should contain item names");
+        assert!(
+            html.contains("math.tl"),
+            "Project HTML should contain module names"
+        );
+        assert!(
+            html.contains("string.tl"),
+            "Project HTML should contain module names"
+        );
+        assert!(
+            html.contains("add"),
+            "Project HTML should contain item names"
+        );
+        assert!(
+            html.contains("greet"),
+            "Project HTML should contain item names"
+        );
     }
 
     #[test]
@@ -1270,10 +1540,18 @@ mod tests {
         let p2 = parse_source(src2);
         let m1 = extract_docs(&p1, Some("a.tl"));
         let m2 = extract_docs(&p2, Some("b.tl"));
-        let project = ProjectDoc { modules: vec![m1, m2] };
+        let project = ProjectDoc {
+            modules: vec![m1, m2],
+        };
         let md = generate_project_markdown(&project);
-        assert!(md.contains("## a.tl"), "Project MD should have module headers");
-        assert!(md.contains("## b.tl"), "Project MD should have module headers");
+        assert!(
+            md.contains("## a.tl"),
+            "Project MD should have module headers"
+        );
+        assert!(
+            md.contains("## b.tl"),
+            "Project MD should have module headers"
+        );
     }
 
     #[test]
@@ -1284,7 +1562,10 @@ mod tests {
         let project = ProjectDoc { modules: vec![m] };
         let json = generate_project_json(&project);
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("JSON should be valid");
-        assert!(parsed.get("modules").is_some(), "Project JSON should have modules");
+        assert!(
+            parsed.get("modules").is_some(),
+            "Project JSON should have modules"
+        );
     }
 
     #[test]
@@ -1292,11 +1573,18 @@ mod tests {
         let program = parse_source("");
         let docs = extract_docs(&program, Some("empty.tl"));
         let html = generate_html(&docs);
-        assert!(html.contains("empty.tl"), "Empty file HTML should still have title");
+        assert!(
+            html.contains("empty.tl"),
+            "Empty file HTML should still have title"
+        );
         let md = generate_markdown(&docs);
-        assert!(md.contains("empty.tl"), "Empty file MD should still have title");
+        assert!(
+            md.contains("empty.tl"),
+            "Empty file MD should still have title"
+        );
         let json = generate_json(&docs);
-        let parsed: serde_json::Value = serde_json::from_str(&json).expect("Empty JSON should be valid");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json).expect("Empty JSON should be valid");
         assert!(parsed.get("items").unwrap().as_array().unwrap().is_empty());
     }
 
@@ -1315,6 +1603,9 @@ mod tests {
         let docs = extract_docs(&program, None);
         let html = generate_html(&docs);
         assert!(html.contains("add(1, 2)"), "HTML should show first example");
-        assert!(html.contains("add(3, 4)"), "HTML should show second example");
+        assert!(
+            html.contains("add(3, 4)"),
+            "HTML should show second example"
+        );
     }
 }

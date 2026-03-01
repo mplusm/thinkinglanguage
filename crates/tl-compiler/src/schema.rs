@@ -8,7 +8,7 @@
 mod native {
     use std::collections::HashMap;
     use std::sync::Arc;
-    use tl_data::{ArrowSchema, ArrowField, ArrowDataType};
+    use tl_data::{ArrowDataType, ArrowField, ArrowSchema};
 
     /// Runtime schema registry for versioned schemas.
     #[derive(Debug, Clone, Default)]
@@ -54,10 +54,22 @@ mod native {
     /// Difference between two schema versions.
     #[derive(Debug, Clone, PartialEq)]
     pub enum SchemaDiff {
-        FieldAdded { name: String, type_name: String },
-        FieldRemoved { name: String },
-        FieldRenamed { from: String, to: String },
-        TypeChanged { field: String, from: String, to: String },
+        FieldAdded {
+            name: String,
+            type_name: String,
+        },
+        FieldRemoved {
+            name: String,
+        },
+        FieldRenamed {
+            from: String,
+            to: String,
+        },
+        TypeChanged {
+            field: String,
+            from: String,
+            to: String,
+        },
     }
 
     /// A compatibility issue found during checking.
@@ -65,16 +77,32 @@ mod native {
     pub enum CompatIssue {
         FieldRemovedNotBackward(String),
         FieldAddedNoDefault(String),
-        TypeNarrowed { field: String, from: String, to: String },
+        TypeNarrowed {
+            field: String,
+            from: String,
+            to: String,
+        },
     }
 
     /// A migration operation stored in the registry.
     #[derive(Debug, Clone)]
     pub enum MigrationOp {
-        AddColumn { name: String, type_name: String, default: Option<String> },
-        DropColumn { name: String },
-        RenameColumn { from: String, to: String },
-        AlterType { column: String, new_type: String },
+        AddColumn {
+            name: String,
+            type_name: String,
+            default: Option<String>,
+        },
+        DropColumn {
+            name: String,
+        },
+        RenameColumn {
+            from: String,
+            to: String,
+        },
+        AlterType {
+            column: String,
+            new_type: String,
+        },
     }
 
     impl SchemaRegistry {
@@ -83,19 +111,35 @@ mod native {
         }
 
         /// Register a versioned schema. Returns error if version already exists.
-        pub fn register(&mut self, name: &str, version: i64, schema: Arc<ArrowSchema>, metadata: SchemaMetadata) -> Result<(), String> {
+        pub fn register(
+            &mut self,
+            name: &str,
+            version: i64,
+            schema: Arc<ArrowSchema>,
+            metadata: SchemaMetadata,
+        ) -> Result<(), String> {
             let entries = self.schemas.entry(name.to_string()).or_default();
             if entries.iter().any(|e| e.version == version) {
-                return Err(format!("Schema `{}` version {} already registered", name, version));
+                return Err(format!(
+                    "Schema `{}` version {} already registered",
+                    name, version
+                ));
             }
-            entries.push(VersionedSchema { version, schema, metadata });
+            entries.push(VersionedSchema {
+                version,
+                schema,
+                metadata,
+            });
             entries.sort_by_key(|e| e.version);
             Ok(())
         }
 
         /// Get a specific version of a schema.
         pub fn get(&self, name: &str, version: i64) -> Option<&VersionedSchema> {
-            self.schemas.get(name)?.iter().find(|e| e.version == version)
+            self.schemas
+                .get(name)?
+                .iter()
+                .find(|e| e.version == version)
         }
 
         /// Get the latest version of a schema.
@@ -105,20 +149,28 @@ mod native {
 
         /// Get all versions of a schema, ordered by version.
         pub fn history(&self, name: &str) -> Vec<&VersionedSchema> {
-            self.schemas.get(name).map(|v| v.iter().collect()).unwrap_or_default()
+            self.schemas
+                .get(name)
+                .map(|v| v.iter().collect())
+                .unwrap_or_default()
         }
 
         /// Get list of version numbers for a schema.
         pub fn versions(&self, name: &str) -> Vec<i64> {
-            self.schemas.get(name).map(|v| v.iter().map(|e| e.version).collect()).unwrap_or_default()
+            self.schemas
+                .get(name)
+                .map(|v| v.iter().map(|e| e.version).collect())
+                .unwrap_or_default()
         }
 
         /// Get field names and types for a specific version.
         pub fn fields(&self, name: &str, version: i64) -> Vec<(String, String)> {
             if let Some(vs) = self.get(name, version) {
-                vs.schema.fields().iter().map(|f| {
-                    (f.name().to_string(), format!("{}", f.data_type()))
-                }).collect()
+                vs.schema
+                    .fields()
+                    .iter()
+                    .map(|f| (f.name().to_string(), format!("{}", f.data_type())))
+                    .collect()
             } else {
                 Vec::new()
             }
@@ -136,14 +188,24 @@ mod native {
             };
 
             let mut diffs = Vec::new();
-            let old_fields: HashMap<&str, &ArrowField> = s1.schema.fields().iter().map(|f| (f.name().as_str(), f.as_ref())).collect();
-            let new_fields: HashMap<&str, &ArrowField> = s2.schema.fields().iter().map(|f| (f.name().as_str(), f.as_ref())).collect();
+            let old_fields: HashMap<&str, &ArrowField> = s1
+                .schema
+                .fields()
+                .iter()
+                .map(|f| (f.name().as_str(), f.as_ref()))
+                .collect();
+            let new_fields: HashMap<&str, &ArrowField> = s2
+                .schema
+                .fields()
+                .iter()
+                .map(|f| (f.name().as_str(), f.as_ref()))
+                .collect();
 
             // Check for renames first (from registered migrations)
             let renames = self.get_renames(name, v1, v2);
 
             // Fields in old but not in new
-            for (name_str, _field) in &old_fields {
+            for name_str in old_fields.keys() {
                 if !new_fields.contains_key(name_str) {
                     // Check if this was a rename
                     if let Some(new_name) = renames.get(*name_str) {
@@ -152,7 +214,9 @@ mod native {
                             to: new_name.clone(),
                         });
                     } else {
-                        diffs.push(SchemaDiff::FieldRemoved { name: name_str.to_string() });
+                        diffs.push(SchemaDiff::FieldRemoved {
+                            name: name_str.to_string(),
+                        });
                     }
                 }
             }
@@ -173,14 +237,14 @@ mod native {
 
             // Type changes (fields in both)
             for (name_str, old_field) in &old_fields {
-                if let Some(new_field) = new_fields.get(name_str) {
-                    if old_field.data_type() != new_field.data_type() {
-                        diffs.push(SchemaDiff::TypeChanged {
-                            field: name_str.to_string(),
-                            from: format!("{}", old_field.data_type()),
-                            to: format!("{}", new_field.data_type()),
-                        });
-                    }
+                if let Some(new_field) = new_fields.get(name_str)
+                    && old_field.data_type() != new_field.data_type()
+                {
+                    diffs.push(SchemaDiff::TypeChanged {
+                        field: name_str.to_string(),
+                        from: format!("{}", old_field.data_type()),
+                        to: format!("{}", new_field.data_type()),
+                    });
                 }
             }
 
@@ -188,7 +252,13 @@ mod native {
         }
 
         /// Check compatibility between two versions.
-        pub fn check_compatibility(&self, name: &str, old_ver: i64, new_ver: i64, mode: CompatibilityMode) -> Vec<CompatIssue> {
+        pub fn check_compatibility(
+            &self,
+            name: &str,
+            old_ver: i64,
+            new_ver: i64,
+            mode: CompatibilityMode,
+        ) -> Vec<CompatIssue> {
             if mode == CompatibilityMode::None {
                 return Vec::new();
             }
@@ -203,12 +273,22 @@ mod native {
             };
 
             let mut issues = Vec::new();
-            let old_fields: HashMap<&str, &ArrowField> = old_schema.schema.fields().iter().map(|f| (f.name().as_str(), f.as_ref())).collect();
-            let new_fields: HashMap<&str, &ArrowField> = new_schema.schema.fields().iter().map(|f| (f.name().as_str(), f.as_ref())).collect();
+            let old_fields: HashMap<&str, &ArrowField> = old_schema
+                .schema
+                .fields()
+                .iter()
+                .map(|f| (f.name().as_str(), f.as_ref()))
+                .collect();
+            let new_fields: HashMap<&str, &ArrowField> = new_schema
+                .schema
+                .fields()
+                .iter()
+                .map(|f| (f.name().as_str(), f.as_ref()))
+                .collect();
 
             // Backward compatibility: new must contain all old fields
             if mode == CompatibilityMode::Backward || mode == CompatibilityMode::Full {
-                for (name_str, _) in &old_fields {
+                for name_str in old_fields.keys() {
                     if !new_fields.contains_key(name_str) {
                         issues.push(CompatIssue::FieldRemovedNotBackward(name_str.to_string()));
                     }
@@ -217,10 +297,11 @@ mod native {
 
             // Forward compatibility: new fields must have defaults
             if mode == CompatibilityMode::Forward || mode == CompatibilityMode::Full {
-                for (name_str, _) in &new_fields {
+                for name_str in new_fields.keys() {
                     if !old_fields.contains_key(name_str) {
                         // Check if field has a default in metadata
-                        let has_default = new_schema.metadata.field_defaults.contains_key(*name_str);
+                        let has_default =
+                            new_schema.metadata.field_defaults.contains_key(*name_str);
                         if !has_default {
                             issues.push(CompatIssue::FieldAddedNoDefault(name_str.to_string()));
                         }
@@ -230,16 +311,15 @@ mod native {
 
             // Type narrowing check (both directions)
             for (name_str, old_field) in &old_fields {
-                if let Some(new_field) = new_fields.get(name_str) {
-                    if old_field.data_type() != new_field.data_type() {
-                        if !is_type_widening(old_field.data_type(), new_field.data_type()) {
-                            issues.push(CompatIssue::TypeNarrowed {
-                                field: name_str.to_string(),
-                                from: format!("{}", old_field.data_type()),
-                                to: format!("{}", new_field.data_type()),
-                            });
-                        }
-                    }
+                if let Some(new_field) = new_fields.get(name_str)
+                    && old_field.data_type() != new_field.data_type()
+                    && !is_type_widening(old_field.data_type(), new_field.data_type())
+                {
+                    issues.push(CompatIssue::TypeNarrowed {
+                        field: name_str.to_string(),
+                        from: format!("{}", old_field.data_type()),
+                        to: format!("{}", new_field.data_type()),
+                    });
                 }
             }
 
@@ -247,8 +327,15 @@ mod native {
         }
 
         /// Register a migration.
-        pub fn register_migration(&mut self, schema_name: &str, from_ver: i64, to_ver: i64, ops: Vec<MigrationOp>) {
-            self.migrations.insert((schema_name.to_string(), from_ver, to_ver), ops);
+        pub fn register_migration(
+            &mut self,
+            schema_name: &str,
+            from_ver: i64,
+            to_ver: i64,
+            ops: Vec<MigrationOp>,
+        ) {
+            self.migrations
+                .insert((schema_name.to_string(), from_ver, to_ver), ops);
         }
 
         /// Get renames from registered migrations.
@@ -265,17 +352,33 @@ mod native {
         }
 
         /// Apply a migration to produce a new schema version.
-        pub fn apply_migration(&mut self, schema_name: &str, from_ver: i64, to_ver: i64, ops: &[MigrationOp]) -> Result<(), String> {
-            let source = self.get(schema_name, from_ver)
+        pub fn apply_migration(
+            &mut self,
+            schema_name: &str,
+            from_ver: i64,
+            to_ver: i64,
+            ops: &[MigrationOp],
+        ) -> Result<(), String> {
+            let source = self
+                .get(schema_name, from_ver)
                 .ok_or_else(|| format!("Source schema `{}` v{} not found", schema_name, from_ver))?
                 .clone();
 
-            let mut fields: Vec<ArrowField> = source.schema.fields().iter().map(|f| f.as_ref().clone()).collect();
+            let mut fields: Vec<ArrowField> = source
+                .schema
+                .fields()
+                .iter()
+                .map(|f| f.as_ref().clone())
+                .collect();
             let mut metadata = source.metadata.clone();
 
             for op in ops {
                 match op {
-                    MigrationOp::AddColumn { name, type_name, default } => {
+                    MigrationOp::AddColumn {
+                        name,
+                        type_name,
+                        default,
+                    } => {
                         let dt = type_name_to_arrow(type_name);
                         fields.push(ArrowField::new(name, dt, true));
                         metadata.field_since.insert(name.clone(), to_ver);
@@ -313,11 +416,25 @@ mod native {
 
     /// Check if a type change is a widening (safe) operation.
     fn is_type_widening(from: &ArrowDataType, to: &ArrowDataType) -> bool {
-        matches!((from, to),
-            (ArrowDataType::Int8, ArrowDataType::Int16 | ArrowDataType::Int32 | ArrowDataType::Int64 | ArrowDataType::Float32 | ArrowDataType::Float64)
-            | (ArrowDataType::Int16, ArrowDataType::Int32 | ArrowDataType::Int64 | ArrowDataType::Float32 | ArrowDataType::Float64)
-            | (ArrowDataType::Int32, ArrowDataType::Int64 | ArrowDataType::Float64)
-            | (ArrowDataType::Float32, ArrowDataType::Float64)
+        matches!(
+            (from, to),
+            (
+                ArrowDataType::Int8,
+                ArrowDataType::Int16
+                    | ArrowDataType::Int32
+                    | ArrowDataType::Int64
+                    | ArrowDataType::Float32
+                    | ArrowDataType::Float64
+            ) | (
+                ArrowDataType::Int16,
+                ArrowDataType::Int32
+                    | ArrowDataType::Int64
+                    | ArrowDataType::Float32
+                    | ArrowDataType::Float64
+            ) | (
+                ArrowDataType::Int32,
+                ArrowDataType::Int64 | ArrowDataType::Float64
+            ) | (ArrowDataType::Float32, ArrowDataType::Float64)
         )
     }
 
@@ -356,10 +473,16 @@ mod native {
     impl std::fmt::Display for SchemaDiff {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
-                SchemaDiff::FieldAdded { name, type_name } => write!(f, "added field `{}` ({})", name, type_name),
+                SchemaDiff::FieldAdded { name, type_name } => {
+                    write!(f, "added field `{}` ({})", name, type_name)
+                }
                 SchemaDiff::FieldRemoved { name } => write!(f, "removed field `{}`", name),
-                SchemaDiff::FieldRenamed { from, to } => write!(f, "renamed field `{}` to `{}`", from, to),
-                SchemaDiff::TypeChanged { field, from, to } => write!(f, "changed type of `{}` from {} to {}", field, from, to),
+                SchemaDiff::FieldRenamed { from, to } => {
+                    write!(f, "renamed field `{}` to `{}`", from, to)
+                }
+                SchemaDiff::TypeChanged { field, from, to } => {
+                    write!(f, "changed type of `{}` from {} to {}", field, from, to)
+                }
             }
         }
     }
@@ -367,9 +490,17 @@ mod native {
     impl std::fmt::Display for CompatIssue {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
-                CompatIssue::FieldRemovedNotBackward(name) => write!(f, "field `{}` removed (breaks backward compat)", name),
-                CompatIssue::FieldAddedNoDefault(name) => write!(f, "field `{}` added without default (breaks forward compat)", name),
-                CompatIssue::TypeNarrowed { field, from, to } => write!(f, "field `{}` type narrowed from {} to {}", field, from, to),
+                CompatIssue::FieldRemovedNotBackward(name) => {
+                    write!(f, "field `{}` removed (breaks backward compat)", name)
+                }
+                CompatIssue::FieldAddedNoDefault(name) => write!(
+                    f,
+                    "field `{}` added without default (breaks forward compat)",
+                    name
+                ),
+                CompatIssue::TypeNarrowed { field, from, to } => {
+                    write!(f, "field `{}` type narrowed from {} to {}", field, from, to)
+                }
             }
         }
     }
@@ -379,15 +510,22 @@ mod native {
         use super::*;
 
         fn make_schema(fields: &[(&str, ArrowDataType)]) -> Arc<ArrowSchema> {
-            let arrow_fields: Vec<ArrowField> = fields.iter().map(|(n, dt)| ArrowField::new(*n, dt.clone(), true)).collect();
+            let arrow_fields: Vec<ArrowField> = fields
+                .iter()
+                .map(|(n, dt)| ArrowField::new(*n, dt.clone(), true))
+                .collect();
             Arc::new(ArrowSchema::new(arrow_fields))
         }
 
         #[test]
         fn test_register_schema_v1() {
             let mut reg = SchemaRegistry::new();
-            let schema = make_schema(&[("id", ArrowDataType::Int64), ("name", ArrowDataType::Utf8)]);
-            assert!(reg.register("User", 1, schema, SchemaMetadata::default()).is_ok());
+            let schema =
+                make_schema(&[("id", ArrowDataType::Int64), ("name", ArrowDataType::Utf8)]);
+            assert!(
+                reg.register("User", 1, schema, SchemaMetadata::default())
+                    .is_ok()
+            );
             assert!(reg.get("User", 1).is_some());
         }
 
@@ -396,8 +534,10 @@ mod native {
             let mut reg = SchemaRegistry::new();
             let s1 = make_schema(&[("id", ArrowDataType::Int64)]);
             let s2 = make_schema(&[("id", ArrowDataType::Int64), ("email", ArrowDataType::Utf8)]);
-            reg.register("User", 1, s1, SchemaMetadata::default()).unwrap();
-            reg.register("User", 2, s2, SchemaMetadata::default()).unwrap();
+            reg.register("User", 1, s1, SchemaMetadata::default())
+                .unwrap();
+            reg.register("User", 2, s2, SchemaMetadata::default())
+                .unwrap();
             assert!(reg.get("User", 2).is_some());
         }
 
@@ -406,8 +546,10 @@ mod native {
             let mut reg = SchemaRegistry::new();
             let s1 = make_schema(&[("id", ArrowDataType::Int64)]);
             let s2 = make_schema(&[("id", ArrowDataType::Int64), ("name", ArrowDataType::Utf8)]);
-            reg.register("User", 1, s1, SchemaMetadata::default()).unwrap();
-            reg.register("User", 2, s2, SchemaMetadata::default()).unwrap();
+            reg.register("User", 1, s1, SchemaMetadata::default())
+                .unwrap();
+            reg.register("User", 2, s2, SchemaMetadata::default())
+                .unwrap();
             let v1 = reg.get("User", 1).unwrap();
             assert_eq!(v1.schema.fields().len(), 1);
             let v2 = reg.get("User", 2).unwrap();
@@ -419,8 +561,10 @@ mod native {
             let mut reg = SchemaRegistry::new();
             let s1 = make_schema(&[("id", ArrowDataType::Int64)]);
             let s2 = make_schema(&[("id", ArrowDataType::Int64), ("name", ArrowDataType::Utf8)]);
-            reg.register("User", 1, s1, SchemaMetadata::default()).unwrap();
-            reg.register("User", 2, s2, SchemaMetadata::default()).unwrap();
+            reg.register("User", 1, s1, SchemaMetadata::default())
+                .unwrap();
+            reg.register("User", 2, s2, SchemaMetadata::default())
+                .unwrap();
             let latest = reg.latest("User").unwrap();
             assert_eq!(latest.version, 2);
         }
@@ -430,10 +574,17 @@ mod native {
             let mut reg = SchemaRegistry::new();
             let s1 = make_schema(&[("id", ArrowDataType::Int64)]);
             let s2 = make_schema(&[("id", ArrowDataType::Int64), ("name", ArrowDataType::Utf8)]);
-            let s3 = make_schema(&[("id", ArrowDataType::Int64), ("name", ArrowDataType::Utf8), ("email", ArrowDataType::Utf8)]);
-            reg.register("User", 1, s1, SchemaMetadata::default()).unwrap();
-            reg.register("User", 3, s3, SchemaMetadata::default()).unwrap();
-            reg.register("User", 2, s2, SchemaMetadata::default()).unwrap();
+            let s3 = make_schema(&[
+                ("id", ArrowDataType::Int64),
+                ("name", ArrowDataType::Utf8),
+                ("email", ArrowDataType::Utf8),
+            ]);
+            reg.register("User", 1, s1, SchemaMetadata::default())
+                .unwrap();
+            reg.register("User", 3, s3, SchemaMetadata::default())
+                .unwrap();
+            reg.register("User", 2, s2, SchemaMetadata::default())
+                .unwrap();
             let hist = reg.history("User");
             let versions: Vec<i64> = hist.iter().map(|v| v.version).collect();
             assert_eq!(versions, vec![1, 2, 3]);
@@ -444,10 +595,16 @@ mod native {
             let mut reg = SchemaRegistry::new();
             let s1 = make_schema(&[("id", ArrowDataType::Int64)]);
             let s2 = make_schema(&[("id", ArrowDataType::Int64), ("name", ArrowDataType::Utf8)]);
-            reg.register("User", 1, s1, SchemaMetadata::default()).unwrap();
-            reg.register("User", 2, s2, SchemaMetadata::default()).unwrap();
+            reg.register("User", 1, s1, SchemaMetadata::default())
+                .unwrap();
+            reg.register("User", 2, s2, SchemaMetadata::default())
+                .unwrap();
             let issues = reg.check_compatibility("User", 1, 2, CompatibilityMode::Backward);
-            assert!(issues.is_empty(), "Adding column should be backward compatible, got: {:?}", issues);
+            assert!(
+                issues.is_empty(),
+                "Adding column should be backward compatible, got: {:?}",
+                issues
+            );
         }
 
         #[test]
@@ -455,8 +612,10 @@ mod native {
             let mut reg = SchemaRegistry::new();
             let s1 = make_schema(&[("id", ArrowDataType::Int64), ("name", ArrowDataType::Utf8)]);
             let s2 = make_schema(&[("id", ArrowDataType::Int64)]);
-            reg.register("User", 1, s1, SchemaMetadata::default()).unwrap();
-            reg.register("User", 2, s2, SchemaMetadata::default()).unwrap();
+            reg.register("User", 1, s1, SchemaMetadata::default())
+                .unwrap();
+            reg.register("User", 2, s2, SchemaMetadata::default())
+                .unwrap();
             let issues = reg.check_compatibility("User", 1, 2, CompatibilityMode::Backward);
             assert!(!issues.is_empty());
             assert!(matches!(&issues[0], CompatIssue::FieldRemovedNotBackward(n) if n == "name"));
@@ -470,7 +629,10 @@ mod native {
             reg.register("T", 1, s1, SchemaMetadata::default()).unwrap();
             reg.register("T", 2, s2, SchemaMetadata::default()).unwrap();
             let issues = reg.check_compatibility("T", 1, 2, CompatibilityMode::Backward);
-            assert!(issues.is_empty(), "Type widening Int32->Int64 should be backward compatible");
+            assert!(
+                issues.is_empty(),
+                "Type widening Int32->Int64 should be backward compatible"
+            );
         }
 
         #[test]
@@ -490,10 +652,15 @@ mod native {
             let mut reg = SchemaRegistry::new();
             let s1 = make_schema(&[("id", ArrowDataType::Int64), ("name", ArrowDataType::Utf8)]);
             let s2 = make_schema(&[("id", ArrowDataType::Int64)]);
-            reg.register("User", 1, s1, SchemaMetadata::default()).unwrap();
-            reg.register("User", 2, s2, SchemaMetadata::default()).unwrap();
+            reg.register("User", 1, s1, SchemaMetadata::default())
+                .unwrap();
+            reg.register("User", 2, s2, SchemaMetadata::default())
+                .unwrap();
             let issues = reg.check_compatibility("User", 1, 2, CompatibilityMode::Forward);
-            assert!(issues.is_empty(), "Removing column should be forward compatible");
+            assert!(
+                issues.is_empty(),
+                "Removing column should be forward compatible"
+            );
         }
 
         #[test]
@@ -501,8 +668,10 @@ mod native {
             let mut reg = SchemaRegistry::new();
             let s1 = make_schema(&[("id", ArrowDataType::Int64)]);
             let s2 = make_schema(&[("id", ArrowDataType::Int64), ("name", ArrowDataType::Utf8)]);
-            reg.register("User", 1, s1, SchemaMetadata::default()).unwrap();
-            reg.register("User", 2, s2, SchemaMetadata::default()).unwrap();
+            reg.register("User", 1, s1, SchemaMetadata::default())
+                .unwrap();
+            reg.register("User", 2, s2, SchemaMetadata::default())
+                .unwrap();
             let issues = reg.check_compatibility("User", 1, 2, CompatibilityMode::Forward);
             assert!(!issues.is_empty());
             assert!(matches!(&issues[0], CompatIssue::FieldAddedNoDefault(n) if n == "name"));
@@ -513,24 +682,45 @@ mod native {
             let mut reg = SchemaRegistry::new();
             let s1 = make_schema(&[("id", ArrowDataType::Int32)]);
             let mut meta = SchemaMetadata::default();
-            meta.field_defaults.insert("name".to_string(), "\"\"".to_string());
+            meta.field_defaults
+                .insert("name".to_string(), "\"\"".to_string());
             let s2 = make_schema(&[("id", ArrowDataType::Int64), ("name", ArrowDataType::Utf8)]);
             reg.register("T", 1, s1, SchemaMetadata::default()).unwrap();
             reg.register("T", 2, s2, meta).unwrap();
             let issues = reg.check_compatibility("T", 1, 2, CompatibilityMode::Full);
-            assert!(issues.is_empty(), "Type widening + defaults should pass full compat, got: {:?}", issues);
+            assert!(
+                issues.is_empty(),
+                "Type widening + defaults should pass full compat, got: {:?}",
+                issues
+            );
         }
 
         #[test]
         fn test_diff_additions_removals() {
             let mut reg = SchemaRegistry::new();
-            let s1 = make_schema(&[("id", ArrowDataType::Int64), ("old_field", ArrowDataType::Utf8)]);
-            let s2 = make_schema(&[("id", ArrowDataType::Int64), ("new_field", ArrowDataType::Utf8)]);
-            reg.register("User", 1, s1, SchemaMetadata::default()).unwrap();
-            reg.register("User", 2, s2, SchemaMetadata::default()).unwrap();
+            let s1 = make_schema(&[
+                ("id", ArrowDataType::Int64),
+                ("old_field", ArrowDataType::Utf8),
+            ]);
+            let s2 = make_schema(&[
+                ("id", ArrowDataType::Int64),
+                ("new_field", ArrowDataType::Utf8),
+            ]);
+            reg.register("User", 1, s1, SchemaMetadata::default())
+                .unwrap();
+            reg.register("User", 2, s2, SchemaMetadata::default())
+                .unwrap();
             let diffs = reg.diff("User", 1, 2);
-            assert!(diffs.iter().any(|d| matches!(d, SchemaDiff::FieldRemoved { name } if name == "old_field")));
-            assert!(diffs.iter().any(|d| matches!(d, SchemaDiff::FieldAdded { name, .. } if name == "new_field")));
+            assert!(
+                diffs
+                    .iter()
+                    .any(|d| matches!(d, SchemaDiff::FieldRemoved { name } if name == "old_field"))
+            );
+            assert!(
+                diffs.iter().any(
+                    |d| matches!(d, SchemaDiff::FieldAdded { name, .. } if name == "new_field")
+                )
+            );
         }
 
         #[test]
@@ -538,7 +728,8 @@ mod native {
             let mut reg = SchemaRegistry::new();
             let s1 = make_schema(&[("id", ArrowDataType::Int64)]);
             let s2 = make_schema(&[("id", ArrowDataType::Int64)]);
-            reg.register("User", 1, s1, SchemaMetadata::default()).unwrap();
+            reg.register("User", 1, s1, SchemaMetadata::default())
+                .unwrap();
             let result = reg.register("User", 1, s2, SchemaMetadata::default());
             assert!(result.is_err());
         }
@@ -555,5 +746,7 @@ pub struct SchemaRegistry;
 
 #[cfg(not(feature = "native"))]
 impl SchemaRegistry {
-    pub fn new() -> Self { SchemaRegistry }
+    pub fn new() -> Self {
+        SchemaRegistry
+    }
 }

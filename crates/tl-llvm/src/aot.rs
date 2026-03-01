@@ -4,12 +4,12 @@
 use std::error::Error;
 use std::path::Path;
 
+use inkwell::OptimizationLevel;
 use inkwell::context::Context;
 use inkwell::execution_engine::JitFunction;
 use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
 };
-use inkwell::OptimizationLevel;
 
 use tl_compiler::chunk::Prototype;
 use tl_compiler::{Vm, VmValue, compile_with_source};
@@ -27,8 +27,7 @@ pub fn compile_and_run(source: &str, file_path: Option<&str>) -> Result<(), Box<
     let program = parse(source).map_err(|e| format!("Parse error: {e}"))?;
 
     // 2. Compile to Prototype
-    let proto = compile_with_source(&program, source)
-        .map_err(|e| format!("Compile error: {e}"))?;
+    let proto = compile_with_source(&program, source).map_err(|e| format!("Compile error: {e}"))?;
 
     // 3. Create LLVM context and compile
     let context = Context::create();
@@ -36,21 +35,30 @@ pub fn compile_and_run(source: &str, file_path: Option<&str>) -> Result<(), Box<
     codegen.declare_runtime_helpers();
 
     let proto_ptr = &proto as *const Prototype;
-    let _function = codegen.compile_prototype(&proto, proto_ptr)
+    let _function = codegen
+        .compile_prototype(&proto, proto_ptr)
         .map_err(|e| format!("LLVM codegen error: {e}"))?;
 
     // Verify module
-    codegen.verify().map_err(|e| format!("LLVM verification error: {e}"))?;
+    codegen
+        .verify()
+        .map_err(|e| format!("LLVM verification error: {e}"))?;
 
     // 4. Create MCJIT execution engine
-    let ee = codegen.module.create_jit_execution_engine(OptimizationLevel::Default)
+    let ee = codegen
+        .module
+        .create_jit_execution_engine(OptimizationLevel::Default)
         .map_err(|e| format!("Failed to create execution engine: {e}"))?;
 
     // 5. Register runtime helper symbols
     register_runtime_symbols_ee(&ee);
 
     // 6. Get the compiled function pointer
-    let fn_name = if proto.name.is_empty() { "tl_main" } else { &format!("tl_fn_{}", proto.name) };
+    let fn_name = if proto.name.is_empty() {
+        "tl_main"
+    } else {
+        &format!("tl_fn_{}", proto.name)
+    };
     let compiled_fn: JitFunction<TlFnType> = unsafe {
         ee.get_function(fn_name)
             .map_err(|e| format!("Failed to get function '{fn_name}': {e}"))?
@@ -88,18 +96,20 @@ pub fn compile_and_run(source: &str, file_path: Option<&str>) -> Result<(), Box<
 /// Compile TL source to an LLVM IR string (for debugging/inspection).
 pub fn compile_to_ir(source: &str) -> Result<String, Box<dyn Error>> {
     let program = parse(source).map_err(|e| format!("Parse error: {e}"))?;
-    let proto = compile_with_source(&program, source)
-        .map_err(|e| format!("Compile error: {e}"))?;
+    let proto = compile_with_source(&program, source).map_err(|e| format!("Compile error: {e}"))?;
 
     let context = Context::create();
     let codegen = LlvmCodegen::new(&context, "tl_module");
     codegen.declare_runtime_helpers();
 
     let proto_ptr = &proto as *const Prototype;
-    codegen.compile_prototype(&proto, proto_ptr)
+    codegen
+        .compile_prototype(&proto, proto_ptr)
         .map_err(|e| format!("LLVM codegen error: {e}"))?;
 
-    codegen.verify().map_err(|e| format!("LLVM verification error: {e}"))?;
+    codegen
+        .verify()
+        .map_err(|e| format!("LLVM verification error: {e}"))?;
 
     Ok(codegen.get_ir())
 }
@@ -107,40 +117,44 @@ pub fn compile_to_ir(source: &str) -> Result<String, Box<dyn Error>> {
 /// Compile TL source to a native object file.
 pub fn compile_to_object(source: &str, output: &Path) -> Result<(), Box<dyn Error>> {
     let program = parse(source).map_err(|e| format!("Parse error: {e}"))?;
-    let proto = compile_with_source(&program, source)
-        .map_err(|e| format!("Compile error: {e}"))?;
+    let proto = compile_with_source(&program, source).map_err(|e| format!("Compile error: {e}"))?;
 
     let context = Context::create();
     let codegen = LlvmCodegen::new(&context, "tl_module");
     codegen.declare_runtime_helpers();
 
     let proto_ptr = &proto as *const Prototype;
-    codegen.compile_prototype(&proto, proto_ptr)
+    codegen
+        .compile_prototype(&proto, proto_ptr)
         .map_err(|e| format!("LLVM codegen error: {e}"))?;
 
-    codegen.verify().map_err(|e| format!("LLVM verification error: {e}"))?;
+    codegen
+        .verify()
+        .map_err(|e| format!("LLVM verification error: {e}"))?;
 
     // Initialize native target
     Target::initialize_native(&InitializationConfig::default())
         .map_err(|e| format!("Failed to initialize native target: {e}"))?;
 
     let triple = TargetMachine::get_default_triple();
-    let target = Target::from_triple(&triple)
-        .map_err(|e| format!("Failed to get target: {e}"))?;
+    let target = Target::from_triple(&triple).map_err(|e| format!("Failed to get target: {e}"))?;
 
     let cpu = TargetMachine::get_host_cpu_name();
     let features = TargetMachine::get_host_cpu_features();
 
-    let target_machine = target.create_target_machine(
-        &triple,
-        cpu.to_str().unwrap_or("generic"),
-        features.to_str().unwrap_or(""),
-        OptimizationLevel::Default,
-        RelocMode::Default,
-        CodeModel::Default,
-    ).ok_or("Failed to create target machine")?;
+    let target_machine = target
+        .create_target_machine(
+            &triple,
+            cpu.to_str().unwrap_or("generic"),
+            features.to_str().unwrap_or(""),
+            OptimizationLevel::Default,
+            RelocMode::Default,
+            CodeModel::Default,
+        )
+        .ok_or("Failed to create target machine")?;
 
-    target_machine.write_to_file(&codegen.module, FileType::Object, output)
+    target_machine
+        .write_to_file(&codegen.module, FileType::Object, output)
         .map_err(|e| format!("Failed to write object file: {e}"))?;
 
     Ok(())
@@ -156,10 +170,7 @@ pub fn register_runtime_symbols_ee(_ee: &inkwell::execution_engine::ExecutionEng
         ($name:ident) => {
             let cname = CString::new(stringify!($name)).unwrap();
             unsafe {
-                llvm_sys::support::LLVMAddSymbol(
-                    cname.as_ptr(),
-                    $name as *mut std::ffi::c_void,
-                );
+                llvm_sys::support::LLVMAddSymbol(cname.as_ptr(), $name as *mut std::ffi::c_void);
             }
         };
     }

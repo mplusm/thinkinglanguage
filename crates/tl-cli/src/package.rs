@@ -2,8 +2,8 @@ use std::path::Path;
 use std::process;
 
 use tl_package::{
-    Manifest, PackageCache, resolve_and_install, resolve_and_install_with_report,
-    DepChange, ResolveReport,
+    DepChange, Manifest, PackageCache, ResolveReport, resolve_and_install,
+    resolve_and_install_with_report,
 };
 
 /// `tl add <pkg>` — add a dependency to tl.toml and install it.
@@ -30,10 +30,12 @@ pub fn cmd_add(
         process::exit(1);
     });
 
-    let mut doc = content.parse::<toml_edit::DocumentMut>().unwrap_or_else(|e| {
-        eprintln!("Cannot parse tl.toml: {e}");
-        process::exit(1);
-    });
+    let mut doc = content
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap_or_else(|e| {
+            eprintln!("Cannot parse tl.toml: {e}");
+            process::exit(1);
+        });
 
     // Ensure [dependencies] table exists
     if doc.get("dependencies").is_none() {
@@ -95,26 +97,27 @@ pub fn cmd_remove(name: &str) {
         process::exit(1);
     });
 
-    let mut doc = content.parse::<toml_edit::DocumentMut>().unwrap_or_else(|e| {
-        eprintln!("Cannot parse tl.toml: {e}");
-        process::exit(1);
-    });
+    let mut doc = content
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap_or_else(|e| {
+            eprintln!("Cannot parse tl.toml: {e}");
+            process::exit(1);
+        });
 
-    if let Some(deps) = doc.get_mut("dependencies") {
-        if let Some(table) = deps.as_table_mut() {
-            if table.remove(name).is_some() {
-                if let Err(e) = std::fs::write(&manifest_path, doc.to_string()) {
-                    eprintln!("Cannot write tl.toml: {e}");
-                    process::exit(1);
-                }
-                println!("Removed dependency '{name}' from tl.toml");
-
-                // Regenerate lock file
-                let project_root = manifest_path.parent().unwrap();
-                run_install_for(project_root);
-                return;
-            }
+    if let Some(deps) = doc.get_mut("dependencies")
+        && let Some(table) = deps.as_table_mut()
+        && table.remove(name).is_some()
+    {
+        if let Err(e) = std::fs::write(&manifest_path, doc.to_string()) {
+            eprintln!("Cannot write tl.toml: {e}");
+            process::exit(1);
         }
+        println!("Removed dependency '{name}' from tl.toml");
+
+        // Regenerate lock file
+        let project_root = manifest_path.parent().unwrap();
+        run_install_for(project_root);
+        return;
     }
 
     eprintln!("Dependency '{name}' not found in tl.toml");
@@ -373,8 +376,14 @@ pub fn cmd_outdated() {
 fn print_outdated_table(results: &[tl_package::OutdatedInfo]) {
     use tl_package::DepSourceKind;
 
-    println!("{:<20} {:<12} {:<18} {:<18}", "Package", "Current", "Latest Matching", "Latest Available");
-    println!("{:<20} {:<12} {:<18} {:<18}", "-------", "-------", "---------------", "----------------");
+    println!(
+        "{:<20} {:<12} {:<18} {:<18}",
+        "Package", "Current", "Latest Matching", "Latest Available"
+    );
+    println!(
+        "{:<20} {:<12} {:<18} {:<18}",
+        "-------", "-------", "---------------", "----------------"
+    );
 
     let mut any_outdated = false;
     for info in results {
@@ -382,15 +391,30 @@ fn print_outdated_table(results: &[tl_package::OutdatedInfo]) {
             DepSourceKind::Registry => {
                 let matching = info.latest_matching.as_deref().unwrap_or("-");
                 let available = info.latest_available.as_deref().unwrap_or("-");
-                let suffix = if info.is_up_to_date() { "  (up to date)" } else { "" };
-                if !info.is_up_to_date() { any_outdated = true; }
-                println!("{:<20} {:<12} {:<18} {}{}", info.name, info.current, matching, available, suffix);
+                let suffix = if info.is_up_to_date() {
+                    "  (up to date)"
+                } else {
+                    ""
+                };
+                if !info.is_up_to_date() {
+                    any_outdated = true;
+                }
+                println!(
+                    "{:<20} {:<12} {:<18} {}{}",
+                    info.name, info.current, matching, available, suffix
+                );
             }
             DepSourceKind::Git => {
-                println!("{:<20} {:<12} {:<18} {}", info.name, info.current, "(git)", "(git)");
+                println!(
+                    "{:<20} {:<12} {:<18} {}",
+                    info.name, info.current, "(git)", "(git)"
+                );
             }
             DepSourceKind::Path => {
-                println!("{:<20} {:<12} {:<18} {}", info.name, info.current, "(path)", "(path)");
+                println!(
+                    "{:<20} {:<12} {:<18} {}",
+                    info.name, info.current, "(path)", "(path)"
+                );
             }
         }
     }
@@ -426,9 +450,15 @@ fn print_report(report: &ResolveReport) {
     let total = report.added_count() + report.updated_count() + report.removed_count();
     if total > 0 {
         let mut parts = Vec::new();
-        if report.added_count() > 0 { parts.push(format!("{} added", report.added_count())); }
-        if report.updated_count() > 0 { parts.push(format!("{} updated", report.updated_count())); }
-        if report.removed_count() > 0 { parts.push(format!("{} removed", report.removed_count())); }
+        if report.added_count() > 0 {
+            parts.push(format!("{} added", report.added_count()));
+        }
+        if report.updated_count() > 0 {
+            parts.push(format!("{} updated", report.updated_count()));
+        }
+        if report.removed_count() > 0 {
+            parts.push(format!("{} removed", report.removed_count()));
+        }
         println!("{} package(s) changed ({}).", total, parts.join(", "));
     }
 }

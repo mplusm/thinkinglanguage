@@ -5,12 +5,12 @@
 // for table pipe chains. The optimizer applies predicate pushdown, filter
 // merging, column pruning, and CSE before lowering back to flat ops.
 
-pub mod plan;
-pub mod display;
 pub mod builder;
-pub mod optimize;
+pub mod display;
 pub mod lower;
+pub mod optimize;
 pub mod passes;
+pub mod plan;
 
 // Re-exports for convenience
 pub use builder::build_query_plan;
@@ -68,9 +68,10 @@ mod tests {
     #[test]
     fn test_sort_display() {
         let plan = QueryPlan::Sort {
-            orders: vec![
-                SortOrder { column: "age".to_string(), ascending: false },
-            ],
+            orders: vec![SortOrder {
+                column: "age".to_string(),
+                ascending: false,
+            }],
             input: Box::new(QueryPlan::Scan {
                 source: TableSource::Variable("users".to_string()),
             }),
@@ -226,10 +227,7 @@ mod tests {
                     right: Box::new(Expr::Int(25)),
                 }],
             ),
-            (
-                "select".to_string(),
-                vec![Expr::Ident("name".to_string())],
-            ),
+            ("select".to_string(), vec![Expr::Ident("name".to_string())]),
             ("head".to_string(), vec![Expr::Int(10)]),
         ];
 
@@ -302,7 +300,10 @@ mod tests {
         let ops = vec![
             (
                 "select".to_string(),
-                vec![Expr::Ident("name".to_string()), Expr::Ident("age".to_string())],
+                vec![
+                    Expr::Ident("name".to_string()),
+                    Expr::Ident("age".to_string()),
+                ],
             ),
             (
                 "filter".to_string(),
@@ -352,7 +353,10 @@ mod tests {
             input: Box::new(QueryPlan::Limit {
                 count: 10,
                 input: Box::new(QueryPlan::Sort {
-                    orders: vec![SortOrder { column: "age".to_string(), ascending: false }],
+                    orders: vec![SortOrder {
+                        column: "age".to_string(),
+                        ascending: false,
+                    }],
                     input: Box::new(QueryPlan::Filter {
                         predicate: IrScalar::BinOp {
                             left: Box::new(IrScalar::Column("age".to_string())),

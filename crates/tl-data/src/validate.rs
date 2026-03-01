@@ -6,17 +6,13 @@
 use regex::Regex;
 use std::sync::LazyLock;
 
-static EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$").unwrap()
-});
+static EMAIL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$").unwrap());
 
-static URL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^https?://[^\s]+$").unwrap()
-});
+static URL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^https?://[^\s]+$").unwrap());
 
-static PHONE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[\+]?[(]?[0-9]{1,4}[)]?[-\s\./0-9]*$").unwrap()
-});
+static PHONE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[\+]?[(]?[0-9]{1,4}[)]?[-\s\./0-9]*$").unwrap());
 
 /// Check if a string is a valid email address.
 pub fn is_email(s: &str) -> bool {
@@ -51,8 +47,12 @@ pub fn levenshtein(a: &str, b: &str) -> usize {
     let m = a_chars.len();
     let n = b_chars.len();
 
-    if m == 0 { return n; }
-    if n == 0 { return m; }
+    if m == 0 {
+        return n;
+    }
+    if n == 0 {
+        return m;
+    }
 
     let mut prev = (0..=n).collect::<Vec<usize>>();
     let mut curr = vec![0; n + 1];
@@ -60,10 +60,12 @@ pub fn levenshtein(a: &str, b: &str) -> usize {
     for i in 1..=m {
         curr[0] = i;
         for j in 1..=n {
-            let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
-            curr[j] = (prev[j] + 1)
-                .min(curr[j - 1] + 1)
-                .min(prev[j - 1] + cost);
+            let cost = if a_chars[i - 1] == b_chars[j - 1] {
+                0
+            } else {
+                1
+            };
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
         }
         std::mem::swap(&mut prev, &mut curr);
     }

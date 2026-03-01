@@ -33,10 +33,9 @@ impl LockFile {
         if !path.exists() {
             return Ok(LockFile::default());
         }
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read lock file: {e}"))?;
-        toml::from_str(&content)
-            .map_err(|e| format!("Failed to parse lock file: {e}"))
+        let content =
+            std::fs::read_to_string(path).map_err(|e| format!("Failed to read lock file: {e}"))?;
+        toml::from_str(&content).map_err(|e| format!("Failed to parse lock file: {e}"))
     }
 
     /// Save lock file to disk.
@@ -100,7 +99,9 @@ impl LockedPackage {
 
     /// Extract the URL from a git source descriptor.
     pub fn git_url(&self) -> Option<&str> {
-        self.source.strip_prefix("git+").and_then(|s| s.split('#').next())
+        self.source
+            .strip_prefix("git+")
+            .and_then(|s| s.split('#').next())
     }
 }
 
@@ -116,8 +117,16 @@ mod tests {
 
         let lock = LockFile {
             packages: vec![
-                LockedPackage::new("utils", "1.0.0", LockedPackage::path_source("/home/user/utils")),
-                LockedPackage::new("remote", "2.1.0", LockedPackage::git_source("https://github.com/user/remote.git", "abc123")),
+                LockedPackage::new(
+                    "utils",
+                    "1.0.0",
+                    LockedPackage::path_source("/home/user/utils"),
+                ),
+                LockedPackage::new(
+                    "remote",
+                    "2.1.0",
+                    LockedPackage::git_source("https://github.com/user/remote.git", "abc123"),
+                ),
             ],
         };
 
@@ -161,12 +170,20 @@ mod tests {
 
     #[test]
     fn locked_package_source_helpers() {
-        let pkg = LockedPackage::new("test", "1.0.0", LockedPackage::git_source("https://example.com/repo.git", "deadbeef"));
+        let pkg = LockedPackage::new(
+            "test",
+            "1.0.0",
+            LockedPackage::git_source("https://example.com/repo.git", "deadbeef"),
+        );
         assert!(pkg.is_git());
         assert!(!pkg.is_path());
         assert_eq!(pkg.git_url(), Some("https://example.com/repo.git"));
 
-        let path_pkg = LockedPackage::new("local", "0.1.0", LockedPackage::path_source("/home/user/local"));
+        let path_pkg = LockedPackage::new(
+            "local",
+            "0.1.0",
+            LockedPackage::path_source("/home/user/local"),
+        );
         assert!(path_pkg.is_path());
         assert_eq!(path_pkg.path_value(), Some("/home/user/local"));
     }

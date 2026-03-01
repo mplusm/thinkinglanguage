@@ -95,8 +95,7 @@ pub fn write_deploy(tl_file: &str, target: &str, output_dir: &str) -> Result<(),
         "docker" => {
             let content = generate_dockerfile(tl_file);
             let path = out.join("Dockerfile");
-            fs::write(&path, &content)
-                .map_err(|e| format!("Failed to write Dockerfile: {e}"))?;
+            fs::write(&path, &content).map_err(|e| format!("Failed to write Dockerfile: {e}"))?;
             println!("Generated {}", path.display());
         }
         "k8s" => {
@@ -106,7 +105,11 @@ pub fn write_deploy(tl_file: &str, target: &str, output_dir: &str) -> Result<(),
                 .map_err(|e| format!("Failed to write deployment.yaml: {e}"))?;
             println!("Generated {}", path.display());
         }
-        other => return Err(format!("Unknown deploy target: '{other}'. Use 'docker' or 'k8s'.")),
+        other => {
+            return Err(format!(
+                "Unknown deploy target: '{other}'. Use 'docker' or 'k8s'."
+            ));
+        }
     }
 
     Ok(())

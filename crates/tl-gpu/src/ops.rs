@@ -5,8 +5,8 @@ use wgpu;
 use wgpu::util::DeviceExt;
 
 use crate::device::GpuDevice;
-use crate::tensor::GpuTensor;
 use crate::shaders;
+use crate::tensor::GpuTensor;
 
 /// GPU operations dispatcher with cached pipelines.
 pub struct GpuOps {
@@ -33,48 +33,48 @@ impl GpuOps {
     // ── Pipeline builders ──
 
     fn get_binary_pipeline(&self) -> &wgpu::ComputePipeline {
-        self.binary_pipeline.get_or_init(|| {
-            self.create_pipeline(shaders::ELEMENTWISE_BINARY, "main")
-        })
+        self.binary_pipeline
+            .get_or_init(|| self.create_pipeline(shaders::ELEMENTWISE_BINARY, "main"))
     }
 
     fn get_scalar_pipeline(&self) -> &wgpu::ComputePipeline {
-        self.scalar_pipeline.get_or_init(|| {
-            self.create_pipeline(shaders::SCALAR_MUL, "main")
-        })
+        self.scalar_pipeline
+            .get_or_init(|| self.create_pipeline(shaders::SCALAR_MUL, "main"))
     }
 
     fn get_reduce_pipeline(&self) -> &wgpu::ComputePipeline {
-        self.reduce_pipeline.get_or_init(|| {
-            self.create_pipeline(shaders::REDUCE_SUM, "main")
-        })
+        self.reduce_pipeline
+            .get_or_init(|| self.create_pipeline(shaders::REDUCE_SUM, "main"))
     }
 
     fn get_matmul_pipeline(&self) -> &wgpu::ComputePipeline {
-        self.matmul_pipeline.get_or_init(|| {
-            self.create_pipeline(shaders::MATMUL, "main")
-        })
+        self.matmul_pipeline
+            .get_or_init(|| self.create_pipeline(shaders::MATMUL, "main"))
     }
 
     fn get_transpose_pipeline(&self) -> &wgpu::ComputePipeline {
-        self.transpose_pipeline.get_or_init(|| {
-            self.create_pipeline(shaders::TRANSPOSE, "main")
-        })
+        self.transpose_pipeline
+            .get_or_init(|| self.create_pipeline(shaders::TRANSPOSE, "main"))
     }
 
     fn create_pipeline(&self, shader_src: &str, entry: &str) -> wgpu::ComputePipeline {
-        let module = self.device.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("compute_shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_src.into()),
-        });
-        self.device.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("compute_pipeline"),
-            layout: None, // auto-layout
-            module: &module,
-            entry_point: Some(entry),
-            compilation_options: Default::default(),
-            cache: None,
-        })
+        let module = self
+            .device
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("compute_shader"),
+                source: wgpu::ShaderSource::Wgsl(shader_src.into()),
+            });
+        self.device
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("compute_pipeline"),
+                layout: None, // auto-layout
+                module: &module,
+                entry_point: Some(entry),
+                compilation_options: Default::default(),
+                cache: None,
+            })
     }
 
     // ── Elementwise binary operations ──
@@ -98,8 +98,14 @@ impl GpuOps {
 
         #[repr(C)]
         #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-        struct Params { len: u32, op: u32 }
-        let params = Params { len: a.numel as u32, op };
+        struct Params {
+            len: u32,
+            op: u32,
+        }
+        let params = Params {
+            len: a.numel as u32,
+            op,
+        };
 
         let param_buf = dev.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("params"),
@@ -112,21 +118,34 @@ impl GpuOps {
             label: Some("binary_bg"),
             layout: &bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: a.buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: b.buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: result_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: param_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: a.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: b.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: result_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: param_buf.as_entire_binding(),
+                },
             ],
         });
 
         let workgroups = (a.numel as u32 + 255) / 256;
-        let mut encoder = dev.create_command_encoder(
-            &wgpu::CommandEncoderDescriptor { label: Some("binary_op") },
-        );
+        let mut encoder = dev.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("binary_op"),
+        });
         {
-            let mut pass = encoder.begin_compute_pass(
-                &wgpu::ComputePassDescriptor { label: Some("binary"), timestamp_writes: None },
-            );
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("binary"),
+                timestamp_writes: None,
+            });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(workgroups, 1, 1);
@@ -175,8 +194,14 @@ impl GpuOps {
 
         #[repr(C)]
         #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-        struct Params { len: u32, scalar: f32 }
-        let params = Params { len: a.numel as u32, scalar };
+        struct Params {
+            len: u32,
+            scalar: f32,
+        }
+        let params = Params {
+            len: a.numel as u32,
+            scalar,
+        };
 
         let param_buf = dev.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("scale_params"),
@@ -189,20 +214,30 @@ impl GpuOps {
             label: Some("scale_bg"),
             layout: &bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: a.buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: result_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: param_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: a.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: result_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: param_buf.as_entire_binding(),
+                },
             ],
         });
 
         let workgroups = (a.numel as u32 + 255) / 256;
-        let mut encoder = dev.create_command_encoder(
-            &wgpu::CommandEncoderDescriptor { label: Some("scale") },
-        );
+        let mut encoder = dev.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("scale"),
+        });
         {
-            let mut pass = encoder.begin_compute_pass(
-                &wgpu::ComputePassDescriptor { label: Some("scale"), timestamp_writes: None },
-            );
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("scale"),
+                timestamp_writes: None,
+            });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(workgroups, 1, 1);
@@ -237,8 +272,12 @@ impl GpuOps {
 
         #[repr(C)]
         #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-        struct Params { len: u32 }
-        let params = Params { len: a.numel as u32 };
+        struct Params {
+            len: u32,
+        }
+        let params = Params {
+            len: a.numel as u32,
+        };
 
         let param_buf = dev.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("reduce_params"),
@@ -251,19 +290,29 @@ impl GpuOps {
             label: Some("reduce_bg"),
             layout: &bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: a.buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: partial_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: param_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: a.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: partial_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: param_buf.as_entire_binding(),
+                },
             ],
         });
 
-        let mut encoder = dev.create_command_encoder(
-            &wgpu::CommandEncoderDescriptor { label: Some("reduce") },
-        );
+        let mut encoder = dev.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("reduce"),
+        });
         {
-            let mut pass = encoder.begin_compute_pass(
-                &wgpu::ComputePassDescriptor { label: Some("reduce"), timestamp_writes: None },
-            );
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("reduce"),
+                timestamp_writes: None,
+            });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(num_workgroups, 1, 1);
@@ -316,7 +365,12 @@ impl GpuOps {
 
         #[repr(C)]
         #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-        struct Params { m: u32, k: u32, n: u32, _pad: u32 }
+        struct Params {
+            m: u32,
+            k: u32,
+            n: u32,
+            _pad: u32,
+        }
         let params = Params { m, k, n, _pad: 0 };
 
         let param_buf = dev.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -330,22 +384,35 @@ impl GpuOps {
             label: Some("matmul_bg"),
             layout: &bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: a.buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: b.buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: result_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: param_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: a.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: b.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: result_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: param_buf.as_entire_binding(),
+                },
             ],
         });
 
         let wg_x = (n + 15) / 16;
         let wg_y = (m + 15) / 16;
-        let mut encoder = dev.create_command_encoder(
-            &wgpu::CommandEncoderDescriptor { label: Some("matmul") },
-        );
+        let mut encoder = dev.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("matmul"),
+        });
         {
-            let mut pass = encoder.begin_compute_pass(
-                &wgpu::ComputePassDescriptor { label: Some("matmul"), timestamp_writes: None },
-            );
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("matmul"),
+                timestamp_writes: None,
+            });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(wg_x, wg_y, 1);
@@ -384,7 +451,10 @@ impl GpuOps {
 
         #[repr(C)]
         #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-        struct Params { rows: u32, cols: u32 }
+        struct Params {
+            rows: u32,
+            cols: u32,
+        }
         let params = Params { rows, cols };
 
         let param_buf = dev.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -398,21 +468,31 @@ impl GpuOps {
             label: Some("transpose_bg"),
             layout: &bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: a.buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: result_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: param_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: a.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: result_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: param_buf.as_entire_binding(),
+                },
             ],
         });
 
         let wg_x = (cols + 15) / 16;
         let wg_y = (rows + 15) / 16;
-        let mut encoder = dev.create_command_encoder(
-            &wgpu::CommandEncoderDescriptor { label: Some("transpose") },
-        );
+        let mut encoder = dev.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("transpose"),
+        });
         {
-            let mut pass = encoder.begin_compute_pass(
-                &wgpu::ComputePassDescriptor { label: Some("transpose"), timestamp_writes: None },
-            );
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("transpose"),
+                timestamp_writes: None,
+            });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(wg_x, wg_y, 1);
@@ -436,7 +516,9 @@ mod tests {
 
     #[test]
     fn test_gpu_add() {
-        let Some(device) = GpuDevice::get() else { return };
+        let Some(device) = GpuDevice::get() else {
+            return;
+        };
         let ops = GpuOps::new(device.clone());
 
         let a = GpuTensor::from_f32(&[1.0, 2.0, 3.0, 4.0], vec![4], device.clone());
@@ -449,7 +531,9 @@ mod tests {
 
     #[test]
     fn test_gpu_sub() {
-        let Some(device) = GpuDevice::get() else { return };
+        let Some(device) = GpuDevice::get() else {
+            return;
+        };
         let ops = GpuOps::new(device.clone());
 
         let a = GpuTensor::from_f32(&[10.0, 20.0, 30.0], vec![3], device.clone());
@@ -462,7 +546,9 @@ mod tests {
 
     #[test]
     fn test_gpu_mul() {
-        let Some(device) = GpuDevice::get() else { return };
+        let Some(device) = GpuDevice::get() else {
+            return;
+        };
         let ops = GpuOps::new(device.clone());
 
         let a = GpuTensor::from_f32(&[2.0, 3.0, 4.0], vec![3], device.clone());
@@ -475,7 +561,9 @@ mod tests {
 
     #[test]
     fn test_gpu_div() {
-        let Some(device) = GpuDevice::get() else { return };
+        let Some(device) = GpuDevice::get() else {
+            return;
+        };
         let ops = GpuOps::new(device.clone());
 
         let a = GpuTensor::from_f32(&[10.0, 20.0, 30.0], vec![3], device.clone());
@@ -488,7 +576,9 @@ mod tests {
 
     #[test]
     fn test_gpu_matmul() {
-        let Some(device) = GpuDevice::get() else { return };
+        let Some(device) = GpuDevice::get() else {
+            return;
+        };
         let ops = GpuOps::new(device.clone());
 
         // [2,2] x [2,2]
@@ -504,7 +594,9 @@ mod tests {
 
     #[test]
     fn test_gpu_sum() {
-        let Some(device) = GpuDevice::get() else { return };
+        let Some(device) = GpuDevice::get() else {
+            return;
+        };
         let ops = GpuOps::new(device.clone());
 
         let a = GpuTensor::from_f32(&[1.0, 2.0, 3.0, 4.0], vec![4], device.clone());
@@ -514,7 +606,9 @@ mod tests {
 
     #[test]
     fn test_gpu_transpose() {
-        let Some(device) = GpuDevice::get() else { return };
+        let Some(device) = GpuDevice::get() else {
+            return;
+        };
         let ops = GpuOps::new(device.clone());
 
         // [[1,2,3],[4,5,6]] -> [[1,4],[2,5],[3,6]]

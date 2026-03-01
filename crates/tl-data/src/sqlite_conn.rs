@@ -3,11 +3,11 @@
 //
 // Read/write SQLite tables to/from DataFusion DataFrames.
 
-use std::sync::Arc;
+use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
-use datafusion::arrow::array::RecordBatch;
 use rusqlite::{Connection, types::ValueRef};
+use std::sync::Arc;
 
 use crate::engine::DataEngine;
 
@@ -18,10 +18,11 @@ impl DataEngine {
         db_path: &str,
         query: &str,
     ) -> Result<datafusion::prelude::DataFrame, String> {
-        let conn = Connection::open(db_path)
-            .map_err(|e| format!("SQLite connection error: {e}"))?;
+        let conn =
+            Connection::open(db_path).map_err(|e| format!("SQLite connection error: {e}"))?;
 
-        let mut stmt = conn.prepare(query)
+        let mut stmt = conn
+            .prepare(query)
             .map_err(|e| format!("SQLite prepare error: {e}"))?;
 
         let col_count = stmt.column_count();
@@ -31,13 +32,15 @@ impl DataEngine {
 
         // Collect all rows first so we can inspect types
         let mut all_rows: Vec<Vec<rusqlite::types::Value>> = Vec::new();
-        let rows = stmt.query_map([], |row| {
-            let mut vals = Vec::with_capacity(col_count);
-            for i in 0..col_count {
-                vals.push(value_ref_to_owned(row.get_ref(i).unwrap()));
-            }
-            Ok(vals)
-        }).map_err(|e| format!("SQLite query error: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                let mut vals = Vec::with_capacity(col_count);
+                for i in 0..col_count {
+                    vals.push(value_ref_to_owned(row.get_ref(i).unwrap()));
+                }
+                Ok(vals)
+            })
+            .map_err(|e| format!("SQLite query error: {e}"))?;
 
         for row in rows {
             all_rows.push(row.map_err(|e| format!("SQLite row error: {e}"))?);
@@ -71,50 +74,55 @@ impl DataEngine {
             let arrow_type = &col_types[col_idx];
             let array: Arc<dyn Array> = match arrow_type {
                 DataType::Boolean => {
-                    let values: Vec<Option<bool>> = all_rows.iter().map(|row| {
-                        match &row[col_idx] {
+                    let values: Vec<Option<bool>> = all_rows
+                        .iter()
+                        .map(|row| match &row[col_idx] {
                             rusqlite::types::Value::Integer(n) => Some(*n != 0),
                             rusqlite::types::Value::Null => None,
                             _ => None,
-                        }
-                    }).collect();
+                        })
+                        .collect();
                     Arc::new(BooleanArray::from(values))
                 }
                 DataType::Int64 => {
-                    let values: Vec<Option<i64>> = all_rows.iter().map(|row| {
-                        match &row[col_idx] {
+                    let values: Vec<Option<i64>> = all_rows
+                        .iter()
+                        .map(|row| match &row[col_idx] {
                             rusqlite::types::Value::Integer(n) => Some(*n),
                             rusqlite::types::Value::Null => None,
                             _ => None,
-                        }
-                    }).collect();
+                        })
+                        .collect();
                     Arc::new(Int64Array::from(values))
                 }
                 DataType::Float64 => {
-                    let values: Vec<Option<f64>> = all_rows.iter().map(|row| {
-                        match &row[col_idx] {
+                    let values: Vec<Option<f64>> = all_rows
+                        .iter()
+                        .map(|row| match &row[col_idx] {
                             rusqlite::types::Value::Real(f) => Some(*f),
                             rusqlite::types::Value::Integer(n) => Some(*n as f64),
                             rusqlite::types::Value::Null => None,
                             _ => None,
-                        }
-                    }).collect();
+                        })
+                        .collect();
                     Arc::new(Float64Array::from(values))
                 }
                 DataType::Binary => {
-                    let values: Vec<Option<&[u8]>> = all_rows.iter().map(|row| {
-                        match &row[col_idx] {
+                    let values: Vec<Option<&[u8]>> = all_rows
+                        .iter()
+                        .map(|row| match &row[col_idx] {
                             rusqlite::types::Value::Blob(b) => Some(b.as_slice()),
                             rusqlite::types::Value::Null => None,
                             _ => None,
-                        }
-                    }).collect();
+                        })
+                        .collect();
                     Arc::new(BinaryArray::from(values))
                 }
                 _ => {
                     // Utf8 / fallback
-                    let values: Vec<Option<String>> = all_rows.iter().map(|row| {
-                        match &row[col_idx] {
+                    let values: Vec<Option<String>> = all_rows
+                        .iter()
+                        .map(|row| match &row[col_idx] {
                             rusqlite::types::Value::Null => None,
                             rusqlite::types::Value::Text(s) => Some(s.clone()),
                             rusqlite::types::Value::Integer(n) => Some(n.to_string()),
@@ -122,8 +130,8 @@ impl DataEngine {
                             rusqlite::types::Value::Blob(b) => {
                                 Some(String::from_utf8_lossy(b).to_string())
                             }
-                        }
-                    }).collect();
+                        })
+                        .collect();
                     Arc::new(StringArray::from(values))
                 }
             };
@@ -155,8 +163,8 @@ impl DataEngine {
             return Ok(());
         }
 
-        let conn = Connection::open(db_path)
-            .map_err(|e| format!("SQLite connection error: {e}"))?;
+        let conn =
+            Connection::open(db_path).map_err(|e| format!("SQLite connection error: {e}"))?;
 
         let schema = batches[0].schema();
 
@@ -167,10 +175,14 @@ impl DataEngine {
             .map(|f| {
                 let sql_type = match f.data_type() {
                     DataType::Boolean => "BOOLEAN",
-                    DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64
-                    | DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => {
-                        "INTEGER"
-                    }
+                    DataType::Int8
+                    | DataType::Int16
+                    | DataType::Int32
+                    | DataType::Int64
+                    | DataType::UInt8
+                    | DataType::UInt16
+                    | DataType::UInt32
+                    | DataType::UInt64 => "INTEGER",
                     DataType::Float16 | DataType::Float32 | DataType::Float64 => "REAL",
                     DataType::Binary | DataType::LargeBinary => "BLOB",
                     _ => "TEXT",
@@ -280,9 +292,7 @@ fn value_ref_to_owned(v: ValueRef<'_>) -> rusqlite::types::Value {
         ValueRef::Null => rusqlite::types::Value::Null,
         ValueRef::Integer(i) => rusqlite::types::Value::Integer(i),
         ValueRef::Real(f) => rusqlite::types::Value::Real(f),
-        ValueRef::Text(s) => {
-            rusqlite::types::Value::Text(String::from_utf8_lossy(s).to_string())
-        }
+        ValueRef::Text(s) => rusqlite::types::Value::Text(String::from_utf8_lossy(s).to_string()),
         ValueRef::Blob(b) => rusqlite::types::Value::Blob(b.to_vec()),
     }
 }
@@ -309,9 +319,7 @@ mod tests {
         create_test_db(db_str);
 
         let engine = DataEngine::new();
-        let df = engine
-            .read_sqlite(db_str, "SELECT * FROM users")
-            .unwrap();
+        let df = engine.read_sqlite(db_str, "SELECT * FROM users").unwrap();
         let batches = engine.collect(df).unwrap();
         assert!(!batches.is_empty());
         let batch = &batches[0];
@@ -366,9 +374,7 @@ mod tests {
         let df2 = engine
             .read_sqlite(db_str, "SELECT id, name, score FROM users")
             .unwrap();
-        engine
-            .write_sqlite(df2, out_str, "results")
-            .unwrap();
+        engine.write_sqlite(df2, out_str, "results").unwrap();
 
         // Read back and verify
         let df3 = engine

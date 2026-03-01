@@ -1,17 +1,23 @@
 // Data benchmarks: CSV pipeline with DataFusion.
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use std::io::Write;
-use tl_parser::parse;
-use tl_interpreter::Interpreter;
-use tl_compiler::{compile, Vm};
 use tempfile::NamedTempFile;
+use tl_compiler::{Vm, compile};
+use tl_interpreter::Interpreter;
+use tl_parser::parse;
 
 fn create_test_csv(rows: usize) -> NamedTempFile {
     let mut f = NamedTempFile::new().unwrap();
     writeln!(f, "id,name,value,category").unwrap();
     for i in 0..rows {
-        let cat = if i % 3 == 0 { "A" } else if i % 3 == 1 { "B" } else { "C" };
+        let cat = if i % 3 == 0 {
+            "A"
+        } else if i % 3 == 1 {
+            "B"
+        } else {
+            "C"
+        };
         writeln!(f, "{},item_{},{},{}", i, i, (i as f64) * 1.5, cat).unwrap();
     }
     f.flush().unwrap();

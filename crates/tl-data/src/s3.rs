@@ -4,8 +4,8 @@
 // Register S3 object store with DataFusion, then existing read_csv/read_parquet
 // work with s3:// URLs automatically.
 
-use std::sync::Arc;
 use object_store::aws::AmazonS3Builder;
+use std::sync::Arc;
 use url::Url;
 
 use crate::engine::DataEngine;
@@ -35,13 +35,15 @@ impl DataEngine {
             builder = builder.with_endpoint(ep).with_allow_http(true);
         }
 
-        let store = builder.build()
+        let store = builder
+            .build()
             .map_err(|e| format!("S3 store creation error: {e}"))?;
 
         let url = Url::parse(&format!("s3://{bucket}"))
             .map_err(|e| format!("S3 URL parse error: {e}"))?;
 
-        self.rt.block_on(self.ctx.register_object_store(&url, Arc::new(store)));
+        self.rt
+            .block_on(self.ctx.register_object_store(&url, Arc::new(store)));
 
         Ok(())
     }
@@ -69,13 +71,15 @@ mod tests {
     #[ignore] // Requires S3 access or MinIO
     fn test_s3_read_csv() {
         let engine = DataEngine::new();
-        engine.register_s3(
-            "test-bucket",
-            "us-east-1",
-            Some("minioadmin"),
-            Some("minioadmin"),
-            Some("http://localhost:9000"),
-        ).unwrap();
+        engine
+            .register_s3(
+                "test-bucket",
+                "us-east-1",
+                Some("minioadmin"),
+                Some("minioadmin"),
+                Some("http://localhost:9000"),
+            )
+            .unwrap();
         // After registration, read_csv with s3:// URL should work
         let _df = engine.read_csv("s3://test-bucket/test.csv");
     }

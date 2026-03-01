@@ -3,11 +3,13 @@
 //
 // DataFrame-level clean, validate, and profile operations.
 
-use std::sync::Arc;
-use datafusion::prelude::*;
 use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
-use datafusion::functions_aggregate::expr_fn::{count, avg, stddev, min as agg_min, max as agg_max};
+use datafusion::functions_aggregate::expr_fn::{
+    avg, count, max as agg_max, min as agg_min, stddev,
+};
+use datafusion::prelude::*;
+use std::sync::Arc;
 
 use crate::engine::DataEngine;
 
@@ -23,20 +25,26 @@ impl DataEngine {
     ) -> Result<DataFrame, String> {
         let fill_expr = match strategy {
             "value" => {
-                let val = fill_value.ok_or("fill_null with 'value' strategy requires a fill_value")?;
+                let val =
+                    fill_value.ok_or("fill_null with 'value' strategy requires a fill_value")?;
                 coalesce(vec![col(column), lit(val)]).alias(column)
             }
             "zero" => coalesce(vec![col(column), lit(0.0)]).alias(column),
             "mean" => {
                 // Compute mean first
-                let mean_df = df.clone()
+                let mean_df = df
+                    .clone()
                     .aggregate(vec![], vec![avg(col(column)).alias("__mean")])
                     .map_err(|e| format!("fill_null mean aggregate error: {e}"))?;
                 let batches = self.collect(mean_df)?;
                 let mean_val = if !batches.is_empty() && batches[0].num_rows() > 0 {
                     let col_arr = batches[0].column(0);
                     if let Some(f64_arr) = col_arr.as_any().downcast_ref::<Float64Array>() {
-                        if f64_arr.is_null(0) { 0.0 } else { f64_arr.value(0) }
+                        if f64_arr.is_null(0) {
+                            0.0
+                        } else {
+                            f64_arr.value(0)
+                        }
                     } else {
                         0.0
                     }
@@ -48,14 +56,19 @@ impl DataEngine {
             "median" => {
                 // Approximate: use SQL median via sorted approach
                 // For simplicity, compute via mean (median requires more complex logic)
-                let mean_df = df.clone()
+                let mean_df = df
+                    .clone()
                     .aggregate(vec![], vec![avg(col(column)).alias("__mean")])
                     .map_err(|e| format!("fill_null median aggregate error: {e}"))?;
                 let batches = self.collect(mean_df)?;
                 let mean_val = if !batches.is_empty() && batches[0].num_rows() > 0 {
                     let col_arr = batches[0].column(0);
                     if let Some(f64_arr) = col_arr.as_any().downcast_ref::<Float64Array>() {
-                        if f64_arr.is_null(0) { 0.0 } else { f64_arr.value(0) }
+                        if f64_arr.is_null(0) {
+                            0.0
+                        } else {
+                            f64_arr.value(0)
+                        }
                     } else {
                         0.0
                     }
@@ -78,35 +91,26 @@ impl DataEngine {
             }
         }
 
-        df.select(select_exprs).map_err(|e| format!("fill_null select error: {e}"))
+        df.select(select_exprs)
+            .map_err(|e| format!("fill_null select error: {e}"))
     }
 
     /// Drop rows where a column is null.
-    pub fn drop_null(
-        &self,
-        df: DataFrame,
-        column: &str,
-    ) -> Result<DataFrame, String> {
+    pub fn drop_null(&self, df: DataFrame, column: &str) -> Result<DataFrame, String> {
         df.filter(col(column).is_not_null())
             .map_err(|e| format!("drop_null error: {e}"))
     }
 
     /// Remove duplicate rows based on specified columns.
-    pub fn dedup(
-        &self,
-        df: DataFrame,
-        columns: &[String],
-    ) -> Result<DataFrame, String> {
+    pub fn dedup(&self, df: DataFrame, columns: &[String]) -> Result<DataFrame, String> {
         if columns.is_empty() {
-            return df.distinct()
-                .map_err(|e| format!("dedup error: {e}"));
+            return df.distinct().map_err(|e| format!("dedup error: {e}"));
         }
         // Use distinct on specific columns by registering as table + SQL
         let table_name = "__dedup_tmp";
-        self.ctx.register_table(
-            table_name,
-            df.into_view(),
-        ).map_err(|e| format!("dedup register error: {e}"))?;
+        self.ctx
+            .register_table(table_name, df.into_view())
+            .map_err(|e| format!("dedup register error: {e}"))?;
 
         let cols_str = columns.join(", ");
         let result = self.sql(&format!(
@@ -154,15 +158,13 @@ impl DataEngine {
             }
         }
 
-        df.select(select_exprs).map_err(|e| format!("clamp select error: {e}"))
+        df.select(select_exprs)
+            .map_err(|e| format!("clamp select error: {e}"))
     }
 
     /// Generate a statistical profile of all numeric columns.
     /// Returns a table with: column_name, count, null_count, null_rate, min, max, mean, stddev
-    pub fn data_profile(
-        &self,
-        df: DataFrame,
-    ) -> Result<DataFrame, String> {
+    pub fn data_profile(&self, df: DataFrame) -> Result<DataFrame, String> {
         let schema = df.schema().clone();
         let mut col_names = Vec::new();
         let mut counts = Vec::new();
@@ -177,15 +179,20 @@ impl DataEngine {
             let name = field.name();
             let is_numeric = matches!(
                 field.data_type(),
-                DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64
-                | DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64
-                | DataType::Float32 | DataType::Float64
+                DataType::Int8
+                    | DataType::Int16
+                    | DataType::Int32
+                    | DataType::Int64
+                    | DataType::UInt8
+                    | DataType::UInt16
+                    | DataType::UInt32
+                    | DataType::UInt64
+                    | DataType::Float32
+                    | DataType::Float64
             );
 
             // Build aggregation query for this column
-            let mut agg_exprs = vec![
-                count(col(name)).alias("__count"),
-            ];
+            let mut agg_exprs = vec![count(col(name)).alias("__count")];
             if is_numeric {
                 agg_exprs.push(agg_min(col(name)).alias("__min"));
                 agg_exprs.push(agg_max(col(name)).alias("__max"));
@@ -193,7 +200,8 @@ impl DataEngine {
                 agg_exprs.push(stddev(col(name)).alias("__stddev"));
             }
 
-            let agg_df = df.clone()
+            let agg_df = df
+                .clone()
                 .aggregate(vec![], agg_exprs)
                 .map_err(|e| format!("data_profile aggregate error for {name}: {e}"))?;
             let batches = self.collect(agg_df)?;
@@ -207,7 +215,11 @@ impl DataEngine {
             // Get total row count to compute null count
             let total = self.row_count(df.clone())?;
             let null_cnt = total - non_null_cnt;
-            let nr = if total > 0 { null_cnt as f64 / total as f64 } else { 0.0 };
+            let nr = if total > 0 {
+                null_cnt as f64 / total as f64
+            } else {
+                0.0
+            };
 
             col_names.push(name.clone());
             counts.push(non_null_cnt);
@@ -238,39 +250,48 @@ impl DataEngine {
             Field::new("stddev", DataType::Float64, true),
         ]));
 
-        let batch = RecordBatch::try_new(result_schema, vec![
-            Arc::new(StringArray::from(col_names)),
-            Arc::new(Int64Array::from(counts)),
-            Arc::new(Int64Array::from(null_counts)),
-            Arc::new(Float64Array::from(null_rates)),
-            Arc::new(Float64Array::from(mins)),
-            Arc::new(Float64Array::from(maxs)),
-            Arc::new(Float64Array::from(means)),
-            Arc::new(Float64Array::from(stddevs)),
-        ]).map_err(|e| format!("data_profile batch error: {e}"))?;
+        let batch = RecordBatch::try_new(
+            result_schema,
+            vec![
+                Arc::new(StringArray::from(col_names)),
+                Arc::new(Int64Array::from(counts)),
+                Arc::new(Int64Array::from(null_counts)),
+                Arc::new(Float64Array::from(null_rates)),
+                Arc::new(Float64Array::from(mins)),
+                Arc::new(Float64Array::from(maxs)),
+                Arc::new(Float64Array::from(means)),
+                Arc::new(Float64Array::from(stddevs)),
+            ],
+        )
+        .map_err(|e| format!("data_profile batch error: {e}"))?;
 
         self.register_batch("__data_profile", batch)?;
-        self.rt.block_on(self.ctx.table("__data_profile"))
+        self.rt
+            .block_on(self.ctx.table("__data_profile"))
             .map_err(|e| format!("data_profile table error: {e}"))
     }
 
     /// Get the row count of a DataFrame.
     pub fn row_count(&self, df: DataFrame) -> Result<i64, String> {
-        let cnt = self.rt.block_on(df.count())
+        let cnt = self
+            .rt
+            .block_on(df.count())
             .map_err(|e| format!("row_count error: {e}"))?;
         Ok(cnt as i64)
     }
 
     /// Get the null rate of a column (0.0 to 1.0).
     pub fn null_rate(&self, df: DataFrame, column: &str) -> Result<f64, String> {
-        let total = self.rt.block_on(df.clone().count())
+        let total = self
+            .rt
+            .block_on(df.clone().count())
             .map_err(|e| format!("null_rate count error: {e}"))? as i64;
         if total == 0 {
             return Ok(0.0);
         }
-        let non_null_df = df.aggregate(vec![], vec![
-            count(col(column)).alias("__non_null"),
-        ]).map_err(|e| format!("null_rate aggregate error: {e}"))?;
+        let non_null_df = df
+            .aggregate(vec![], vec![count(col(column)).alias("__non_null")])
+            .map_err(|e| format!("null_rate aggregate error: {e}"))?;
         let batches = self.collect(non_null_df)?;
         if batches.is_empty() || batches[0].num_rows() == 0 {
             return Ok(0.0);
@@ -282,10 +303,9 @@ impl DataEngine {
     /// Check if a column's non-null values are all unique.
     pub fn is_unique(&self, df: DataFrame, column: &str) -> Result<bool, String> {
         let table_name = "__unique_check_tmp";
-        self.ctx.register_table(
-            table_name,
-            df.into_view(),
-        ).map_err(|e| format!("is_unique register error: {e}"))?;
+        self.ctx
+            .register_table(table_name, df.into_view())
+            .map_err(|e| format!("is_unique register error: {e}"))?;
 
         let result = self.sql(&format!(
             "SELECT COUNT(DISTINCT \"{column}\") = COUNT(\"{column}\") AS is_uniq FROM {table_name} WHERE \"{column}\" IS NOT NULL"
@@ -319,9 +339,17 @@ impl DataEngine {
         if let Some(a) = arr.as_any().downcast_ref::<Float64Array>() {
             if a.is_null(0) { f64::NAN } else { a.value(0) }
         } else if let Some(a) = arr.as_any().downcast_ref::<Int64Array>() {
-            if a.is_null(0) { f64::NAN } else { a.value(0) as f64 }
+            if a.is_null(0) {
+                f64::NAN
+            } else {
+                a.value(0) as f64
+            }
         } else if let Some(a) = arr.as_any().downcast_ref::<Int32Array>() {
-            if a.is_null(0) { f64::NAN } else { a.value(0) as f64 }
+            if a.is_null(0) {
+                f64::NAN
+            } else {
+                a.value(0) as f64
+            }
         } else {
             f64::NAN
         }
@@ -331,7 +359,7 @@ impl DataEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::arrow::array::{Int64Array, Float64Array, StringArray};
+    use datafusion::arrow::array::{Float64Array, Int64Array, StringArray};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
 
     fn make_test_engine_with_data() -> DataEngine {
@@ -341,15 +369,27 @@ mod tests {
             Field::new("name", DataType::Utf8, true),
             Field::new("age", DataType::Float64, true),
         ]));
-        let batch = RecordBatch::try_new(schema, vec![
-            Arc::new(Int64Array::from(vec![1, 2, 3, 4, 5])),
-            Arc::new(StringArray::from(vec![
-                Some("Alice"), Some("Bob"), None, Some("Diana"), Some("Eve"),
-            ])),
-            Arc::new(Float64Array::from(vec![
-                Some(30.0), Some(25.0), None, Some(35.0), Some(28.0),
-            ])),
-        ]).unwrap();
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 3, 4, 5])),
+                Arc::new(StringArray::from(vec![
+                    Some("Alice"),
+                    Some("Bob"),
+                    None,
+                    Some("Diana"),
+                    Some("Eve"),
+                ])),
+                Arc::new(Float64Array::from(vec![
+                    Some(30.0),
+                    Some(25.0),
+                    None,
+                    Some(35.0),
+                    Some(28.0),
+                ])),
+            ],
+        )
+        .unwrap();
         engine.register_batch("test_data", batch).unwrap();
         engine
     }
@@ -399,10 +439,14 @@ mod tests {
             Field::new("id", DataType::Int64, false),
             Field::new("val", DataType::Utf8, false),
         ]));
-        let batch = RecordBatch::try_new(schema, vec![
-            Arc::new(Int64Array::from(vec![1, 2, 2, 3])),
-            Arc::new(StringArray::from(vec!["a", "b", "b", "c"])),
-        ]).unwrap();
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "b", "c"])),
+            ],
+        )
+        .unwrap();
         engine.register_batch("dup_data", batch).unwrap();
         let df = engine.rt.block_on(engine.ctx.table("dup_data")).unwrap();
         let result = engine.dedup(df, &[]).unwrap();

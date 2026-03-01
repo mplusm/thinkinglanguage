@@ -88,7 +88,10 @@ fn test_goto_def_resolves_variable() {
     let uri: lsp_types::Uri = "file:///test.tl".parse().unwrap();
     // Position on 'foo' in print(foo) — line 1, char 6
     let result = goto_def::provide_goto_definition(source, Some(&ast), Position::new(1, 6), &uri);
-    assert!(result.is_some(), "Should resolve variable to its definition");
+    assert!(
+        result.is_some(),
+        "Should resolve variable to its definition"
+    );
     if let Some(lsp_types::GotoDefinitionResponse::Scalar(loc)) = result {
         assert_eq!(loc.range.start.line, 0, "Definition should be on line 0");
     }
@@ -100,9 +103,18 @@ fn test_goto_def_resolves_variable() {
 fn test_format_multi_function_file() {
     let source = "fn add(a,b) { a+b }\nfn sub(a,b) { a-b }";
     let result = Formatter::format(source).unwrap();
-    assert!(result.contains("fn add(a, b)"), "Should format params: {result}");
-    assert!(result.contains("a + b"), "Should add operator spacing: {result}");
-    assert!(result.contains("\n\nfn sub"), "Should add blank line between functions: {result}");
+    assert!(
+        result.contains("fn add(a, b)"),
+        "Should format params: {result}"
+    );
+    assert!(
+        result.contains("a + b"),
+        "Should add operator spacing: {result}"
+    );
+    assert!(
+        result.contains("\n\nfn sub"),
+        "Should add blank line between functions: {result}"
+    );
 }
 
 #[test]
@@ -119,7 +131,8 @@ fn test_format_preserves_comments() {
 
 #[test]
 fn test_document_symbols_complete() {
-    let source = "struct Point { x: int, y: int }\nfn distance(a, b) { 0 }\nenum Color { Red, Blue }";
+    let source =
+        "struct Point { x: int, y: int }\nfn distance(a, b) { 0 }\nenum Color { Red, Blue }";
     let ast = tl_parser::parse(source).unwrap();
     #[allow(deprecated)]
     let symbols = symbols::provide_document_symbols(source, Some(&ast));

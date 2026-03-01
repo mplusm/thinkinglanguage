@@ -15,7 +15,11 @@ use tl_lexer::{SpannedToken, Token};
 
 /// Helper to create a Stmt with span from start position to previous token
 fn make_stmt(kind: StmtKind, start: usize, end: usize) -> Stmt {
-    Stmt { kind, span: Span::new(start, end), doc_comment: None }
+    Stmt {
+        kind,
+        span: Span::new(start, end),
+        doc_comment: None,
+    }
 }
 
 pub struct Parser {
@@ -37,7 +41,10 @@ impl Parser {
         while !self.is_at_end() {
             statements.push(self.parse_statement()?);
         }
-        Ok(Program { statements, module_doc })
+        Ok(Program {
+            statements,
+            module_doc,
+        })
     }
 
     /// Consume consecutive `///` doc comment tokens and join them
@@ -107,7 +114,11 @@ impl Parser {
             Ok(span)
         } else {
             Err(TlError::Parser(ParserError {
-                message: format!("Expected `{}`, found `{}`", token_name(expected), self.peek()),
+                message: format!(
+                    "Expected `{}`, found `{}`",
+                    token_name(expected),
+                    self.peek()
+                ),
                 span: self.peek_span(),
                 hint: None,
             }))
@@ -160,17 +171,22 @@ impl Parser {
                 stmt.doc_comment = doc.clone();
             }
             // Extract @version annotation from doc comment and apply to Schema
-            if let StmtKind::Schema { ref mut version, ref mut parent_version, .. } = stmt.kind {
+            if let StmtKind::Schema {
+                ref mut version,
+                ref mut parent_version,
+                ..
+            } = stmt.kind
+            {
                 for line in doc_text.lines() {
                     let trimmed = line.trim();
                     if let Some(rest) = trimmed.strip_prefix("@version") {
                         if let Ok(v) = rest.trim().parse::<i64>() {
                             *version = Some(v);
                         }
-                    } else if let Some(rest) = trimmed.strip_prefix("@evolves") {
-                        if let Ok(v) = rest.trim().parse::<i64>() {
-                            *parent_version = Some(v);
-                        }
+                    } else if let Some(rest) = trimmed.strip_prefix("@evolves")
+                        && let Ok(v) = rest.trim().parse::<i64>()
+                    {
+                        *parent_version = Some(v);
                     }
                 }
             }
@@ -188,7 +204,10 @@ impl Parser {
                 self.advance(); // consume 'async'
                 if self.check(&Token::Fn) {
                     let mut stmt = self.parse_fn_decl()?;
-                    if let StmtKind::FnDecl { ref mut is_async, .. } = stmt.kind {
+                    if let StmtKind::FnDecl {
+                        ref mut is_async, ..
+                    } = stmt.kind
+                    {
                         *is_async = true;
                     }
                     stmt.span = Span::new(start, stmt.span.end);
@@ -234,7 +253,11 @@ impl Parser {
                 let body = self.parse_block_body()?;
                 self.expect(&Token::RBrace)?;
                 let end = self.previous_span().end;
-                Ok(make_stmt(StmtKind::ParallelFor { name, iter, body }, start, end))
+                Ok(make_stmt(
+                    StmtKind::ParallelFor { name, iter, body },
+                    start,
+                    end,
+                ))
             }
             Token::Break => {
                 let start = self.peek_span().start;
@@ -264,7 +287,10 @@ impl Parser {
         match self.peek() {
             Token::Fn => {
                 let mut stmt = self.parse_fn_decl()?;
-                if let StmtKind::FnDecl { ref mut is_public, .. } = stmt.kind {
+                if let StmtKind::FnDecl {
+                    ref mut is_public, ..
+                } = stmt.kind
+                {
                     *is_public = true;
                 }
                 stmt.span = Span::new(start, stmt.span.end);
@@ -272,7 +298,10 @@ impl Parser {
             }
             Token::Struct => {
                 let mut stmt = self.parse_struct_decl()?;
-                if let StmtKind::StructDecl { ref mut is_public, .. } = stmt.kind {
+                if let StmtKind::StructDecl {
+                    ref mut is_public, ..
+                } = stmt.kind
+                {
                     *is_public = true;
                 }
                 stmt.span = Span::new(start, stmt.span.end);
@@ -280,7 +309,10 @@ impl Parser {
             }
             Token::Enum => {
                 let mut stmt = self.parse_enum_decl()?;
-                if let StmtKind::EnumDecl { ref mut is_public, .. } = stmt.kind {
+                if let StmtKind::EnumDecl {
+                    ref mut is_public, ..
+                } = stmt.kind
+                {
                     *is_public = true;
                 }
                 stmt.span = Span::new(start, stmt.span.end);
@@ -288,7 +320,10 @@ impl Parser {
             }
             Token::Schema => {
                 let mut stmt = self.parse_schema()?;
-                if let StmtKind::Schema { ref mut is_public, .. } = stmt.kind {
+                if let StmtKind::Schema {
+                    ref mut is_public, ..
+                } = stmt.kind
+                {
                     *is_public = true;
                 }
                 stmt.span = Span::new(start, stmt.span.end);
@@ -311,7 +346,10 @@ impl Parser {
             }
             Token::Trait => {
                 let mut stmt = self.parse_trait_def()?;
-                if let StmtKind::TraitDef { ref mut is_public, .. } = stmt.kind {
+                if let StmtKind::TraitDef {
+                    ref mut is_public, ..
+                } = stmt.kind
+                {
                     *is_public = true;
                 }
                 stmt.span = Span::new(start, stmt.span.end);
@@ -427,11 +465,7 @@ impl Parser {
         self.advance(); // consume 'mod'
         let name = self.expect_ident()?;
         let end = self.previous_span().end;
-        Ok(make_stmt(
-            StmtKind::ModDecl { name, is_public },
-            start,
-            end,
-        ))
+        Ok(make_stmt(StmtKind::ModDecl { name, is_public }, start, end))
     }
 
     /// Parse `schema Name { field: type, ... }`
@@ -467,7 +501,17 @@ impl Parser {
         }
         self.expect(&Token::RBrace)?;
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::Schema { name, fields, is_public: false, version: None, parent_version: None }, start, end))
+        Ok(make_stmt(
+            StmtKind::Schema {
+                name,
+                fields,
+                is_public: false,
+                version: None,
+                parent_version: None,
+            },
+            start,
+            end,
+        ))
     }
 
     /// Parse `migrate SchemaName from V1 to V2 { ops... }`
@@ -478,38 +522,58 @@ impl Parser {
 
         // expect 'from'
         match self.peek() {
-            Token::Ident(s) if s == "from" => { self.advance(); }
-            _ => return Err(TlError::Parser(ParserError {
-                message: "Expected `from` after schema name in migrate statement".to_string(),
-                span: self.peek_span(),
-                hint: Some("migrate SchemaName from V1 to V2 { ... }".to_string()),
-            })),
+            Token::Ident(s) if s == "from" => {
+                self.advance();
+            }
+            _ => {
+                return Err(TlError::Parser(ParserError {
+                    message: "Expected `from` after schema name in migrate statement".to_string(),
+                    span: self.peek_span(),
+                    hint: Some("migrate SchemaName from V1 to V2 { ... }".to_string()),
+                }));
+            }
         }
         let from_version = match self.peek() {
-            Token::Int(n) => { let n = *n; self.advance(); n }
-            _ => return Err(TlError::Parser(ParserError {
-                message: "Expected version number after `from`".to_string(),
-                span: self.peek_span(),
-                hint: None,
-            })),
+            Token::Int(n) => {
+                let n = *n;
+                self.advance();
+                n
+            }
+            _ => {
+                return Err(TlError::Parser(ParserError {
+                    message: "Expected version number after `from`".to_string(),
+                    span: self.peek_span(),
+                    hint: None,
+                }));
+            }
         };
 
         // expect 'to'
         match self.peek() {
-            Token::Ident(s) if s == "to" => { self.advance(); }
-            _ => return Err(TlError::Parser(ParserError {
-                message: "Expected `to` after from-version in migrate statement".to_string(),
-                span: self.peek_span(),
-                hint: Some("migrate SchemaName from V1 to V2 { ... }".to_string()),
-            })),
+            Token::Ident(s) if s == "to" => {
+                self.advance();
+            }
+            _ => {
+                return Err(TlError::Parser(ParserError {
+                    message: "Expected `to` after from-version in migrate statement".to_string(),
+                    span: self.peek_span(),
+                    hint: Some("migrate SchemaName from V1 to V2 { ... }".to_string()),
+                }));
+            }
         }
         let to_version = match self.peek() {
-            Token::Int(n) => { let n = *n; self.advance(); n }
-            _ => return Err(TlError::Parser(ParserError {
-                message: "Expected version number after `to`".to_string(),
-                span: self.peek_span(),
-                hint: None,
-            })),
+            Token::Int(n) => {
+                let n = *n;
+                self.advance();
+                n
+            }
+            _ => {
+                return Err(TlError::Parser(ParserError {
+                    message: "Expected version number after `to`".to_string(),
+                    span: self.peek_span(),
+                    hint: None,
+                }));
+            }
         };
 
         self.expect(&Token::LBrace)?;
@@ -519,7 +583,16 @@ impl Parser {
         }
         self.expect(&Token::RBrace)?;
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::Migrate { schema_name, from_version, to_version, operations }, start, end))
+        Ok(make_stmt(
+            StmtKind::Migrate {
+                schema_name,
+                from_version,
+                to_version,
+                operations,
+            },
+            start,
+            end,
+        ))
     }
 
     /// Parse a single migration operation like `add_column(name: type, default: expr)`
@@ -602,7 +675,15 @@ impl Parser {
         }
         self.expect(&Token::RBrace)?;
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::Train { name, algorithm, config }, start, end))
+        Ok(make_stmt(
+            StmtKind::Train {
+                name,
+                algorithm,
+                config,
+            },
+            start,
+            end,
+        ))
     }
 
     /// Parse `pipeline NAME { schedule: "...", timeout: "...", retries: N, extract { ... } transform { ... } load { ... } on_failure { ... } on_success { ... } }`
@@ -704,17 +785,21 @@ impl Parser {
         }
         self.expect(&Token::RBrace)?;
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::Pipeline {
-            name,
-            extract,
-            transform,
-            load,
-            schedule,
-            timeout,
-            retries,
-            on_failure,
-            on_success,
-        }, start, end))
+        Ok(make_stmt(
+            StmtKind::Pipeline {
+                name,
+                extract,
+                transform,
+                load,
+                schedule,
+                timeout,
+                retries,
+                on_failure,
+                on_success,
+            },
+            start,
+            end,
+        ))
     }
 
     /// Parse `stream NAME { source: expr, window: spec, watermark: "duration", transform: { ... }, sink: expr }`
@@ -771,10 +856,7 @@ impl Parser {
                 }
                 _ => {
                     return Err(TlError::Parser(ParserError {
-                        message: format!(
-                            "Unexpected token in stream block: `{}`",
-                            self.peek()
-                        ),
+                        message: format!("Unexpected token in stream block: `{}`", self.peek()),
                         span: self.peek_span(),
                         hint: Some("Expected source, sink, transform, window, or watermark".into()),
                     }));
@@ -792,14 +874,18 @@ impl Parser {
         })?;
 
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::StreamDecl {
-            name,
-            source,
-            transform,
-            sink,
-            window,
-            watermark,
-        }, start, end))
+        Ok(make_stmt(
+            StmtKind::StreamDecl {
+                name,
+                source,
+                transform,
+                sink,
+                window,
+                watermark,
+            },
+            start,
+            end,
+        ))
     }
 
     /// Parse `source NAME = connector TYPE { key: value, ... }`
@@ -821,7 +907,15 @@ impl Parser {
         }
         self.expect(&Token::RBrace)?;
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::SourceDecl { name, connector_type, config }, start, end))
+        Ok(make_stmt(
+            StmtKind::SourceDecl {
+                name,
+                connector_type,
+                config,
+            },
+            start,
+            end,
+        ))
     }
 
     /// Parse `sink NAME = connector TYPE { key: value, ... }`
@@ -843,7 +937,15 @@ impl Parser {
         }
         self.expect(&Token::RBrace)?;
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::SinkDecl { name, connector_type, config }, start, end))
+        Ok(make_stmt(
+            StmtKind::SinkDecl {
+                name,
+                connector_type,
+                config,
+            },
+            start,
+            end,
+        ))
     }
 
     /// Parse a window specification: `tumbling(DURATION)`, `sliding(DURATION, DURATION)`, `session(DURATION)`
@@ -927,9 +1029,16 @@ impl Parser {
                 self.expect(&Token::Assign)?;
                 let value = self.parse_expression()?;
                 let end = self.previous_span().end;
-                return Ok(make_stmt(StmtKind::LetDestructure {
-                    pattern, mutable, value, is_public,
-                }, start, end));
+                return Ok(make_stmt(
+                    StmtKind::LetDestructure {
+                        pattern,
+                        mutable,
+                        value,
+                        is_public,
+                    },
+                    start,
+                    end,
+                ));
             }
             Token::Ident(_) => {
                 // Lookahead: if Ident::ColonColon, it's enum destructure
@@ -940,25 +1049,38 @@ impl Parser {
                     self.expect(&Token::Assign)?;
                     let value = self.parse_expression()?;
                     let end = self.previous_span().end;
-                    return Ok(make_stmt(StmtKind::LetDestructure {
-                        pattern, mutable, value, is_public,
-                    }, start, end));
+                    return Ok(make_stmt(
+                        StmtKind::LetDestructure {
+                            pattern,
+                            mutable,
+                            value,
+                            is_public,
+                        },
+                        start,
+                        end,
+                    ));
                 }
                 // Also check for Named struct: Ident { ... }
                 if self.pos + 1 < self.tokens.len()
                     && matches!(self.tokens[self.pos + 1].token, Token::LBrace)
+                    && self.pos + 2 < self.tokens.len()
                 {
-                    if self.pos + 2 < self.tokens.len() {
-                        let third = &self.tokens[self.pos + 2].token;
-                        if matches!(third, Token::Ident(_) | Token::RBrace) {
-                            let pattern = self.parse_pattern()?;
-                            self.expect(&Token::Assign)?;
-                            let value = self.parse_expression()?;
-                            let end = self.previous_span().end;
-                            return Ok(make_stmt(StmtKind::LetDestructure {
-                                pattern, mutable, value, is_public,
-                            }, start, end));
-                        }
+                    let third = &self.tokens[self.pos + 2].token;
+                    if matches!(third, Token::Ident(_) | Token::RBrace) {
+                        let pattern = self.parse_pattern()?;
+                        self.expect(&Token::Assign)?;
+                        let value = self.parse_expression()?;
+                        let end = self.previous_span().end;
+                        return Ok(make_stmt(
+                            StmtKind::LetDestructure {
+                                pattern,
+                                mutable,
+                                value,
+                                is_public,
+                            },
+                            start,
+                            end,
+                        ));
                     }
                 }
             }
@@ -973,7 +1095,17 @@ impl Parser {
         self.expect(&Token::Assign)?;
         let value = self.parse_expression()?;
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::Let { name, mutable, type_ann, value, is_public }, start, end))
+        Ok(make_stmt(
+            StmtKind::Let {
+                name,
+                mutable,
+                type_ann,
+                value,
+                is_public,
+            },
+            start,
+            end,
+        ))
     }
 
     fn parse_fn_decl(&mut self) -> Result<Stmt, TlError> {
@@ -1005,7 +1137,21 @@ impl Parser {
         self.expect(&Token::RBrace)?;
         let is_generator = body_contains_yield(&body);
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::FnDecl { name, type_params, params, return_type, bounds, body, is_generator, is_public: false, is_async: false }, start, end))
+        Ok(make_stmt(
+            StmtKind::FnDecl {
+                name,
+                type_params,
+                params,
+                return_type,
+                bounds,
+                body,
+                is_generator,
+                is_public: false,
+                is_async: false,
+            },
+            start,
+            end,
+        ))
     }
 
     fn parse_if(&mut self) -> Result<Stmt, TlError> {
@@ -1035,7 +1181,16 @@ impl Parser {
         }
 
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::If { condition, then_body, else_ifs, else_body }, start, end))
+        Ok(make_stmt(
+            StmtKind::If {
+                condition,
+                then_body,
+                else_ifs,
+                else_body,
+            },
+            start,
+            end,
+        ))
     }
 
     fn parse_while(&mut self) -> Result<Stmt, TlError> {
@@ -1236,12 +1391,29 @@ impl Parser {
     fn parse_unary(&mut self) -> Result<Expr, TlError> {
         if self.match_token(&Token::Yield) {
             // yield with no value if next token is a statement boundary or statement-starting keyword
-            if self.is_at_end() || matches!(self.peek(),
-                Token::RBrace | Token::RParen | Token::Comma | Token::Semicolon |
-                Token::Let | Token::Fn | Token::If | Token::While | Token::For |
-                Token::Return | Token::Yield | Token::Struct | Token::Enum |
-                Token::Impl | Token::Trait | Token::Import | Token::Try | Token::Throw
-            ) {
+            if self.is_at_end()
+                || matches!(
+                    self.peek(),
+                    Token::RBrace
+                        | Token::RParen
+                        | Token::Comma
+                        | Token::Semicolon
+                        | Token::Let
+                        | Token::Fn
+                        | Token::If
+                        | Token::While
+                        | Token::For
+                        | Token::Return
+                        | Token::Yield
+                        | Token::Struct
+                        | Token::Enum
+                        | Token::Impl
+                        | Token::Trait
+                        | Token::Import
+                        | Token::Try
+                        | Token::Throw
+                )
+            {
                 return Ok(Expr::Yield(None));
             }
             let expr = self.parse_expression()?;
@@ -1360,7 +1532,7 @@ impl Parser {
         Ok(expr)
     }
 
-    /// Lookahead: is next `{ ident :` (struct init) vs `{ stmt` (block)?
+    // Lookahead: is next `{ ident :` (struct init) vs `{ stmt` (block)?
     // ── Pattern Matching ─────────────────────────────────────
 
     /// Parse a match arm: `pattern [if guard] => body`
@@ -1373,7 +1545,11 @@ impl Parser {
         };
         self.expect(&Token::FatArrow)?;
         let body = self.parse_expression()?;
-        Ok(MatchArm { pattern, guard, body })
+        Ok(MatchArm {
+            pattern,
+            guard,
+            body,
+        })
     }
 
     /// Parse a case arm: `condition => body` or `_ => body` (default).
@@ -1385,13 +1561,21 @@ impl Parser {
             self.advance();
             self.expect(&Token::FatArrow)?;
             let body = self.parse_expression()?;
-            return Ok(MatchArm { pattern: Pattern::Wildcard, guard: None, body });
+            return Ok(MatchArm {
+                pattern: Pattern::Wildcard,
+                guard: None,
+                body,
+            });
         }
         // Otherwise, parse expression as guard condition
         let condition = self.parse_expression()?;
         self.expect(&Token::FatArrow)?;
         let body = self.parse_expression()?;
-        Ok(MatchArm { pattern: Pattern::Wildcard, guard: Some(condition), body })
+        Ok(MatchArm {
+            pattern: Pattern::Wildcard,
+            guard: Some(condition),
+            body,
+        })
     }
 
     /// Parse a pattern (for match arms and let-destructuring).
@@ -1497,7 +1681,10 @@ impl Parser {
                     } else {
                         None
                     };
-                    fields.push(StructPatternField { name, pattern: sub_pat });
+                    fields.push(StructPatternField {
+                        name,
+                        pattern: sub_pat,
+                    });
                     if !self.match_token(&Token::Comma) {
                         break;
                     }
@@ -1526,7 +1713,11 @@ impl Parser {
                         }
                         self.expect(&Token::RParen)?;
                     }
-                    return Ok(Pattern::Enum { type_name, variant, args });
+                    return Ok(Pattern::Enum {
+                        type_name,
+                        variant,
+                        args,
+                    });
                 }
                 // Check for Named struct pattern: Name { x, y }
                 if self.pos + 1 < self.tokens.len()
@@ -1548,13 +1739,19 @@ impl Parser {
                                 } else {
                                     None
                                 };
-                                fields.push(StructPatternField { name: fname, pattern: sub_pat });
+                                fields.push(StructPatternField {
+                                    name: fname,
+                                    pattern: sub_pat,
+                                });
                                 if !self.match_token(&Token::Comma) {
                                     break;
                                 }
                             }
                             self.expect(&Token::RBrace)?;
-                            return Ok(Pattern::Struct { name: Some(struct_name), fields });
+                            return Ok(Pattern::Struct {
+                                name: Some(struct_name),
+                                fields,
+                            });
                         }
                     }
                 }
@@ -1618,12 +1815,17 @@ impl Parser {
             Token::Ident(name) => {
                 let name = name.clone();
                 // Check for shorthand closure: x => expr
-                if self.pos + 1 < self.tokens.len() && self.tokens[self.pos + 1].token == Token::FatArrow {
+                if self.pos + 1 < self.tokens.len()
+                    && self.tokens[self.pos + 1].token == Token::FatArrow
+                {
                     self.advance(); // consume ident
                     self.advance(); // consume =>
                     let body = self.parse_expression()?;
                     return Ok(Expr::Closure {
-                        params: vec![Param { name, type_ann: None }],
+                        params: vec![Param {
+                            name,
+                            type_ann: None,
+                        }],
                         return_type: None,
                         body: ClosureBody::Expr(Box::new(body)),
                     });
@@ -1787,12 +1989,11 @@ impl Parser {
 
     /// Extract the last expression-statement from a block as a tail expression.
     fn extract_tail_expr(&self, mut stmts: Vec<Stmt>) -> (Vec<Stmt>, Option<Box<Expr>>) {
-        if let Some(last) = stmts.last() {
-            if let StmtKind::Expr(_) = &last.kind {
-                if let StmtKind::Expr(e) = stmts.pop().unwrap().kind {
-                    return (stmts, Some(Box::new(e)));
-                }
-            }
+        if let Some(last) = stmts.last()
+            && let StmtKind::Expr(_) = &last.kind
+            && let StmtKind::Expr(e) = stmts.pop().unwrap().kind
+        {
+            return (stmts, Some(Box::new(e)));
         }
         (stmts, None)
     }
@@ -1937,7 +2138,16 @@ impl Parser {
         }
         self.expect(&Token::RBrace)?;
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::StructDecl { name, type_params, fields, is_public: false }, start, end))
+        Ok(make_stmt(
+            StmtKind::StructDecl {
+                name,
+                type_params,
+                fields,
+                is_public: false,
+            },
+            start,
+            end,
+        ))
     }
 
     /// Parse `enum Name { Variant, Variant(Type, Type), ... }`
@@ -1971,7 +2181,16 @@ impl Parser {
         }
         self.expect(&Token::RBrace)?;
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::EnumDecl { name, type_params, variants, is_public: false }, start, end))
+        Ok(make_stmt(
+            StmtKind::EnumDecl {
+                name,
+                type_params,
+                variants,
+                is_public: false,
+            },
+            start,
+            end,
+        ))
     }
 
     /// Parse `impl Type { ... }` or `impl<T> Type { ... }` or `impl Trait for Type { ... }`
@@ -2009,12 +2228,16 @@ impl Parser {
             }
             self.expect(&Token::RBrace)?;
             let end = self.previous_span().end;
-            return Ok(make_stmt(StmtKind::TraitImpl {
-                trait_name: first_name,
-                type_name,
-                type_params: impl_type_params,
-                methods,
-            }, start, end));
+            return Ok(make_stmt(
+                StmtKind::TraitImpl {
+                    trait_name: first_name,
+                    type_name,
+                    type_params: impl_type_params,
+                    methods,
+                },
+                start,
+                end,
+            ));
         }
 
         // Regular impl block: `impl Type { ... }`
@@ -2036,7 +2259,15 @@ impl Parser {
         }
         self.expect(&Token::RBrace)?;
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::ImplBlock { type_name: first_name, type_params: impl_type_params, methods }, start, end))
+        Ok(make_stmt(
+            StmtKind::ImplBlock {
+                type_name: first_name,
+                type_params: impl_type_params,
+                methods,
+            },
+            start,
+            end,
+        ))
     }
 
     /// Parse `trait Name { fn method(self) -> type; ... }`
@@ -2050,7 +2281,12 @@ impl Parser {
         let value = self.parse_type()?;
         let end = self.previous_span().end;
         Ok(make_stmt(
-            StmtKind::TypeAlias { name, type_params, value, is_public },
+            StmtKind::TypeAlias {
+                name,
+                type_params,
+                value,
+                is_public,
+            },
             start,
             end,
         ))
@@ -2095,7 +2331,16 @@ impl Parser {
         }
         self.expect(&Token::RBrace)?;
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::TraitDef { name, type_params, methods, is_public: false }, start, end))
+        Ok(make_stmt(
+            StmtKind::TraitDef {
+                name,
+                type_params,
+                methods,
+                is_public: false,
+            },
+            start,
+            end,
+        ))
     }
 
     /// Parse optional type parameters: `<T, U>` — returns empty vec if no `<`
@@ -2106,7 +2351,9 @@ impl Parser {
 
     /// Parse optional type parameters with inline bounds: `<T: Comparable, U>`
     /// Returns (type_param_names, trait_bounds)
-    fn parse_optional_type_params_with_bounds(&mut self) -> Result<(Vec<String>, Vec<TraitBound>), TlError> {
+    fn parse_optional_type_params_with_bounds(
+        &mut self,
+    ) -> Result<(Vec<String>, Vec<TraitBound>), TlError> {
         if !self.check(&Token::Lt) {
             return Ok((vec![], vec![]));
         }
@@ -2147,10 +2394,7 @@ impl Parser {
             while self.match_token(&Token::Plus) {
                 traits.push(self.expect_ident()?);
             }
-            bounds.push(TraitBound {
-                type_param,
-                traits,
-            });
+            bounds.push(TraitBound { type_param, traits });
             if !self.match_token(&Token::Comma) {
                 break;
             }
@@ -2181,7 +2425,15 @@ impl Parser {
         }
         self.expect(&Token::RBrace)?;
         let end = self.previous_span().end;
-        Ok(make_stmt(StmtKind::TryCatch { try_body, catch_var, catch_body }, start, end))
+        Ok(make_stmt(
+            StmtKind::TryCatch {
+                try_body,
+                catch_var,
+                catch_body,
+            },
+            start,
+            end,
+        ))
     }
 
     /// Parse `throw expr`
@@ -2312,17 +2564,32 @@ fn body_contains_yield(stmts: &[Stmt]) -> bool {
 
 fn stmt_contains_yield(stmt: &Stmt) -> bool {
     match &stmt.kind {
-        StmtKind::Expr(e) | StmtKind::Return(Some(e)) | StmtKind::Throw(e) => expr_contains_yield(e),
+        StmtKind::Expr(e) | StmtKind::Return(Some(e)) | StmtKind::Throw(e) => {
+            expr_contains_yield(e)
+        }
         StmtKind::Let { value, .. } => expr_contains_yield(value),
-        StmtKind::If { condition, then_body, else_ifs, else_body } => {
+        StmtKind::If {
+            condition,
+            then_body,
+            else_ifs,
+            else_body,
+        } => {
             expr_contains_yield(condition)
                 || body_contains_yield(then_body)
-                || else_ifs.iter().any(|(c, b)| expr_contains_yield(c) || body_contains_yield(b))
-                || else_body.as_ref().map_or(false, |b| body_contains_yield(b))
+                || else_ifs
+                    .iter()
+                    .any(|(c, b)| expr_contains_yield(c) || body_contains_yield(b))
+                || else_body.as_ref().is_some_and(|b| body_contains_yield(b))
         }
-        StmtKind::While { condition, body } => expr_contains_yield(condition) || body_contains_yield(body),
+        StmtKind::While { condition, body } => {
+            expr_contains_yield(condition) || body_contains_yield(body)
+        }
         StmtKind::For { iter, body, .. } => expr_contains_yield(iter) || body_contains_yield(body),
-        StmtKind::TryCatch { try_body, catch_body, .. } => body_contains_yield(try_body) || body_contains_yield(catch_body),
+        StmtKind::TryCatch {
+            try_body,
+            catch_body,
+            ..
+        } => body_contains_yield(try_body) || body_contains_yield(catch_body),
         // Don't recurse into nested FnDecl — yield in nested fn is for that fn
         StmtKind::FnDecl { .. } => false,
         _ => false,
@@ -2334,22 +2601,29 @@ fn expr_contains_yield(expr: &Expr) -> bool {
         Expr::Yield(_) => true,
         Expr::BinOp { left, right, .. } => expr_contains_yield(left) || expr_contains_yield(right),
         Expr::UnaryOp { expr, .. } => expr_contains_yield(expr),
-        Expr::Call { function, args } => expr_contains_yield(function) || args.iter().any(expr_contains_yield),
+        Expr::Call { function, args } => {
+            expr_contains_yield(function) || args.iter().any(expr_contains_yield)
+        }
         Expr::Pipe { left, right } => expr_contains_yield(left) || expr_contains_yield(right),
         Expr::Member { object, .. } => expr_contains_yield(object),
         Expr::Index { object, index } => expr_contains_yield(object) || expr_contains_yield(index),
         Expr::List(items) => items.iter().any(expr_contains_yield),
-        Expr::Map(pairs) => pairs.iter().any(|(k, v)| expr_contains_yield(k) || expr_contains_yield(v)),
-        Expr::Block { stmts, expr } => body_contains_yield(stmts) || expr.as_ref().map_or(false, |e| expr_contains_yield(e)),
+        Expr::Map(pairs) => pairs
+            .iter()
+            .any(|(k, v)| expr_contains_yield(k) || expr_contains_yield(v)),
+        Expr::Block { stmts, expr } => {
+            body_contains_yield(stmts) || expr.as_ref().is_some_and(|e| expr_contains_yield(e))
+        }
         Expr::Closure { .. } => false, // Don't recurse — yield in closure is not our yield
         Expr::Assign { target, value } => expr_contains_yield(target) || expr_contains_yield(value),
-        Expr::NullCoalesce { expr, default } => expr_contains_yield(expr) || expr_contains_yield(default),
+        Expr::NullCoalesce { expr, default } => {
+            expr_contains_yield(expr) || expr_contains_yield(default)
+        }
         Expr::Range { start, end } => expr_contains_yield(start) || expr_contains_yield(end),
         Expr::Await(e) => expr_contains_yield(e),
         Expr::NamedArg { value, .. } => expr_contains_yield(value),
         Expr::Case { arms } | Expr::Match { arms, .. } => arms.iter().any(|arm| {
-            (arm.guard.as_ref().is_some_and(|g| expr_contains_yield(g)))
-                || expr_contains_yield(&arm.body)
+            (arm.guard.as_ref().is_some_and(expr_contains_yield)) || expr_contains_yield(&arm.body)
         }),
         Expr::StructInit { fields, .. } => fields.iter().any(|(_, e)| expr_contains_yield(e)),
         Expr::EnumVariant { args, .. } => args.iter().any(expr_contains_yield),
@@ -2451,12 +2725,22 @@ mod tests {
 
     #[test]
     fn test_parse_pipeline_basic() {
-        let program = parse(r#"pipeline etl {
+        let program = parse(
+            r#"pipeline etl {
             extract { let data = read_csv("input.csv") }
             transform { let cleaned = data }
             load { write_csv(cleaned, "output.csv") }
-        }"#).unwrap();
-        if let StmtKind::Pipeline { name, extract, transform, load, .. } = &program.statements[0].kind {
+        }"#,
+        )
+        .unwrap();
+        if let StmtKind::Pipeline {
+            name,
+            extract,
+            transform,
+            load,
+            ..
+        } = &program.statements[0].kind
+        {
             assert_eq!(name, "etl");
             assert_eq!(extract.len(), 1);
             assert_eq!(transform.len(), 1);
@@ -2468,7 +2752,8 @@ mod tests {
 
     #[test]
     fn test_parse_pipeline_with_options() {
-        let program = parse(r#"pipeline daily_etl {
+        let program = parse(
+            r#"pipeline daily_etl {
             schedule: "0 0 * * *",
             timeout: "30m",
             retries: 3,
@@ -2477,8 +2762,19 @@ mod tests {
             load { write_csv(cleaned, "output.csv") }
             on_failure { println("Pipeline failed!") }
             on_success { println("Pipeline succeeded!") }
-        }"#).unwrap();
-        if let StmtKind::Pipeline { name, schedule, timeout, retries, on_failure, on_success, .. } = &program.statements[0].kind {
+        }"#,
+        )
+        .unwrap();
+        if let StmtKind::Pipeline {
+            name,
+            schedule,
+            timeout,
+            retries,
+            on_failure,
+            on_success,
+            ..
+        } = &program.statements[0].kind
+        {
             assert_eq!(name, "daily_etl");
             assert_eq!(schedule.as_deref(), Some("0 0 * * *"));
             assert_eq!(timeout.as_deref(), Some("30m"));
@@ -2492,13 +2788,23 @@ mod tests {
 
     #[test]
     fn test_parse_stream_decl() {
-        let program = parse(r#"stream events {
+        let program = parse(
+            r#"stream events {
             source: src,
             window: tumbling(5m),
             transform: { let x = 1 },
             sink: out
-        }"#).unwrap();
-        if let StmtKind::StreamDecl { name, source, window, sink, .. } = &program.statements[0].kind {
+        }"#,
+        )
+        .unwrap();
+        if let StmtKind::StreamDecl {
+            name,
+            source,
+            window,
+            sink,
+            ..
+        } = &program.statements[0].kind
+        {
             assert_eq!(name, "events");
             assert!(matches!(source, Expr::Ident(s) if s == "src"));
             assert!(matches!(window, Some(WindowSpec::Tumbling(d)) if d == "5m"));
@@ -2510,11 +2816,14 @@ mod tests {
 
     #[test]
     fn test_parse_stream_sliding_window() {
-        let program = parse(r#"stream metrics {
+        let program = parse(
+            r#"stream metrics {
             source: input,
             window: sliding(10m, 1m),
             transform: { let x = 1 }
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         if let StmtKind::StreamDecl { window, .. } = &program.statements[0].kind {
             assert!(matches!(window, Some(WindowSpec::Sliding(w, s)) if w == "10m" && s == "1m"));
         } else {
@@ -2524,11 +2833,14 @@ mod tests {
 
     #[test]
     fn test_parse_stream_session_window() {
-        let program = parse(r#"stream sessions {
+        let program = parse(
+            r#"stream sessions {
             source: clicks,
             window: session(30m),
             transform: { let x = 1 }
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         if let StmtKind::StreamDecl { window, .. } = &program.statements[0].kind {
             assert!(matches!(window, Some(WindowSpec::Session(d)) if d == "30m"));
         } else {
@@ -2538,11 +2850,19 @@ mod tests {
 
     #[test]
     fn test_parse_source_decl() {
-        let program = parse(r#"source kafka_in = connector kafka {
+        let program = parse(
+            r#"source kafka_in = connector kafka {
             topic: "events",
             group: "my_group"
-        }"#).unwrap();
-        if let StmtKind::SourceDecl { name, connector_type, config } = &program.statements[0].kind {
+        }"#,
+        )
+        .unwrap();
+        if let StmtKind::SourceDecl {
+            name,
+            connector_type,
+            config,
+        } = &program.statements[0].kind
+        {
             assert_eq!(name, "kafka_in");
             assert_eq!(connector_type, "kafka");
             assert_eq!(config.len(), 2);
@@ -2555,10 +2875,18 @@ mod tests {
 
     #[test]
     fn test_parse_sink_decl() {
-        let program = parse(r#"sink output = connector channel {
+        let program = parse(
+            r#"sink output = connector channel {
             buffer: 100
-        }"#).unwrap();
-        if let StmtKind::SinkDecl { name, connector_type, config } = &program.statements[0].kind {
+        }"#,
+        )
+        .unwrap();
+        if let StmtKind::SinkDecl {
+            name,
+            connector_type,
+            config,
+        } = &program.statements[0].kind
+        {
             assert_eq!(name, "output");
             assert_eq!(connector_type, "channel");
             assert_eq!(config.len(), 1);
@@ -2570,12 +2898,15 @@ mod tests {
 
     #[test]
     fn test_parse_pipeline_with_duration_tokens() {
-        let program = parse(r#"pipeline fast {
+        let program = parse(
+            r#"pipeline fast {
             timeout: 30s,
             extract { let x = 1 }
             transform { let y = x }
             load { println(y) }
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         if let StmtKind::Pipeline { timeout, .. } = &program.statements[0].kind {
             assert_eq!(timeout.as_deref(), Some("30s"));
         } else {
@@ -2585,11 +2916,14 @@ mod tests {
 
     #[test]
     fn test_parse_stream_with_watermark() {
-        let program = parse(r#"stream delayed {
+        let program = parse(
+            r#"stream delayed {
             source: input,
             watermark: 10s,
             transform: { let x = 1 }
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         if let StmtKind::StreamDecl { watermark, .. } = &program.statements[0].kind {
             assert_eq!(watermark.as_deref(), Some("10s"));
         } else {
@@ -2633,7 +2967,11 @@ mod tests {
         let program = parse("let p = Point { x: 1.0, y: 2.0 }").unwrap();
         if let StmtKind::Let { name, value, .. } = &program.statements[0].kind {
             assert_eq!(name, "p");
-            if let Expr::StructInit { name: struct_name, fields } = value {
+            if let Expr::StructInit {
+                name: struct_name,
+                fields,
+            } = value
+            {
                 assert_eq!(struct_name, "Point");
                 assert_eq!(fields.len(), 2);
                 assert_eq!(fields[0].0, "x");
@@ -2669,7 +3007,12 @@ mod tests {
     fn test_parse_enum_variant() {
         // Simple variant: Color::Red
         let program = parse("Color::Red").unwrap();
-        if let StmtKind::Expr(Expr::EnumVariant { enum_name, variant, args }) = &program.statements[0].kind {
+        if let StmtKind::Expr(Expr::EnumVariant {
+            enum_name,
+            variant,
+            args,
+        }) = &program.statements[0].kind
+        {
             assert_eq!(enum_name, "Color");
             assert_eq!(variant, "Red");
             assert!(args.is_empty());
@@ -2679,7 +3022,12 @@ mod tests {
 
         // Variant with args: Color::Custom(1, 2, 3)
         let program = parse("Color::Custom(1, 2, 3)").unwrap();
-        if let StmtKind::Expr(Expr::EnumVariant { enum_name, variant, args }) = &program.statements[0].kind {
+        if let StmtKind::Expr(Expr::EnumVariant {
+            enum_name,
+            variant,
+            args,
+        }) = &program.statements[0].kind
+        {
             assert_eq!(enum_name, "Color");
             assert_eq!(variant, "Custom");
             assert_eq!(args.len(), 3);
@@ -2694,10 +3042,16 @@ mod tests {
     #[test]
     fn test_parse_impl_block() {
         let program = parse("impl Point { fn area(self) { self.x * self.y } }").unwrap();
-        if let StmtKind::ImplBlock { type_name, methods, .. } = &program.statements[0].kind {
+        if let StmtKind::ImplBlock {
+            type_name, methods, ..
+        } = &program.statements[0].kind
+        {
             assert_eq!(type_name, "Point");
             assert_eq!(methods.len(), 1);
-            if let StmtKind::FnDecl { name, params, body, .. } = &methods[0].kind {
+            if let StmtKind::FnDecl {
+                name, params, body, ..
+            } = &methods[0].kind
+            {
                 assert_eq!(name, "area");
                 assert_eq!(params.len(), 1);
                 assert_eq!(params[0].name, "self");
@@ -2713,7 +3067,12 @@ mod tests {
     #[test]
     fn test_parse_try_catch() {
         let program = parse("try { 1 + 2 } catch e { println(e) }").unwrap();
-        if let StmtKind::TryCatch { try_body, catch_var, catch_body } = &program.statements[0].kind {
+        if let StmtKind::TryCatch {
+            try_body,
+            catch_var,
+            catch_body,
+        } = &program.statements[0].kind
+        {
             assert_eq!(try_body.len(), 1);
             assert_eq!(catch_var, "e");
             assert_eq!(catch_body.len(), 1);
@@ -2837,7 +3196,10 @@ mod tests {
     #[test]
     fn test_parse_bare_yield() {
         let program = parse("fn gen() { yield }").unwrap();
-        if let StmtKind::FnDecl { body, is_generator, .. } = &program.statements[0].kind {
+        if let StmtKind::FnDecl {
+            body, is_generator, ..
+        } = &program.statements[0].kind
+        {
             assert!(*is_generator);
             if let StmtKind::Expr(Expr::Yield(None)) = &body[0].kind {
                 // ok
@@ -2852,7 +3214,13 @@ mod tests {
     #[test]
     fn test_parse_generator_fn() {
         let program = parse("fn gen() { yield 1\nyield 2 }").unwrap();
-        if let StmtKind::FnDecl { name, is_generator, body, .. } = &program.statements[0].kind {
+        if let StmtKind::FnDecl {
+            name,
+            is_generator,
+            body,
+            ..
+        } = &program.statements[0].kind
+        {
             assert_eq!(name, "gen");
             assert!(*is_generator);
             assert_eq!(body.len(), 2);
@@ -2876,7 +3244,10 @@ mod tests {
     #[test]
     fn test_parse_pub_fn() {
         let program = parse("pub fn foo() { 1 }").unwrap();
-        if let StmtKind::FnDecl { name, is_public, .. } = &program.statements[0].kind {
+        if let StmtKind::FnDecl {
+            name, is_public, ..
+        } = &program.statements[0].kind
+        {
             assert_eq!(name, "foo");
             assert!(*is_public);
         } else {
@@ -2887,7 +3258,10 @@ mod tests {
     #[test]
     fn test_parse_pub_struct() {
         let program = parse("pub struct Foo { x: int }").unwrap();
-        if let StmtKind::StructDecl { name, is_public, .. } = &program.statements[0].kind {
+        if let StmtKind::StructDecl {
+            name, is_public, ..
+        } = &program.statements[0].kind
+        {
             assert_eq!(name, "Foo");
             assert!(*is_public);
         } else {
@@ -3002,7 +3376,14 @@ mod tests {
     #[test]
     fn test_generic_fn() {
         let program = parse("fn identity<T>(x: T) -> T { x }").unwrap();
-        if let StmtKind::FnDecl { name, type_params, params, return_type, .. } = &program.statements[0].kind {
+        if let StmtKind::FnDecl {
+            name,
+            type_params,
+            params,
+            return_type,
+            ..
+        } = &program.statements[0].kind
+        {
             assert_eq!(name, "identity");
             assert_eq!(type_params, &vec!["T".to_string()]);
             assert_eq!(params.len(), 1);
@@ -3015,7 +3396,13 @@ mod tests {
     #[test]
     fn test_generic_struct() {
         let program = parse("struct Pair<A, B> { first: A, second: B }").unwrap();
-        if let StmtKind::StructDecl { name, type_params, fields, .. } = &program.statements[0].kind {
+        if let StmtKind::StructDecl {
+            name,
+            type_params,
+            fields,
+            ..
+        } = &program.statements[0].kind
+        {
             assert_eq!(name, "Pair");
             assert_eq!(type_params, &vec!["A".to_string(), "B".to_string()]);
             assert_eq!(fields.len(), 2);
@@ -3027,7 +3414,13 @@ mod tests {
     #[test]
     fn test_generic_enum() {
         let program = parse("enum MyOption<T> { Some(T), Nothing }").unwrap();
-        if let StmtKind::EnumDecl { name, type_params, variants, .. } = &program.statements[0].kind {
+        if let StmtKind::EnumDecl {
+            name,
+            type_params,
+            variants,
+            ..
+        } = &program.statements[0].kind
+        {
             assert_eq!(name, "MyOption");
             assert_eq!(type_params, &vec!["T".to_string()]);
             assert_eq!(variants.len(), 2);
@@ -3041,7 +3434,12 @@ mod tests {
     #[test]
     fn test_inline_trait_bound() {
         let program = parse("fn foo<T: Comparable>(x: T) { x }").unwrap();
-        if let StmtKind::FnDecl { type_params, bounds, .. } = &program.statements[0].kind {
+        if let StmtKind::FnDecl {
+            type_params,
+            bounds,
+            ..
+        } = &program.statements[0].kind
+        {
             assert_eq!(type_params, &vec!["T".to_string()]);
             assert_eq!(bounds.len(), 1);
             assert_eq!(bounds[0].type_param, "T");
@@ -3054,11 +3452,19 @@ mod tests {
     #[test]
     fn test_where_clause() {
         let program = parse("fn foo<T>(x: T) where T: Comparable + Hashable { x }").unwrap();
-        if let StmtKind::FnDecl { type_params, bounds, .. } = &program.statements[0].kind {
+        if let StmtKind::FnDecl {
+            type_params,
+            bounds,
+            ..
+        } = &program.statements[0].kind
+        {
             assert_eq!(type_params, &vec!["T".to_string()]);
             assert_eq!(bounds.len(), 1);
             assert_eq!(bounds[0].type_param, "T");
-            assert_eq!(bounds[0].traits, vec!["Comparable".to_string(), "Hashable".to_string()]);
+            assert_eq!(
+                bounds[0].traits,
+                vec!["Comparable".to_string(), "Hashable".to_string()]
+            );
         } else {
             panic!("Expected FnDecl");
         }
@@ -3067,7 +3473,13 @@ mod tests {
     #[test]
     fn test_trait_def() {
         let program = parse("trait Display { fn show(self) -> string }").unwrap();
-        if let StmtKind::TraitDef { name, type_params, methods, is_public } = &program.statements[0].kind {
+        if let StmtKind::TraitDef {
+            name,
+            type_params,
+            methods,
+            is_public,
+        } = &program.statements[0].kind
+        {
             assert_eq!(name, "Display");
             assert!(type_params.is_empty());
             assert_eq!(methods.len(), 1);
@@ -3080,8 +3492,15 @@ mod tests {
 
     #[test]
     fn test_trait_impl() {
-        let program = parse("impl Display for Point { fn show(self) -> string { \"point\" } }").unwrap();
-        if let StmtKind::TraitImpl { trait_name, type_name, methods, .. } = &program.statements[0].kind {
+        let program =
+            parse("impl Display for Point { fn show(self) -> string { \"point\" } }").unwrap();
+        if let StmtKind::TraitImpl {
+            trait_name,
+            type_name,
+            methods,
+            ..
+        } = &program.statements[0].kind
+        {
             assert_eq!(trait_name, "Display");
             assert_eq!(type_name, "Point");
             assert_eq!(methods.len(), 1);
@@ -3092,8 +3511,15 @@ mod tests {
 
     #[test]
     fn test_generic_trait_impl() {
-        let program = parse("impl<T> Display for Box<T> { fn show(self) -> string { \"box\" } }").unwrap();
-        if let StmtKind::TraitImpl { trait_name, type_name, type_params, methods } = &program.statements[0].kind {
+        let program =
+            parse("impl<T> Display for Box<T> { fn show(self) -> string { \"box\" } }").unwrap();
+        if let StmtKind::TraitImpl {
+            trait_name,
+            type_name,
+            type_params,
+            methods,
+        } = &program.statements[0].kind
+        {
             assert_eq!(trait_name, "Display");
             assert_eq!(type_name, "Box");
             assert_eq!(type_params, &vec!["T".to_string()]);
@@ -3106,7 +3532,10 @@ mod tests {
     #[test]
     fn test_pub_trait() {
         let program = parse("pub trait Serializable { fn serialize(self) -> string }").unwrap();
-        if let StmtKind::TraitDef { name, is_public, .. } = &program.statements[0].kind {
+        if let StmtKind::TraitDef {
+            name, is_public, ..
+        } = &program.statements[0].kind
+        {
             assert_eq!(name, "Serializable");
             assert!(*is_public);
         } else {
@@ -3128,7 +3557,12 @@ mod tests {
     fn test_existing_code_no_type_params() {
         // Existing code should still parse with empty type_params
         let program = parse("fn add(a, b) { a + b }").unwrap();
-        if let StmtKind::FnDecl { type_params, bounds, .. } = &program.statements[0].kind {
+        if let StmtKind::FnDecl {
+            type_params,
+            bounds,
+            ..
+        } = &program.statements[0].kind
+        {
             assert!(type_params.is_empty());
             assert!(bounds.is_empty());
         } else {
@@ -3138,7 +3572,8 @@ mod tests {
 
     #[test]
     fn test_trait_with_multiple_methods() {
-        let program = parse("trait Container { fn len(self) -> int fn is_empty(self) -> bool }").unwrap();
+        let program =
+            parse("trait Container { fn len(self) -> int fn is_empty(self) -> bool }").unwrap();
         if let StmtKind::TraitDef { name, methods, .. } = &program.statements[0].kind {
             assert_eq!(name, "Container");
             assert_eq!(methods.len(), 2);
@@ -3152,7 +3587,12 @@ mod tests {
     #[test]
     fn test_generic_impl_block() {
         let program = parse("impl<T> Box { fn get(self) -> T { self.val } }").unwrap();
-        if let StmtKind::ImplBlock { type_name, type_params, .. } = &program.statements[0].kind {
+        if let StmtKind::ImplBlock {
+            type_name,
+            type_params,
+            ..
+        } = &program.statements[0].kind
+        {
             assert_eq!(type_name, "Box");
             assert_eq!(type_params, &vec!["T".to_string()]);
         } else {
@@ -3203,7 +3643,12 @@ mod tests {
     fn test_parse_match_enum_variant() {
         let program = parse("match x { Color::Red => 1, Color::Blue => 2 }").unwrap();
         if let StmtKind::Expr(Expr::Match { arms, .. }) = &program.statements[0].kind {
-            if let Pattern::Enum { type_name, variant, args } = &arms[0].pattern {
+            if let Pattern::Enum {
+                type_name,
+                variant,
+                args,
+            } = &arms[0].pattern
+            {
                 assert_eq!(type_name, "Color");
                 assert_eq!(variant, "Red");
                 assert!(args.is_empty());
@@ -3217,7 +3662,8 @@ mod tests {
 
     #[test]
     fn test_parse_match_enum_with_args() {
-        let program = parse("match x { Shape::Circle(r) => r, Shape::Rect(w, h) => w * h }").unwrap();
+        let program =
+            parse("match x { Shape::Circle(r) => r, Shape::Rect(w, h) => w * h }").unwrap();
         if let StmtKind::Expr(Expr::Match { arms, .. }) = &program.statements[0].kind {
             if let Pattern::Enum { variant, args, .. } = &arms[0].pattern {
                 assert_eq!(variant, "Circle");
@@ -3311,7 +3757,10 @@ mod tests {
             if let Pattern::Literal(Expr::Int(-5)) = &arms[0].pattern {
                 // ok
             } else {
-                panic!("Expected negative literal pattern, got {:?}", arms[0].pattern);
+                panic!(
+                    "Expected negative literal pattern, got {:?}",
+                    arms[0].pattern
+                );
             }
         } else {
             panic!("Expected match expression");
@@ -3381,7 +3830,12 @@ mod tests {
     fn test_parse_expr_closure_still_works() {
         let program = parse("let f = (x) => x * 2").unwrap();
         if let StmtKind::Let { value, .. } = &program.statements[0].kind {
-            if let Expr::Closure { params, body, return_type } = value {
+            if let Expr::Closure {
+                params,
+                body,
+                return_type,
+            } = value
+            {
                 assert_eq!(params.len(), 1);
                 assert_eq!(params[0].name, "x");
                 assert!(return_type.is_none());
@@ -3398,7 +3852,12 @@ mod tests {
     fn test_parse_block_body_closure() {
         let program = parse("let f = (x: int64) -> int64 { let y = x * 2\n y + 1 }").unwrap();
         if let StmtKind::Let { value, .. } = &program.statements[0].kind {
-            if let Expr::Closure { params, body, return_type } = value {
+            if let Expr::Closure {
+                params,
+                body,
+                return_type,
+            } = value
+            {
                 assert_eq!(params.len(), 1);
                 assert_eq!(params[0].name, "x");
                 assert!(return_type.is_some());
@@ -3450,7 +3909,13 @@ mod tests {
     #[test]
     fn test_parse_type_alias_simple() {
         let program = parse("type Mapper = fn(int64) -> int64").unwrap();
-        if let StmtKind::TypeAlias { name, type_params, value, is_public } = &program.statements[0].kind {
+        if let StmtKind::TypeAlias {
+            name,
+            type_params,
+            value,
+            is_public,
+        } = &program.statements[0].kind
+        {
             assert_eq!(name, "Mapper");
             assert!(type_params.is_empty());
             assert!(!is_public);
@@ -3463,7 +3928,10 @@ mod tests {
     #[test]
     fn test_parse_type_alias_generic() {
         let program = parse("type Pair<T> = list<T>").unwrap();
-        if let StmtKind::TypeAlias { name, type_params, .. } = &program.statements[0].kind {
+        if let StmtKind::TypeAlias {
+            name, type_params, ..
+        } = &program.statements[0].kind
+        {
             assert_eq!(name, "Pair");
             assert_eq!(type_params, &["T"]);
         } else {
@@ -3474,7 +3942,10 @@ mod tests {
     #[test]
     fn test_parse_pub_type_alias() {
         let program = parse("pub type Predicate = fn(string) -> bool").unwrap();
-        if let StmtKind::TypeAlias { name, is_public, .. } = &program.statements[0].kind {
+        if let StmtKind::TypeAlias {
+            name, is_public, ..
+        } = &program.statements[0].kind
+        {
             assert_eq!(name, "Predicate");
             assert!(is_public);
         } else {
@@ -3486,7 +3957,12 @@ mod tests {
     fn test_parse_shorthand_closure() {
         let program = parse("let f = x => x * 2").unwrap();
         if let StmtKind::Let { value, .. } = &program.statements[0].kind {
-            if let Expr::Closure { params, body, return_type } = value {
+            if let Expr::Closure {
+                params,
+                body,
+                return_type,
+            } = value
+            {
                 assert_eq!(params.len(), 1);
                 assert_eq!(params[0].name, "x");
                 assert!(return_type.is_none());
@@ -3516,31 +3992,47 @@ mod tests {
     #[test]
     fn test_doc_comment_on_fn() {
         let program = parse("/// Adds two numbers\nfn add(a, b) { a + b }").unwrap();
-        assert_eq!(program.statements[0].doc_comment.as_deref(), Some("Adds two numbers"));
+        assert_eq!(
+            program.statements[0].doc_comment.as_deref(),
+            Some("Adds two numbers")
+        );
     }
 
     #[test]
     fn test_doc_comment_on_struct() {
         let program = parse("/// A 2D point\nstruct Point { x: int, y: int }").unwrap();
-        assert_eq!(program.statements[0].doc_comment.as_deref(), Some("A 2D point"));
+        assert_eq!(
+            program.statements[0].doc_comment.as_deref(),
+            Some("A 2D point")
+        );
     }
 
     #[test]
     fn test_doc_comment_on_enum() {
         let program = parse("/// Color values\nenum Color { Red, Green, Blue }").unwrap();
-        assert_eq!(program.statements[0].doc_comment.as_deref(), Some("Color values"));
+        assert_eq!(
+            program.statements[0].doc_comment.as_deref(),
+            Some("Color values")
+        );
     }
 
     #[test]
     fn test_doc_comment_on_trait() {
-        let program = parse("/// Display trait\ntrait Display { fn show(self) -> string }").unwrap();
-        assert_eq!(program.statements[0].doc_comment.as_deref(), Some("Display trait"));
+        let program =
+            parse("/// Display trait\ntrait Display { fn show(self) -> string }").unwrap();
+        assert_eq!(
+            program.statements[0].doc_comment.as_deref(),
+            Some("Display trait")
+        );
     }
 
     #[test]
     fn test_doc_comment_on_pub_fn() {
         let program = parse("/// Public function\npub fn greet() { print(\"hi\") }").unwrap();
-        assert_eq!(program.statements[0].doc_comment.as_deref(), Some("Public function"));
+        assert_eq!(
+            program.statements[0].doc_comment.as_deref(),
+            Some("Public function")
+        );
     }
 
     #[test]
@@ -3575,19 +4067,28 @@ mod tests {
         let source = "/// Some doc\n42";
         let program = parse(source).unwrap();
         // The doc attaches to the expression statement
-        assert_eq!(program.statements[0].doc_comment.as_deref(), Some("Some doc"));
+        assert_eq!(
+            program.statements[0].doc_comment.as_deref(),
+            Some("Some doc")
+        );
     }
 
     #[test]
     fn test_doc_comment_on_let() {
         let program = parse("/// The answer\nlet x = 42").unwrap();
-        assert_eq!(program.statements[0].doc_comment.as_deref(), Some("The answer"));
+        assert_eq!(
+            program.statements[0].doc_comment.as_deref(),
+            Some("The answer")
+        );
     }
 
     #[test]
     fn test_doc_comment_on_schema() {
         let program = parse("/// User schema\nschema User { name: string, age: int }").unwrap();
-        assert_eq!(program.statements[0].doc_comment.as_deref(), Some("User schema"));
+        assert_eq!(
+            program.statements[0].doc_comment.as_deref(),
+            Some("User schema")
+        );
     }
 
     // ── Phase 21: Schema Evolution & Migration ──────────────────────
@@ -3634,7 +4135,13 @@ mod tests {
     fn test_parse_migrate_add_column() {
         let source = "migrate User from 1 to 2 { add_column(email: string) }";
         let program = parse(source).unwrap();
-        if let StmtKind::Migrate { schema_name, from_version, to_version, operations } = &program.statements[0].kind {
+        if let StmtKind::Migrate {
+            schema_name,
+            from_version,
+            to_version,
+            operations,
+        } = &program.statements[0].kind
+        {
             assert_eq!(schema_name, "User");
             assert_eq!(*from_version, 1);
             assert_eq!(*to_version, 2);
@@ -3661,7 +4168,9 @@ mod tests {
         let source = "migrate User from 1 to 2 { rename_column(old_name, new_name) }";
         let program = parse(source).unwrap();
         if let StmtKind::Migrate { operations, .. } = &program.statements[0].kind {
-            assert!(matches!(&operations[0], MigrateOp::RenameColumn { from, to } if from == "old_name" && to == "new_name"));
+            assert!(
+                matches!(&operations[0], MigrateOp::RenameColumn { from, to } if from == "old_name" && to == "new_name")
+            );
         } else {
             panic!("Expected Migrate statement");
         }
@@ -3672,7 +4181,9 @@ mod tests {
         let source = "migrate User from 1 to 2 { alter_type(age, float64) }";
         let program = parse(source).unwrap();
         if let StmtKind::Migrate { operations, .. } = &program.statements[0].kind {
-            assert!(matches!(&operations[0], MigrateOp::AlterType { column, .. } if column == "age"));
+            assert!(
+                matches!(&operations[0], MigrateOp::AlterType { column, .. } if column == "age")
+            );
         } else {
             panic!("Expected Migrate statement");
         }
@@ -3779,7 +4290,13 @@ mod tests {
     fn test_parse_async_fn_with_params() {
         let source = "async fn get(url, timeout) { return url }";
         let program = parse(source).unwrap();
-        if let StmtKind::FnDecl { name, is_async, params, .. } = &program.statements[0].kind {
+        if let StmtKind::FnDecl {
+            name,
+            is_async,
+            params,
+            ..
+        } = &program.statements[0].kind
+        {
             assert_eq!(name, "get");
             assert!(*is_async);
             assert_eq!(params.len(), 2);

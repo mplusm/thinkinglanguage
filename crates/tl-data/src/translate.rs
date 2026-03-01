@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 use datafusion::prelude::*;
-use tl_ast::{Expr as AstExpr, BinOp, UnaryOp};
+use std::collections::HashMap;
+use tl_ast::{BinOp, Expr as AstExpr, UnaryOp};
 
 /// Values that can be used as literals in translated expressions.
 #[derive(Debug, Clone)]
@@ -16,6 +16,12 @@ pub enum LocalValue {
 /// Names not in `locals` are treated as column references.
 pub struct TranslateContext {
     pub locals: HashMap<String, LocalValue>,
+}
+
+impl Default for TranslateContext {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TranslateContext {

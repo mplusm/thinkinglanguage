@@ -1,13 +1,14 @@
 // Phase 15: Data Quality & Connectors — VM Integration Tests
 
-use tl_compiler::{compile, Vm, VmValue};
+use tl_compiler::{Vm, VmValue, compile};
 use tl_parser::parse;
 
 fn run(src: &str) -> Result<VmValue, String> {
     let program = parse(src).map_err(|e| format!("Parse error: {e}"))?;
     let proto = compile(&program).map_err(|e| format!("Compile error: {e}"))?;
     let mut vm = Vm::new();
-    vm.execute(&proto).map_err(|e| format!("Runtime error: {e}"))
+    vm.execute(&proto)
+        .map_err(|e| format!("Runtime error: {e}"))
 }
 
 fn run_output(src: &str) -> Vec<String> {

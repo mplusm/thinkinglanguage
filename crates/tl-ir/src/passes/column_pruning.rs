@@ -1,8 +1,8 @@
 // ThinkingLanguage — Column Pruning Pass
 // Merges adjacent Project nodes and eliminates unnecessary columns.
 
-use crate::plan::*;
 use crate::passes::predicate_pushdown::referenced_columns;
+use crate::plan::*;
 use std::collections::HashSet;
 
 /// Prune unnecessary columns from the plan.
@@ -27,7 +27,7 @@ pub fn prune_columns(plan: QueryPlan) -> QueryPlan {
                     .into_iter()
                     .filter(|c| {
                         let col_name = scalar_output_name(c);
-                        col_name.map_or(true, |n| needed.contains(&n))
+                        col_name.is_none_or(|n| needed.contains(&n))
                     })
                     .collect();
 

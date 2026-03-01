@@ -55,6 +55,7 @@ pub enum OutputType {
     Error,
 }
 
+#[allow(dead_code)]
 impl Notebook {
     /// Create a new empty notebook.
     pub fn new() -> Self {
@@ -76,10 +77,9 @@ impl Notebook {
 
     /// Load from a .tlnb file.
     pub fn load(path: &std::path::Path) -> Result<Self, String> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("Cannot read notebook: {e}"))?;
-        serde_json::from_str(&content)
-            .map_err(|e| format!("Cannot parse notebook: {e}"))
+        let content =
+            std::fs::read_to_string(path).map_err(|e| format!("Cannot read notebook: {e}"))?;
+        serde_json::from_str(&content).map_err(|e| format!("Cannot parse notebook: {e}"))
     }
 
     /// Save to a .tlnb file.
@@ -87,8 +87,7 @@ impl Notebook {
         self.metadata.modified = chrono::Utc::now().to_rfc3339();
         let content = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Cannot serialize notebook: {e}"))?;
-        std::fs::write(path, content)
-            .map_err(|e| format!("Cannot write notebook: {e}"))
+        std::fs::write(path, content).map_err(|e| format!("Cannot write notebook: {e}"))
     }
 
     /// Export all code cells as a plain .tl file.

@@ -61,7 +61,10 @@ impl SecurityPolicy {
         if !self.sandbox_mode {
             return true;
         }
-        !self.denied_paths.iter().any(|denied| path.starts_with(denied))
+        !self
+            .denied_paths
+            .iter()
+            .any(|denied| path.starts_with(denied))
     }
 }
 

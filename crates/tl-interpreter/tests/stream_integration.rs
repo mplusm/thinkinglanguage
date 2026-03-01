@@ -29,7 +29,11 @@ pipeline simple_etl {
 }
     "#);
     assert!(output.iter().any(|s| s.contains("[2, 4, 6]")));
-    assert!(output.iter().any(|s| s.contains("simple_etl") && s.contains("success")));
+    assert!(
+        output
+            .iter()
+            .any(|s| s.contains("simple_etl") && s.contains("success"))
+    );
 }
 
 #[test]
@@ -56,7 +60,11 @@ pipeline retry_test {
 }
     "#);
     assert!(output.iter().any(|s| s == "6"));
-    assert!(output.iter().any(|s| s.contains("retry_test") && s.contains("success")));
+    assert!(
+        output
+            .iter()
+            .any(|s| s.contains("retry_test") && s.contains("success"))
+    );
 }
 
 #[test]
@@ -112,7 +120,11 @@ stream events {
     transform: { let x = 1 }
 }
     "#);
-    assert!(output.iter().any(|s| s.contains("events") && s.contains("declared")));
+    assert!(
+        output
+            .iter()
+            .any(|s| s.contains("events") && s.contains("declared"))
+    );
 }
 
 #[test]

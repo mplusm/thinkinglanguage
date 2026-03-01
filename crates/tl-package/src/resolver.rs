@@ -1,7 +1,7 @@
 use crate::cache::PackageCache;
 use crate::fetch::{fetch_dependency, read_package_manifest};
 use crate::lockfile::{LockFile, LockedPackage};
-use crate::manifest::{DependencySpec, DepSourceKind, Manifest};
+use crate::manifest::{DepSourceKind, DependencySpec, Manifest};
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
@@ -22,16 +22,27 @@ pub struct ResolveReport {
 
 impl ResolveReport {
     pub fn added_count(&self) -> usize {
-        self.changes.iter().filter(|(_, c)| matches!(c, DepChange::Added { .. })).count()
+        self.changes
+            .iter()
+            .filter(|(_, c)| matches!(c, DepChange::Added { .. }))
+            .count()
     }
     pub fn updated_count(&self) -> usize {
-        self.changes.iter().filter(|(_, c)| matches!(c, DepChange::Updated { .. })).count()
+        self.changes
+            .iter()
+            .filter(|(_, c)| matches!(c, DepChange::Updated { .. }))
+            .count()
     }
     pub fn removed_count(&self) -> usize {
-        self.changes.iter().filter(|(_, c)| matches!(c, DepChange::Removed { .. })).count()
+        self.changes
+            .iter()
+            .filter(|(_, c)| matches!(c, DepChange::Removed { .. }))
+            .count()
     }
     pub fn has_changes(&self) -> bool {
-        self.changes.iter().any(|(_, c)| !matches!(c, DepChange::Unchanged { .. }))
+        self.changes
+            .iter()
+            .any(|(_, c)| !matches!(c, DepChange::Unchanged { .. }))
     }
 }
 
@@ -54,15 +65,28 @@ pub fn build_report(old_lock: &LockFile, new_packages: &[LockedPackage]) -> Reso
     for pkg in new_packages {
         if let Some(old) = old_lock.find(&pkg.name) {
             if old.version == pkg.version {
-                changes.push((pkg.name.clone(), DepChange::Unchanged { version: pkg.version.clone() }));
+                changes.push((
+                    pkg.name.clone(),
+                    DepChange::Unchanged {
+                        version: pkg.version.clone(),
+                    },
+                ));
             } else {
-                changes.push((pkg.name.clone(), DepChange::Updated {
-                    from: old.version.clone(),
-                    to: pkg.version.clone(),
-                }));
+                changes.push((
+                    pkg.name.clone(),
+                    DepChange::Updated {
+                        from: old.version.clone(),
+                        to: pkg.version.clone(),
+                    },
+                ));
             }
         } else {
-            changes.push((pkg.name.clone(), DepChange::Added { version: pkg.version.clone() }));
+            changes.push((
+                pkg.name.clone(),
+                DepChange::Added {
+                    version: pkg.version.clone(),
+                },
+            ));
         }
     }
 
@@ -70,7 +94,12 @@ pub fn build_report(old_lock: &LockFile, new_packages: &[LockedPackage]) -> Reso
     let new_names: HashSet<&str> = new_packages.iter().map(|p| p.name.as_str()).collect();
     for old_pkg in &old_lock.packages {
         if !new_names.contains(old_pkg.name.as_str()) {
-            changes.push((old_pkg.name.clone(), DepChange::Removed { version: old_pkg.version.clone() }));
+            changes.push((
+                old_pkg.name.clone(),
+                DepChange::Removed {
+                    version: old_pkg.version.clone(),
+                },
+            ));
         }
     }
 
@@ -90,7 +119,8 @@ pub fn detect_conflicts(
             continue;
         }
         let resolved_version = resolved.get(pkg_name).cloned();
-        let resolved_ver = resolved_version.as_deref()
+        let resolved_ver = resolved_version
+            .as_deref()
             .and_then(|v| crate::version::Version::parse(v).ok());
 
         if let Some(ref ver) = resolved_ver {
@@ -110,7 +140,9 @@ pub fn detect_conflicts(
 
             // If some are unsatisfied, pair each unsatisfied with a satisfied one (or another unsatisfied)
             for &u in &unsatisfied {
-                let other = if !satisfied.is_empty() { satisfied[0] } else {
+                let other = if !satisfied.is_empty() {
+                    satisfied[0]
+                } else {
                     // All unsatisfied — pair with first different one
                     *unsatisfied.iter().find(|&&x| x != u).unwrap_or(&u)
                 };
@@ -157,7 +189,9 @@ pub fn resolve_and_install_with_report(
 
     let report = build_report(&old_lock, &new_packages);
 
-    let lock = LockFile { packages: new_packages };
+    let lock = LockFile {
+        packages: new_packages,
+    };
     lock.save(&lock_path)?;
 
     Ok((lock, report))
@@ -180,14 +214,25 @@ fn resolve_packages(
 
     // Seed with direct dependencies
     for (name, spec) in &manifest.dependencies {
-        queue.push_back((name.clone(), spec.clone(), true, manifest.project.name.clone()));
+        queue.push_back((
+            name.clone(),
+            spec.clone(),
+            true,
+            manifest.project.name.clone(),
+        ));
         // Track version requirement
         if let DependencySpec::Simple(req) = spec {
-            requirements.entry(name.clone()).or_default().push((manifest.project.name.clone(), req.clone()));
-        } else if let DependencySpec::Detailed(d) = spec {
-            if let Some(ref v) = d.version {
-                requirements.entry(name.clone()).or_default().push((manifest.project.name.clone(), v.clone()));
-            }
+            requirements
+                .entry(name.clone())
+                .or_default()
+                .push((manifest.project.name.clone(), req.clone()));
+        } else if let DependencySpec::Detailed(d) = spec
+            && let Some(ref v) = d.version
+        {
+            requirements
+                .entry(name.clone())
+                .or_default()
+                .push((manifest.project.name.clone(), v.clone()));
         }
     }
 
@@ -198,16 +243,17 @@ fn resolve_packages(
         visited.insert(name.clone());
 
         // Check if already locked and cached
-        if let Some(locked) = old_lock.find(&name) {
-            if spec_matches_locked(&spec, locked) && is_available(&name, locked, cache) {
-                let mut pkg = locked.clone();
-                pkg.direct = is_direct;
-                resolved.push(pkg);
+        if let Some(locked) = old_lock.find(&name)
+            && spec_matches_locked(&spec, locked)
+            && is_available(&name, locked, cache)
+        {
+            let mut pkg = locked.clone();
+            pkg.direct = is_direct;
+            resolved.push(pkg);
 
-                // Discover transitive deps from cached package
-                discover_transitive_deps(&name, locked, cache, &mut queue, &mut requirements);
-                continue;
-            }
+            // Discover transitive deps from cached package
+            discover_transitive_deps(&name, locked, cache, &mut queue, &mut requirements);
+            continue;
         }
 
         // Fetch the dependency
@@ -229,11 +275,17 @@ fn resolve_packages(
                 if !visited.contains(dep_name) {
                     // Track version requirement
                     if let DependencySpec::Simple(req) = dep_spec {
-                        requirements.entry(dep_name.clone()).or_default().push((name.clone(), req.clone()));
-                    } else if let DependencySpec::Detailed(d) = dep_spec {
-                        if let Some(ref v) = d.version {
-                            requirements.entry(dep_name.clone()).or_default().push((name.clone(), v.clone()));
-                        }
+                        requirements
+                            .entry(dep_name.clone())
+                            .or_default()
+                            .push((name.clone(), req.clone()));
+                    } else if let DependencySpec::Detailed(d) = dep_spec
+                        && let Some(ref v) = d.version
+                    {
+                        requirements
+                            .entry(dep_name.clone())
+                            .or_default()
+                            .push((name.clone(), v.clone()));
                     }
                     queue.push_back((dep_name.clone(), dep_spec.clone(), false, name.clone()));
                 }
@@ -245,7 +297,8 @@ fn resolve_packages(
     }
 
     // Check for version conflicts
-    let resolved_versions: BTreeMap<String, String> = resolved.iter()
+    let resolved_versions: BTreeMap<String, String> = resolved
+        .iter()
         .map(|p| (p.name.clone(), p.version.clone()))
         .collect();
     let conflicts = detect_conflicts(&requirements, &resolved_versions);
@@ -254,8 +307,7 @@ fn resolve_packages(
         for c in &conflicts {
             msg.push_str(&format!(
                 "  {} required by {} ({}) and {} ({})",
-                c.package, c.requester_a, c.requirement_a,
-                c.requester_b, c.requirement_b,
+                c.package, c.requester_a, c.requirement_a, c.requester_b, c.requirement_b,
             ));
             if let Some(ref v) = c.resolved_version {
                 msg.push_str(&format!(", resolved to {v}"));
@@ -282,18 +334,24 @@ fn discover_transitive_deps(
         Some(cache.package_dir(&locked.name, &locked.version))
     };
 
-    if let Some(dir) = dir {
-        if let Some(dep_manifest) = read_package_manifest(&dir) {
-            for (dep_name, dep_spec) in &dep_manifest.dependencies {
-                if let DependencySpec::Simple(req) = dep_spec {
-                    requirements.entry(dep_name.clone()).or_default().push((name.to_string(), req.clone()));
-                } else if let DependencySpec::Detailed(d) = dep_spec {
-                    if let Some(ref v) = d.version {
-                        requirements.entry(dep_name.clone()).or_default().push((name.to_string(), v.clone()));
-                    }
-                }
-                queue.push_back((dep_name.clone(), dep_spec.clone(), false, name.to_string()));
+    if let Some(dir) = dir
+        && let Some(dep_manifest) = read_package_manifest(&dir)
+    {
+        for (dep_name, dep_spec) in &dep_manifest.dependencies {
+            if let DependencySpec::Simple(req) = dep_spec {
+                requirements
+                    .entry(dep_name.clone())
+                    .or_default()
+                    .push((name.to_string(), req.clone()));
+            } else if let DependencySpec::Detailed(d) = dep_spec
+                && let Some(ref v) = d.version
+            {
+                requirements
+                    .entry(dep_name.clone())
+                    .or_default()
+                    .push((name.to_string(), v.clone()));
             }
+            queue.push_back((dep_name.clone(), dep_spec.clone(), false, name.to_string()));
         }
     }
 }
@@ -334,21 +392,20 @@ pub fn spec_matches_locked(spec: &DependencySpec, locked: &LockedPackage) -> boo
                 return false;
             }
             // Check URL matches
-            if let DependencySpec::Detailed(d) = spec {
-                if let (Some(spec_url), Some(locked_url)) = (d.git.as_deref(), locked.git_url()) {
-                    return spec_url == locked_url;
-                }
+            if let DependencySpec::Detailed(d) = spec
+                && let (Some(spec_url), Some(locked_url)) = (d.git.as_deref(), locked.git_url())
+            {
+                return spec_url == locked_url;
             }
             false
         }
         DepSourceKind::Registry => {
             // Registry deps match if version requirement is satisfied
-            if let DependencySpec::Simple(req_str) = spec {
-                if let Ok(req) = crate::version::VersionReq::parse(req_str) {
-                    if let Ok(ver) = crate::version::Version::parse(&locked.version) {
-                        return req.matches(&ver);
-                    }
-                }
+            if let DependencySpec::Simple(req_str) = spec
+                && let Ok(req) = crate::version::VersionReq::parse(req_str)
+                && let Ok(ver) = crate::version::Version::parse(&locked.version)
+            {
+                return req.matches(&ver);
             }
             false
         }
@@ -406,7 +463,7 @@ pub fn build_package_roots(
     let lock_path = project_root.join("tl.lock");
     if let Ok(lock) = LockFile::load(&lock_path) {
         for pkg in &lock.packages {
-            if let Some(path) = find_single_package_source(&pkg, cache) {
+            if let Some(path) = find_single_package_source(pkg, cache) {
                 roots.insert(pkg.name.clone(), path);
             }
         }
@@ -444,7 +501,8 @@ mod tests {
 
     fn make_test_package_with_deps(dir: &Path, name: &str, version: &str, deps: &[(&str, &str)]) {
         std::fs::create_dir_all(dir.join("src")).unwrap();
-        let mut toml = format!("[project]\nname = \"{name}\"\nversion = \"{version}\"\n\n[dependencies]\n");
+        let mut toml =
+            format!("[project]\nname = \"{name}\"\nversion = \"{version}\"\n\n[dependencies]\n");
         for (dep_name, dep_path) in deps {
             toml.push_str(&format!("{dep_name} = {{ path = \"{dep_path}\" }}\n"));
         }
@@ -543,7 +601,11 @@ mod tests {
     fn spec_matches_locked_path() {
         let locked = LockedPackage::new("mylib", "1.0.0", LockedPackage::path_source("/tmp/mylib"));
         let spec = DependencySpec::Detailed(DetailedDep {
-            version: None, git: None, branch: None, tag: None, rev: None,
+            version: None,
+            git: None,
+            branch: None,
+            tag: None,
+            rev: None,
             path: Some("/tmp/mylib".into()),
         });
         assert!(spec_matches_locked(&spec, &locked));
@@ -551,12 +613,18 @@ mod tests {
 
     #[test]
     fn spec_matches_locked_git() {
-        let locked = LockedPackage::new("remote", "2.0.0", LockedPackage::git_source("https://github.com/user/remote.git", "abc123"));
+        let locked = LockedPackage::new(
+            "remote",
+            "2.0.0",
+            LockedPackage::git_source("https://github.com/user/remote.git", "abc123"),
+        );
         let spec = DependencySpec::Detailed(DetailedDep {
             version: None,
             git: Some("https://github.com/user/remote.git".into()),
             branch: Some("main".into()),
-            tag: None, rev: None, path: None,
+            tag: None,
+            rev: None,
+            path: None,
         });
         assert!(spec_matches_locked(&spec, &locked));
     }
@@ -582,7 +650,9 @@ mod tests {
         let new = vec![LockedPackage::new("pkg", "1.2.0", "path+/p".into())];
         let report = build_report(&old_lock, &new);
         assert_eq!(report.changes.len(), 1);
-        assert!(matches!(&report.changes[0].1, DepChange::Updated { from, to } if from == "1.0.0" && to == "1.2.0"));
+        assert!(
+            matches!(&report.changes[0].1, DepChange::Updated { from, to } if from == "1.0.0" && to == "1.2.0")
+        );
         assert_eq!(report.updated_count(), 1);
     }
 
@@ -594,7 +664,9 @@ mod tests {
         let new = vec![LockedPackage::new("pkg", "1.0.0", "path+/p".into())];
         let report = build_report(&old_lock, &new);
         assert_eq!(report.changes.len(), 1);
-        assert!(matches!(&report.changes[0].1, DepChange::Unchanged { version } if version == "1.0.0"));
+        assert!(
+            matches!(&report.changes[0].1, DepChange::Unchanged { version } if version == "1.0.0")
+        );
         assert!(!report.has_changes());
     }
 
@@ -606,7 +678,9 @@ mod tests {
         let new: Vec<LockedPackage> = vec![];
         let report = build_report(&old_lock, &new);
         assert_eq!(report.changes.len(), 1);
-        assert!(matches!(&report.changes[0].1, DepChange::Removed { version } if version == "2.0.0"));
+        assert!(
+            matches!(&report.changes[0].1, DepChange::Removed { version } if version == "2.0.0")
+        );
         assert_eq!(report.removed_count(), 1);
     }
 
@@ -625,7 +699,9 @@ mod tests {
         // Create lib that depends on sub-dep
         let lib = tmp.path().join("mylib");
         make_test_package_with_deps(
-            &lib, "mylib", "1.0.0",
+            &lib,
+            "mylib",
+            "1.0.0",
             &[("sub-dep", &sub_dep.to_string_lossy())],
         );
 
@@ -653,16 +729,10 @@ mod tests {
         let b_dir = tmp.path().join("b");
 
         // Create B first (depends on A)
-        make_test_package_with_deps(
-            &b_dir, "b", "1.0.0",
-            &[("a", &a_dir.to_string_lossy())],
-        );
+        make_test_package_with_deps(&b_dir, "b", "1.0.0", &[("a", &a_dir.to_string_lossy())]);
 
         // Create A (depends on B)
-        make_test_package_with_deps(
-            &a_dir, "a", "1.0.0",
-            &[("b", &b_dir.to_string_lossy())],
-        );
+        make_test_package_with_deps(&a_dir, "a", "1.0.0", &[("b", &b_dir.to_string_lossy())]);
 
         let manifest = test_manifest_with_path_dep("a", &a_dir);
         let cache = PackageCache::new(tmp.path().join("cache"));
@@ -701,14 +771,28 @@ mod tests {
             },
             dependencies: {
                 let mut deps = std::collections::BTreeMap::new();
-                deps.insert("b".into(), DependencySpec::Detailed(DetailedDep {
-                    version: None, git: None, branch: None, tag: None, rev: None,
-                    path: Some(b_dir.to_string_lossy().into()),
-                }));
-                deps.insert("c".into(), DependencySpec::Detailed(DetailedDep {
-                    version: None, git: None, branch: None, tag: None, rev: None,
-                    path: Some(c_dir.to_string_lossy().into()),
-                }));
+                deps.insert(
+                    "b".into(),
+                    DependencySpec::Detailed(DetailedDep {
+                        version: None,
+                        git: None,
+                        branch: None,
+                        tag: None,
+                        rev: None,
+                        path: Some(b_dir.to_string_lossy().into()),
+                    }),
+                );
+                deps.insert(
+                    "c".into(),
+                    DependencySpec::Detailed(DetailedDep {
+                        version: None,
+                        git: None,
+                        branch: None,
+                        tag: None,
+                        rev: None,
+                        path: Some(c_dir.to_string_lossy().into()),
+                    }),
+                );
                 deps
             },
         };
@@ -729,10 +813,13 @@ mod tests {
     #[test]
     fn test_conflict_detection() {
         let mut requirements: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
-        requirements.insert("shared".into(), vec![
-            ("pkg-a".into(), "^1.0".into()),
-            ("pkg-b".into(), "^2.0".into()),
-        ]);
+        requirements.insert(
+            "shared".into(),
+            vec![
+                ("pkg-a".into(), "^1.0".into()),
+                ("pkg-b".into(), "^2.0".into()),
+            ],
+        );
         // Resolved to 1.5.0, which satisfies ^1.0 but not ^2.0
         let mut resolved = BTreeMap::new();
         resolved.insert("shared".into(), "1.5.0".into());
@@ -745,16 +832,22 @@ mod tests {
     #[test]
     fn test_conflict_compatible() {
         let mut requirements: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
-        requirements.insert("shared".into(), vec![
-            ("pkg-a".into(), "^1.0".into()),
-            ("pkg-b".into(), "^1.2".into()),
-        ]);
+        requirements.insert(
+            "shared".into(),
+            vec![
+                ("pkg-a".into(), "^1.0".into()),
+                ("pkg-b".into(), "^1.2".into()),
+            ],
+        );
         // Resolved to 1.5.0, which satisfies both ^1.0 and ^1.2
         let mut resolved = BTreeMap::new();
         resolved.insert("shared".into(), "1.5.0".into());
 
         let conflicts = detect_conflicts(&requirements, &resolved);
-        assert!(conflicts.is_empty(), "no conflict expected for compatible requirements");
+        assert!(
+            conflicts.is_empty(),
+            "no conflict expected for compatible requirements"
+        );
     }
 
     // --- resolve_and_install_with_report test ---

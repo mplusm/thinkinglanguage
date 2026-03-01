@@ -145,16 +145,16 @@ mod tests {
 
     #[test]
     fn test_validate_cron_basic() {
-        assert!(validate_cron("0 0 * * *").is_ok());      // daily at midnight
-        assert!(validate_cron("*/5 * * * *").is_ok());     // every 5 minutes
-        assert!(validate_cron("0 9 * * 1-5").is_ok());     // weekdays at 9am
-        assert!(validate_cron("30 14 1 * *").is_ok());     // 1st of month at 2:30pm
+        assert!(validate_cron("0 0 * * *").is_ok()); // daily at midnight
+        assert!(validate_cron("*/5 * * * *").is_ok()); // every 5 minutes
+        assert!(validate_cron("0 9 * * 1-5").is_ok()); // weekdays at 9am
+        assert!(validate_cron("30 14 1 * *").is_ok()); // 1st of month at 2:30pm
     }
 
     #[test]
     fn test_validate_cron_invalid() {
-        assert!(validate_cron("0 0 *").is_err());           // too few fields
-        assert!(validate_cron("60 0 * * *").is_err());      // minute out of range
-        assert!(validate_cron("0 25 * * *").is_err());      // hour out of range
+        assert!(validate_cron("0 0 *").is_err()); // too few fields
+        assert!(validate_cron("60 0 * * *").is_err()); // minute out of range
+        assert!(validate_cron("0 25 * * *").is_err()); // hour out of range
     }
 }

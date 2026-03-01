@@ -28,7 +28,7 @@ fn lower_inner(plan: &QueryPlan, ops: &mut Vec<(String, Vec<Expr>)>) {
 
         QueryPlan::Project { columns, input } => {
             lower_inner(input, ops);
-            let args: Vec<Expr> = columns.iter().map(|c| ir_scalar_to_select_arg(c)).collect();
+            let args: Vec<Expr> = columns.iter().map(ir_scalar_to_select_arg).collect();
             ops.push(("select".to_string(), args));
         }
 
@@ -65,7 +65,7 @@ fn lower_inner(plan: &QueryPlan, ops: &mut Vec<(String, Vec<Expr>)>) {
                 let by_value = if group_by.len() == 1 {
                     ir_scalar_to_ast(&group_by[0])
                 } else {
-                    Expr::List(group_by.iter().map(|c| ir_scalar_to_ast(c)).collect())
+                    Expr::List(group_by.iter().map(ir_scalar_to_ast).collect())
                 };
                 args.push(Expr::NamedArg {
                     name: "by".to_string(),
@@ -154,10 +154,7 @@ fn lower_inner(plan: &QueryPlan, ops: &mut Vec<(String, Vec<Expr>)>) {
 
         QueryPlan::WriteParquet { path, input } => {
             lower_inner(input, ops);
-            ops.push((
-                "write_parquet".to_string(),
-                vec![ir_scalar_to_ast(path)],
-            ));
+            ops.push(("write_parquet".to_string(), vec![ir_scalar_to_ast(path)]));
         }
 
         QueryPlan::FillNull {
@@ -226,10 +223,7 @@ fn lower_inner(plan: &QueryPlan, ops: &mut Vec<(String, Vec<Expr>)>) {
 
         QueryPlan::IsUnique { column, input } => {
             lower_inner(input, ops);
-            ops.push((
-                "is_unique".to_string(),
-                vec![Expr::Ident(column.clone())],
-            ));
+            ops.push(("is_unique".to_string(), vec![Expr::Ident(column.clone())]));
         }
     }
 }
@@ -366,7 +360,10 @@ mod tests {
             ),
             (
                 "select".to_string(),
-                vec![Expr::Ident("name".to_string()), Expr::Ident("age".to_string())],
+                vec![
+                    Expr::Ident("name".to_string()),
+                    Expr::Ident("age".to_string()),
+                ],
             ),
         ];
 
@@ -417,7 +414,10 @@ mod tests {
         let ops = vec![
             (
                 "select".to_string(),
-                vec![Expr::Ident("name".to_string()), Expr::Ident("age".to_string())],
+                vec![
+                    Expr::Ident("name".to_string()),
+                    Expr::Ident("age".to_string()),
+                ],
             ),
             (
                 "filter".to_string(),

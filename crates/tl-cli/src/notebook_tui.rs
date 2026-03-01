@@ -7,16 +7,13 @@ use std::io;
 use std::path::PathBuf;
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyModifiers},
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
+    event::{self, Event, KeyCode, KeyModifiers},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{
-    prelude::*,
-    widgets::*,
-};
+use ratatui::{prelude::*, widgets::*};
 
-use tl_compiler::{compile, Vm, VmValue};
+use tl_compiler::{Vm, VmValue, compile};
 use tl_parser::parse;
 
 use crate::notebook::{CellOutput, CellType, Notebook, OutputType};
@@ -110,7 +107,8 @@ impl NotebookApp {
                 self.status_msg = "New code cell — Esc to finish".to_string();
             }
             KeyCode::Char('A') => {
-                self.notebook.add_cell(self.selected + 1, CellType::Markdown);
+                self.notebook
+                    .add_cell(self.selected + 1, CellType::Markdown);
                 self.selected += 1;
                 self.edit_buffer = String::new();
                 self.mode = Mode::Edit;
@@ -124,16 +122,14 @@ impl NotebookApp {
                     self.status_msg = "Cell deleted".to_string();
                 }
             }
-            KeyCode::Char('s') => {
-                match self.notebook.save(&self.file_path) {
-                    Ok(()) => {
-                        self.status_msg = format!("Saved to {}", self.file_path.display());
-                    }
-                    Err(e) => {
-                        self.status_msg = format!("Save error: {e}");
-                    }
+            KeyCode::Char('s') => match self.notebook.save(&self.file_path) {
+                Ok(()) => {
+                    self.status_msg = format!("Saved to {}", self.file_path.display());
                 }
-            }
+                Err(e) => {
+                    self.status_msg = format!("Save error: {e}");
+                }
+            },
             KeyCode::Char('x') => {
                 let tl_path = self.file_path.with_extension("tl");
                 let content = self.notebook.export_tl();
@@ -147,7 +143,9 @@ impl NotebookApp {
                 }
             }
             KeyCode::Char('h') => {
-                self.status_msg = "j/k:nav Enter:run e:edit a/A:add code/md d:del s:save x:export q:quit".to_string();
+                self.status_msg =
+                    "j/k:nav Enter:run e:edit a/A:add code/md d:del s:save x:export q:quit"
+                        .to_string();
             }
             _ => {}
         }
@@ -274,9 +272,9 @@ impl NotebookApp {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(2),   // header
-                Constraint::Min(3),      // cells
-                Constraint::Length(1),    // status
+                Constraint::Length(2), // header
+                Constraint::Min(3),    // cells
+                Constraint::Length(1), // status
             ])
             .split(area);
 
@@ -287,10 +285,17 @@ impl NotebookApp {
         };
         let title = format!(
             " TL Notebook — {} [{mode_str}]",
-            self.file_path.file_name().unwrap_or_default().to_string_lossy()
+            self.file_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
         );
         let header = Paragraph::new(title)
-            .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            .style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
             .block(Block::default().borders(Borders::BOTTOM));
         frame.render_widget(header, chunks[0]);
 
@@ -322,7 +327,9 @@ impl NotebookApp {
                 .unwrap_or_default();
 
             let header_style = if is_selected {
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::DarkGray)
             };
@@ -346,7 +353,10 @@ impl NotebookApp {
             };
 
             if source.is_empty() {
-                lines.push(Line::from(Span::styled("  (empty)", Style::default().fg(Color::DarkGray))));
+                lines.push(Line::from(Span::styled(
+                    "  (empty)",
+                    Style::default().fg(Color::DarkGray),
+                )));
             } else {
                 for line in source.lines() {
                     lines.push(Line::from(Span::styled(format!("  {line}"), source_style)));
@@ -372,8 +382,7 @@ impl NotebookApp {
             lines.push(Line::from(""));
         }
 
-        let paragraph = Paragraph::new(lines)
-            .scroll((self.scroll_offset, 0));
+        let paragraph = Paragraph::new(lines).scroll((self.scroll_offset, 0));
         frame.render_widget(paragraph, area);
     }
 }

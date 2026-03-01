@@ -38,10 +38,7 @@ pub fn predict_onnx(model_path: &Path, input: &TlTensor) -> Result<TlTensor, Str
         .map_err(|e| format!("ONNX inference failed: {e}"))?;
 
     // Extract first output
-    let output = outputs
-        .values()
-        .next()
-        .ok_or("No output from ONNX model")?;
+    let output = outputs.values().next().ok_or("No output from ONNX model")?;
 
     let (out_shape_ref, out_flat) = output
         .try_extract_tensor::<f32>()

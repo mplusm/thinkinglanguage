@@ -46,10 +46,10 @@ impl PackageCache {
         let mut versions = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&pkg_dir) {
             for entry in entries.flatten() {
-                if entry.path().is_dir() {
-                    if let Some(name) = entry.file_name().to_str() {
-                        versions.push(name.to_string());
-                    }
+                if entry.path().is_dir()
+                    && let Some(name) = entry.file_name().to_str()
+                {
+                    versions.push(name.to_string());
                 }
             }
         }
@@ -66,12 +66,11 @@ impl PackageCache {
         }
         // Clean up empty parent directory
         let pkg_dir = self.root.join(name);
-        if pkg_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&pkg_dir) {
-                if entries.count() == 0 {
-                    let _ = std::fs::remove_dir(&pkg_dir);
-                }
-            }
+        if pkg_dir.exists()
+            && let Ok(entries) = std::fs::read_dir(&pkg_dir)
+            && entries.count() == 0
+        {
+            let _ = std::fs::remove_dir(&pkg_dir);
         }
         Ok(())
     }

@@ -1,7 +1,7 @@
 // ThinkingLanguage — Pipeline definition and execution
 
-use std::fmt;
 use chrono::Utc;
+use std::fmt;
 
 /// Definition of a pipeline (ETL or general).
 #[derive(Debug, Clone)]
@@ -54,8 +54,12 @@ impl fmt::Display for PipelineResult {
         write!(
             f,
             "Pipeline '{}': {} (rows: {}, attempts: {}, duration: {} → {})",
-            self.name, self.status, self.rows_processed, self.attempts,
-            self.started_at, self.ended_at
+            self.name,
+            self.status,
+            self.rows_processed,
+            self.attempts,
+            self.started_at,
+            self.ended_at
         )
     }
 }

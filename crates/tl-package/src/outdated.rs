@@ -1,5 +1,5 @@
 use crate::lockfile::LockFile;
-use crate::manifest::{DependencySpec, DepSourceKind, Manifest};
+use crate::manifest::{DepSourceKind, DependencySpec, Manifest};
 
 /// Information about one outdated dependency.
 #[derive(Debug, Clone)]
@@ -67,7 +67,8 @@ pub fn check_outdated_with_versions(
                 let req = crate::version::VersionReq::parse(&version_req_str)?;
 
                 // Find latest matching version
-                let mut matching_versions: Vec<crate::version::Version> = versions.iter()
+                let mut matching_versions: Vec<crate::version::Version> = versions
+                    .iter()
                     .filter_map(|v| crate::version::Version::parse(v).ok())
                     .filter(|v| req.matches(v))
                     .collect();
@@ -75,7 +76,8 @@ pub fn check_outdated_with_versions(
                 let latest_matching = matching_versions.last().map(|v| v.to_string());
 
                 // Find latest available version (any)
-                let mut all_versions: Vec<crate::version::Version> = versions.iter()
+                let mut all_versions: Vec<crate::version::Version> = versions
+                    .iter()
                     .filter_map(|v| crate::version::Version::parse(v).ok())
                     .collect();
                 all_versions.sort();
@@ -107,10 +109,7 @@ pub fn check_outdated_with_versions(
 
 /// Check outdated dependencies using the package registry.
 #[cfg(feature = "registry")]
-pub fn check_outdated(
-    manifest: &Manifest,
-    lock: &LockFile,
-) -> Result<Vec<OutdatedInfo>, String> {
+pub fn check_outdated(manifest: &Manifest, lock: &LockFile) -> Result<Vec<OutdatedInfo>, String> {
     check_outdated_with_versions(manifest, lock, &|name| {
         let info = crate::registry_client::get_package_info(name)?;
         Ok(info.versions.iter().map(|v| v.version.clone()).collect())
@@ -121,7 +120,7 @@ pub fn check_outdated(
 mod tests {
     use super::*;
     use crate::lockfile::LockedPackage;
-    use crate::manifest::{ProjectConfig, DetailedDep};
+    use crate::manifest::{DetailedDep, ProjectConfig};
     use std::collections::BTreeMap;
 
     fn test_manifest(deps: Vec<(&str, DependencySpec)>) -> Manifest {
@@ -144,18 +143,19 @@ mod tests {
 
     #[test]
     fn test_outdated_newer_available() {
-        let manifest = test_manifest(vec![
-            ("utils", DependencySpec::Simple("^1.0".into())),
-        ]);
+        let manifest = test_manifest(vec![("utils", DependencySpec::Simple("^1.0".into()))]);
         let lock = LockFile {
-            packages: vec![
-                LockedPackage::new("utils", "1.0.0", "registry+http://localhost@1.0.0".into()),
-            ],
+            packages: vec![LockedPackage::new(
+                "utils",
+                "1.0.0",
+                "registry+http://localhost@1.0.0".into(),
+            )],
         };
 
         let results = check_outdated_with_versions(&manifest, &lock, &|_name| {
             Ok(vec!["1.0.0".into(), "1.3.0".into(), "2.0.0".into()])
-        }).unwrap();
+        })
+        .unwrap();
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "utils");
@@ -167,18 +167,19 @@ mod tests {
 
     #[test]
     fn test_outdated_up_to_date() {
-        let manifest = test_manifest(vec![
-            ("helpers", DependencySpec::Simple("^2.0".into())),
-        ]);
+        let manifest = test_manifest(vec![("helpers", DependencySpec::Simple("^2.0".into()))]);
         let lock = LockFile {
-            packages: vec![
-                LockedPackage::new("helpers", "2.1.0", "registry+http://localhost@2.1.0".into()),
-            ],
+            packages: vec![LockedPackage::new(
+                "helpers",
+                "2.1.0",
+                "registry+http://localhost@2.1.0".into(),
+            )],
         };
 
         let results = check_outdated_with_versions(&manifest, &lock, &|_name| {
             Ok(vec!["2.0.0".into(), "2.1.0".into()])
-        }).unwrap();
+        })
+        .unwrap();
 
         assert_eq!(results.len(), 1);
         assert!(results[0].is_up_to_date());
@@ -186,22 +187,29 @@ mod tests {
 
     #[test]
     fn test_outdated_git_dep() {
-        let manifest = test_manifest(vec![
-            ("mylib", DependencySpec::Detailed(DetailedDep {
+        let manifest = test_manifest(vec![(
+            "mylib",
+            DependencySpec::Detailed(DetailedDep {
                 version: None,
                 git: Some("https://github.com/user/mylib.git".into()),
-                branch: None, tag: None, rev: None, path: None,
-            })),
-        ]);
+                branch: None,
+                tag: None,
+                rev: None,
+                path: None,
+            }),
+        )]);
         let lock = LockFile {
-            packages: vec![
-                LockedPackage::new("mylib", "1.0.0", LockedPackage::git_source("https://github.com/user/mylib.git", "abc123")),
-            ],
+            packages: vec![LockedPackage::new(
+                "mylib",
+                "1.0.0",
+                LockedPackage::git_source("https://github.com/user/mylib.git", "abc123"),
+            )],
         };
 
         let results = check_outdated_with_versions(&manifest, &lock, &|_| {
             panic!("should not query registry for git deps");
-        }).unwrap();
+        })
+        .unwrap();
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].source_kind, DepSourceKind::Git);

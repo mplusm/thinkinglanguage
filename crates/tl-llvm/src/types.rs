@@ -75,62 +75,130 @@ impl<'ctx> LlvmTypes<'ctx> {
         let ptr_type = context.ptr_type(inkwell::AddressSpace::default());
 
         // Runtime helper function types
-        let rt_binop_ty = void_type.fn_type(&[ptr_type.into(), ptr_type.into(), ptr_type.into()], false);
+        let rt_binop_ty =
+            void_type.fn_type(&[ptr_type.into(), ptr_type.into(), ptr_type.into()], false);
         let rt_cmp_ty = i64_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
         let rt_truthy_ty = i64_type.fn_type(&[ptr_type.into()], false);
-        let rt_call_ty = i64_type.fn_type(&[
-            ptr_type.into(), ptr_type.into(), ptr_type.into(),
-            i64_type.into(), ptr_type.into(),
-        ], false);
-        let rt_get_global_ty = i64_type.fn_type(&[
-            ptr_type.into(), ptr_type.into(), i64_type.into(), ptr_type.into(),
-        ], false);
-        let rt_set_global_ty = i64_type.fn_type(&[
-            ptr_type.into(), ptr_type.into(), i64_type.into(), ptr_type.into(),
-        ], false);
-        let rt_builtin_ty = i64_type.fn_type(&[
-            ptr_type.into(), i64_type.into(), ptr_type.into(),
-            i64_type.into(), ptr_type.into(),
-        ], false);
-        let rt_get_const_ty = void_type.fn_type(&[
-            ptr_type.into(), i64_type.into(), ptr_type.into(),
-        ], false);
-        let rt_make_list_ty = void_type.fn_type(&[
-            ptr_type.into(), i64_type.into(), ptr_type.into(),
-        ], false);
-        let rt_make_map_ty = void_type.fn_type(&[
-            ptr_type.into(), ptr_type.into(), i64_type.into(), ptr_type.into(),
-        ], false);
+        let rt_call_ty = i64_type.fn_type(
+            &[
+                ptr_type.into(),
+                ptr_type.into(),
+                ptr_type.into(),
+                i64_type.into(),
+                ptr_type.into(),
+            ],
+            false,
+        );
+        let rt_get_global_ty = i64_type.fn_type(
+            &[
+                ptr_type.into(),
+                ptr_type.into(),
+                i64_type.into(),
+                ptr_type.into(),
+            ],
+            false,
+        );
+        let rt_set_global_ty = i64_type.fn_type(
+            &[
+                ptr_type.into(),
+                ptr_type.into(),
+                i64_type.into(),
+                ptr_type.into(),
+            ],
+            false,
+        );
+        let rt_builtin_ty = i64_type.fn_type(
+            &[
+                ptr_type.into(),
+                i64_type.into(),
+                ptr_type.into(),
+                i64_type.into(),
+                ptr_type.into(),
+            ],
+            false,
+        );
+        let rt_get_const_ty =
+            void_type.fn_type(&[ptr_type.into(), i64_type.into(), ptr_type.into()], false);
+        let rt_make_list_ty =
+            void_type.fn_type(&[ptr_type.into(), i64_type.into(), ptr_type.into()], false);
+        let rt_make_map_ty = void_type.fn_type(
+            &[
+                ptr_type.into(),
+                ptr_type.into(),
+                i64_type.into(),
+                ptr_type.into(),
+            ],
+            false,
+        );
         let rt_load_const_ty = void_type.fn_type(&[ptr_type.into()], false);
-        let rt_get_index_ty = i64_type.fn_type(&[
-            ptr_type.into(), ptr_type.into(), ptr_type.into(),
-        ], false);
-        let rt_set_index_ty = i64_type.fn_type(&[
-            ptr_type.into(), ptr_type.into(), ptr_type.into(),
-        ], false);
-        let rt_get_member_ty = i64_type.fn_type(&[
-            ptr_type.into(), ptr_type.into(), i64_type.into(), ptr_type.into(),
-        ], false);
-        let rt_set_member_ty = i64_type.fn_type(&[
-            ptr_type.into(), ptr_type.into(), i64_type.into(), ptr_type.into(),
-        ], false);
-        let rt_method_call_ty = i64_type.fn_type(&[
-            ptr_type.into(), ptr_type.into(), ptr_type.into(),
-            i64_type.into(), ptr_type.into(), i64_type.into(), ptr_type.into(),
-        ], false);
-        let rt_vm_exec_op_ty = i64_type.fn_type(&[
-            ptr_type.into(), i64_type.into(), i64_type.into(),
-            i64_type.into(), i64_type.into(), ptr_type.into(), i64_type.into(),
-        ], false);
-        let rt_cmp_op_ty = void_type.fn_type(&[ptr_type.into(), ptr_type.into(), ptr_type.into()], false);
-        let rt_make_closure_ty = void_type.fn_type(&[
-            ptr_type.into(), ptr_type.into(), i64_type.into(),
-            ptr_type.into(), ptr_type.into(),
-        ], false);
+        let rt_get_index_ty =
+            i64_type.fn_type(&[ptr_type.into(), ptr_type.into(), ptr_type.into()], false);
+        let rt_set_index_ty =
+            i64_type.fn_type(&[ptr_type.into(), ptr_type.into(), ptr_type.into()], false);
+        let rt_get_member_ty = i64_type.fn_type(
+            &[
+                ptr_type.into(),
+                ptr_type.into(),
+                i64_type.into(),
+                ptr_type.into(),
+            ],
+            false,
+        );
+        let rt_set_member_ty = i64_type.fn_type(
+            &[
+                ptr_type.into(),
+                ptr_type.into(),
+                i64_type.into(),
+                ptr_type.into(),
+            ],
+            false,
+        );
+        let rt_method_call_ty = i64_type.fn_type(
+            &[
+                ptr_type.into(),
+                ptr_type.into(),
+                ptr_type.into(),
+                i64_type.into(),
+                ptr_type.into(),
+                i64_type.into(),
+                ptr_type.into(),
+            ],
+            false,
+        );
+        let rt_vm_exec_op_ty = i64_type.fn_type(
+            &[
+                ptr_type.into(),
+                i64_type.into(),
+                i64_type.into(),
+                i64_type.into(),
+                i64_type.into(),
+                ptr_type.into(),
+                i64_type.into(),
+            ],
+            false,
+        );
+        let rt_cmp_op_ty =
+            void_type.fn_type(&[ptr_type.into(), ptr_type.into(), ptr_type.into()], false);
+        let rt_make_closure_ty = void_type.fn_type(
+            &[
+                ptr_type.into(),
+                ptr_type.into(),
+                i64_type.into(),
+                ptr_type.into(),
+                ptr_type.into(),
+            ],
+            false,
+        );
         let rt_unary_ty = void_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
-        let tl_fn_ty = i64_type.fn_type(&[
-            ptr_type.into(), ptr_type.into(), i64_type.into(), ptr_type.into(),
-        ], false);
+        let tl_fn_ty = i64_type.fn_type(
+            &[
+                ptr_type.into(),
+                ptr_type.into(),
+                i64_type.into(),
+                ptr_type.into(),
+            ],
+            false,
+        );
 
         LlvmTypes {
             vmvalue_ptr: ptr_type,

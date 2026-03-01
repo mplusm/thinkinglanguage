@@ -43,10 +43,7 @@ fn send_slack_alert(url: &str, message: &str) -> Result<(), String> {
     if resp.status().is_success() {
         Ok(())
     } else {
-        Err(format!(
-            "Slack alert returned status {}",
-            resp.status()
-        ))
+        Err(format!("Slack alert returned status {}", resp.status()))
     }
 }
 
@@ -67,10 +64,7 @@ fn send_webhook_alert(url: &str, message: &str) -> Result<(), String> {
     if resp.status().is_success() {
         Ok(())
     } else {
-        Err(format!(
-            "Webhook alert returned status {}",
-            resp.status()
-        ))
+        Err(format!("Webhook alert returned status {}", resp.status()))
     }
 }
 

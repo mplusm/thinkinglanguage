@@ -17,9 +17,7 @@ fn make_project(dir: &std::path::Path, name: &str, deps: &str, main_code: &str) 
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
         dir.join("tl.toml"),
-        format!(
-            "[project]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[dependencies]\n{deps}"
-        ),
+        format!("[project]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[dependencies]\n{deps}"),
     )
     .unwrap();
     std::fs::write(dir.join("src/main.tl"), main_code).unwrap();
@@ -42,7 +40,10 @@ fn full_workflow_path_dep() {
     make_project(
         &project,
         "myapp",
-        &format!("mylib = {{ path = \"{}\" }}\n", tmp.path().join("mylib").display()),
+        &format!(
+            "mylib = {{ path = \"{}\" }}\n",
+            tmp.path().join("mylib").display()
+        ),
         "use mylib\nprint(greet(\"world\"))\nprint(double(21))\n",
     );
 
@@ -82,13 +83,21 @@ fn version_constraint_matching() {
 fn lock_file_stability() {
     let tmp = TempDir::new().unwrap();
 
-    make_package(&tmp.path().join("dep"), "dep", "0.5.0", "pub fn x() { 1 }\n");
+    make_package(
+        &tmp.path().join("dep"),
+        "dep",
+        "0.5.0",
+        "pub fn x() { 1 }\n",
+    );
 
     let project = tmp.path().join("project");
     make_project(
         &project,
         "app",
-        &format!("dep = {{ path = \"{}\" }}\n", tmp.path().join("dep").display()),
+        &format!(
+            "dep = {{ path = \"{}\" }}\n",
+            tmp.path().join("dep").display()
+        ),
         "use dep\nprint(x())\n",
     );
 
@@ -123,7 +132,10 @@ fn name_mapping_hyphen_underscore() {
     make_project(
         &project,
         "app",
-        &format!("my-utils = {{ path = \"{}\" }}\n", tmp.path().join("my-utils").display()),
+        &format!(
+            "my-utils = {{ path = \"{}\" }}\n",
+            tmp.path().join("my-utils").display()
+        ),
         "use my_utils\nprint(helper())\n",
     );
 

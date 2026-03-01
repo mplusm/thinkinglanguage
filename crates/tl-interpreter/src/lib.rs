@@ -3,6 +3,7 @@
 //
 // Phase 0: Executes TL programs by walking the AST directly.
 // This is slow but correct — used for REPL and initial development.
+#![allow(clippy::large_enum_variant)]
 // Will be replaced by compiled execution in Phase 2.
 
 use std::collections::HashMap;
@@ -10,13 +11,10 @@ use std::fmt;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 use tl_ast::*;
-use tl_errors::{RuntimeError, TlError};
 use tl_compiler::security::SecurityPolicy;
-use tl_data::translate::{translate_expr, LocalValue, TranslateContext};
-use tl_data::{
-    ArrowDataType, ArrowField, ArrowSchema,
-    DataFrame, DataEngine, JoinType, col,
-};
+use tl_data::translate::{LocalValue, TranslateContext, translate_expr};
+use tl_data::{ArrowDataType, ArrowField, ArrowSchema, DataEngine, DataFrame, JoinType, col};
+use tl_errors::{RuntimeError, TlError};
 use tl_stream::{ConnectorConfig, PipelineDef, PipelineRunner, PipelineStatus, StreamDef};
 
 /// Wrapper around DataFusion DataFrame that implements Debug + Clone.
@@ -110,7 +108,8 @@ impl fmt::Debug for TlChannel {
 }
 
 /// Counter for generating unique generator IDs in the interpreter.
-static INTERP_GENERATOR_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static INTERP_GENERATOR_COUNTER: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
 
 /// A generator for the interpreter — thread-based coroutine model.
 pub enum TlGeneratorKind {
@@ -122,21 +121,46 @@ pub enum TlGeneratorKind {
         resume_tx: mpsc::SyncSender<()>,
     },
     /// Built-in iterator over a list
-    ListIter { items: Vec<Value>, index: Mutex<usize> },
+    ListIter {
+        items: Vec<Value>,
+        index: Mutex<usize>,
+    },
     /// Take at most N items
-    Take { source: Arc<TlGenerator>, remaining: Mutex<usize> },
+    Take {
+        source: Arc<TlGenerator>,
+        remaining: Mutex<usize>,
+    },
     /// Skip first N items
-    Skip { source: Arc<TlGenerator>, remaining: Mutex<usize> },
+    Skip {
+        source: Arc<TlGenerator>,
+        remaining: Mutex<usize>,
+    },
     /// Map a function over yielded values
-    Map { source: Arc<TlGenerator>, func: Value },
+    Map {
+        source: Arc<TlGenerator>,
+        func: Value,
+    },
     /// Filter values with predicate
-    Filter { source: Arc<TlGenerator>, func: Value },
+    Filter {
+        source: Arc<TlGenerator>,
+        func: Value,
+    },
     /// Chain two generators
-    Chain { first: Arc<TlGenerator>, second: Arc<TlGenerator>, on_second: Mutex<bool> },
+    Chain {
+        first: Arc<TlGenerator>,
+        second: Arc<TlGenerator>,
+        on_second: Mutex<bool>,
+    },
     /// Zip two generators
-    Zip { first: Arc<TlGenerator>, second: Arc<TlGenerator> },
+    Zip {
+        first: Arc<TlGenerator>,
+        second: Arc<TlGenerator>,
+    },
     /// Enumerate values with index
-    Enumerate { source: Arc<TlGenerator>, index: Mutex<usize> },
+    Enumerate {
+        source: Arc<TlGenerator>,
+        index: Mutex<usize>,
+    },
 }
 
 pub struct TlGenerator {
@@ -166,7 +190,10 @@ impl Clone for TlGenerator {
         // Generators are not truly cloneable (channels are single-use)
         // but we need Clone for Value. This creates a "consumed" copy.
         TlGenerator {
-            kind: TlGeneratorKind::ListIter { items: vec![], index: Mutex::new(0) },
+            kind: TlGeneratorKind::ListIter {
+                items: vec![],
+                index: Mutex::new(0),
+            },
             done: Mutex::new(true),
             id: self.id,
         }
@@ -349,7 +376,11 @@ impl fmt::Display for Value {
                 write!(f, " }}")
             }
             Value::EnumDef { name, .. } => write!(f, "<enum {name}>"),
-            Value::EnumInstance { type_name, variant, fields } => {
+            Value::EnumInstance {
+                type_name,
+                variant,
+                fields,
+            } => {
                 write!(f, "{type_name}::{variant}")?;
                 if !fields.is_empty() {
                     write!(f, "(")?;
@@ -367,7 +398,9 @@ impl fmt::Display for Value {
             Value::Map(pairs) => {
                 write!(f, "{{")?;
                 for (i, (k, v)) in pairs.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{k}: {v}")?;
                 }
                 write!(f, "}}")
@@ -375,7 +408,9 @@ impl fmt::Display for Value {
             Value::Set(items) => {
                 write!(f, "set{{")?;
                 for (i, item) in items.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{item}")?;
                 }
                 write!(f, "}}")
@@ -463,6 +498,7 @@ enum Signal {
     Break,
     Continue,
     Throw(Value),
+    #[allow(dead_code)]
     Yield(Value),
 }
 
@@ -473,7 +509,7 @@ enum GenSignal {
     Break,
     Continue,
     Throw(Value),
-    Yield(Value),
+    Yield(#[allow(dead_code)] Value),
 }
 
 /// Variable environment (scope chain)
@@ -505,41 +541,113 @@ impl Environment {
         global.insert("any".to_string(), Value::Builtin("any".to_string()));
         global.insert("all".to_string(), Value::Builtin("all".to_string()));
         // Data engine builtins
-        global.insert("read_csv".to_string(), Value::Builtin("read_csv".to_string()));
-        global.insert("read_parquet".to_string(), Value::Builtin("read_parquet".to_string()));
-        global.insert("write_csv".to_string(), Value::Builtin("write_csv".to_string()));
-        global.insert("write_parquet".to_string(), Value::Builtin("write_parquet".to_string()));
+        global.insert(
+            "read_csv".to_string(),
+            Value::Builtin("read_csv".to_string()),
+        );
+        global.insert(
+            "read_parquet".to_string(),
+            Value::Builtin("read_parquet".to_string()),
+        );
+        global.insert(
+            "write_csv".to_string(),
+            Value::Builtin("write_csv".to_string()),
+        );
+        global.insert(
+            "write_parquet".to_string(),
+            Value::Builtin("write_parquet".to_string()),
+        );
         global.insert("collect".to_string(), Value::Builtin("collect".to_string()));
         global.insert("show".to_string(), Value::Builtin("show".to_string()));
-        global.insert("describe".to_string(), Value::Builtin("describe".to_string()));
+        global.insert(
+            "describe".to_string(),
+            Value::Builtin("describe".to_string()),
+        );
         global.insert("head".to_string(), Value::Builtin("head".to_string()));
-        global.insert("postgres".to_string(), Value::Builtin("postgres".to_string()));
+        global.insert(
+            "postgres".to_string(),
+            Value::Builtin("postgres".to_string()),
+        );
         // AI builtins
         global.insert("tensor".to_string(), Value::Builtin("tensor".to_string()));
-        global.insert("tensor_zeros".to_string(), Value::Builtin("tensor_zeros".to_string()));
-        global.insert("tensor_ones".to_string(), Value::Builtin("tensor_ones".to_string()));
-        global.insert("tensor_shape".to_string(), Value::Builtin("tensor_shape".to_string()));
-        global.insert("tensor_reshape".to_string(), Value::Builtin("tensor_reshape".to_string()));
-        global.insert("tensor_transpose".to_string(), Value::Builtin("tensor_transpose".to_string()));
-        global.insert("tensor_sum".to_string(), Value::Builtin("tensor_sum".to_string()));
-        global.insert("tensor_mean".to_string(), Value::Builtin("tensor_mean".to_string()));
-        global.insert("tensor_dot".to_string(), Value::Builtin("tensor_dot".to_string()));
+        global.insert(
+            "tensor_zeros".to_string(),
+            Value::Builtin("tensor_zeros".to_string()),
+        );
+        global.insert(
+            "tensor_ones".to_string(),
+            Value::Builtin("tensor_ones".to_string()),
+        );
+        global.insert(
+            "tensor_shape".to_string(),
+            Value::Builtin("tensor_shape".to_string()),
+        );
+        global.insert(
+            "tensor_reshape".to_string(),
+            Value::Builtin("tensor_reshape".to_string()),
+        );
+        global.insert(
+            "tensor_transpose".to_string(),
+            Value::Builtin("tensor_transpose".to_string()),
+        );
+        global.insert(
+            "tensor_sum".to_string(),
+            Value::Builtin("tensor_sum".to_string()),
+        );
+        global.insert(
+            "tensor_mean".to_string(),
+            Value::Builtin("tensor_mean".to_string()),
+        );
+        global.insert(
+            "tensor_dot".to_string(),
+            Value::Builtin("tensor_dot".to_string()),
+        );
         global.insert("predict".to_string(), Value::Builtin("predict".to_string()));
         global.insert("embed".to_string(), Value::Builtin("embed".to_string()));
-        global.insert("similarity".to_string(), Value::Builtin("similarity".to_string()));
-        global.insert("ai_complete".to_string(), Value::Builtin("ai_complete".to_string()));
+        global.insert(
+            "similarity".to_string(),
+            Value::Builtin("similarity".to_string()),
+        );
+        global.insert(
+            "ai_complete".to_string(),
+            Value::Builtin("ai_complete".to_string()),
+        );
         global.insert("ai_chat".to_string(), Value::Builtin("ai_chat".to_string()));
-        global.insert("model_save".to_string(), Value::Builtin("model_save".to_string()));
-        global.insert("model_load".to_string(), Value::Builtin("model_load".to_string()));
-        global.insert("model_register".to_string(), Value::Builtin("model_register".to_string()));
-        global.insert("model_list".to_string(), Value::Builtin("model_list".to_string()));
-        global.insert("model_get".to_string(), Value::Builtin("model_get".to_string()));
+        global.insert(
+            "model_save".to_string(),
+            Value::Builtin("model_save".to_string()),
+        );
+        global.insert(
+            "model_load".to_string(),
+            Value::Builtin("model_load".to_string()),
+        );
+        global.insert(
+            "model_register".to_string(),
+            Value::Builtin("model_register".to_string()),
+        );
+        global.insert(
+            "model_list".to_string(),
+            Value::Builtin("model_list".to_string()),
+        );
+        global.insert(
+            "model_get".to_string(),
+            Value::Builtin("model_get".to_string()),
+        );
         // Streaming builtins
-        global.insert("alert_slack".to_string(), Value::Builtin("alert_slack".to_string()));
-        global.insert("alert_webhook".to_string(), Value::Builtin("alert_webhook".to_string()));
+        global.insert(
+            "alert_slack".to_string(),
+            Value::Builtin("alert_slack".to_string()),
+        );
+        global.insert(
+            "alert_webhook".to_string(),
+            Value::Builtin("alert_webhook".to_string()),
+        );
         global.insert("emit".to_string(), Value::Builtin("emit".to_string()));
         global.insert("lineage".to_string(), Value::Builtin("lineage".to_string()));
-        global.insert("run_pipeline".to_string(), Value::Builtin("run_pipeline".to_string()));
+        global.insert(
+            "run_pipeline".to_string(),
+            Value::Builtin("run_pipeline".to_string()),
+        );
         // Math builtins
         global.insert("sqrt".to_string(), Value::Builtin("sqrt".to_string()));
         global.insert("pow".to_string(), Value::Builtin("pow".to_string()));
@@ -554,53 +662,122 @@ impl Environment {
         global.insert("log10".to_string(), Value::Builtin("log10".to_string()));
         global.insert("join".to_string(), Value::Builtin("join".to_string()));
         // Phase 6: Stdlib & Ecosystem
-        global.insert("json_parse".to_string(), Value::Builtin("json_parse".to_string()));
-        global.insert("json_stringify".to_string(), Value::Builtin("json_stringify".to_string()));
-        global.insert("map_from".to_string(), Value::Builtin("map_from".to_string()));
-        global.insert("read_file".to_string(), Value::Builtin("read_file".to_string()));
-        global.insert("write_file".to_string(), Value::Builtin("write_file".to_string()));
-        global.insert("append_file".to_string(), Value::Builtin("append_file".to_string()));
-        global.insert("file_exists".to_string(), Value::Builtin("file_exists".to_string()));
-        global.insert("list_dir".to_string(), Value::Builtin("list_dir".to_string()));
+        global.insert(
+            "json_parse".to_string(),
+            Value::Builtin("json_parse".to_string()),
+        );
+        global.insert(
+            "json_stringify".to_string(),
+            Value::Builtin("json_stringify".to_string()),
+        );
+        global.insert(
+            "map_from".to_string(),
+            Value::Builtin("map_from".to_string()),
+        );
+        global.insert(
+            "read_file".to_string(),
+            Value::Builtin("read_file".to_string()),
+        );
+        global.insert(
+            "write_file".to_string(),
+            Value::Builtin("write_file".to_string()),
+        );
+        global.insert(
+            "append_file".to_string(),
+            Value::Builtin("append_file".to_string()),
+        );
+        global.insert(
+            "file_exists".to_string(),
+            Value::Builtin("file_exists".to_string()),
+        );
+        global.insert(
+            "list_dir".to_string(),
+            Value::Builtin("list_dir".to_string()),
+        );
         global.insert("env_get".to_string(), Value::Builtin("env_get".to_string()));
         global.insert("env_set".to_string(), Value::Builtin("env_set".to_string()));
-        global.insert("regex_match".to_string(), Value::Builtin("regex_match".to_string()));
-        global.insert("regex_find".to_string(), Value::Builtin("regex_find".to_string()));
-        global.insert("regex_replace".to_string(), Value::Builtin("regex_replace".to_string()));
+        global.insert(
+            "regex_match".to_string(),
+            Value::Builtin("regex_match".to_string()),
+        );
+        global.insert(
+            "regex_find".to_string(),
+            Value::Builtin("regex_find".to_string()),
+        );
+        global.insert(
+            "regex_replace".to_string(),
+            Value::Builtin("regex_replace".to_string()),
+        );
         global.insert("now".to_string(), Value::Builtin("now".to_string()));
-        global.insert("date_format".to_string(), Value::Builtin("date_format".to_string()));
-        global.insert("date_parse".to_string(), Value::Builtin("date_parse".to_string()));
+        global.insert(
+            "date_format".to_string(),
+            Value::Builtin("date_format".to_string()),
+        );
+        global.insert(
+            "date_parse".to_string(),
+            Value::Builtin("date_parse".to_string()),
+        );
         global.insert("zip".to_string(), Value::Builtin("zip".to_string()));
-        global.insert("enumerate".to_string(), Value::Builtin("enumerate".to_string()));
+        global.insert(
+            "enumerate".to_string(),
+            Value::Builtin("enumerate".to_string()),
+        );
         global.insert("bool".to_string(), Value::Builtin("bool".to_string()));
         // Assert builtins
         global.insert("assert".to_string(), Value::Builtin("assert".to_string()));
-        global.insert("assert_eq".to_string(), Value::Builtin("assert_eq".to_string()));
+        global.insert(
+            "assert_eq".to_string(),
+            Value::Builtin("assert_eq".to_string()),
+        );
         // HTTP builtins
-        global.insert("http_get".to_string(), Value::Builtin("http_get".to_string()));
-        global.insert("http_post".to_string(), Value::Builtin("http_post".to_string()));
+        global.insert(
+            "http_get".to_string(),
+            Value::Builtin("http_get".to_string()),
+        );
+        global.insert(
+            "http_post".to_string(),
+            Value::Builtin("http_post".to_string()),
+        );
         // Concurrency builtins
         global.insert("spawn".to_string(), Value::Builtin("spawn".to_string()));
         global.insert("sleep".to_string(), Value::Builtin("sleep".to_string()));
         global.insert("channel".to_string(), Value::Builtin("channel".to_string()));
         global.insert("send".to_string(), Value::Builtin("send".to_string()));
         global.insert("recv".to_string(), Value::Builtin("recv".to_string()));
-        global.insert("try_recv".to_string(), Value::Builtin("try_recv".to_string()));
-        global.insert("await_all".to_string(), Value::Builtin("await_all".to_string()));
+        global.insert(
+            "try_recv".to_string(),
+            Value::Builtin("try_recv".to_string()),
+        );
+        global.insert(
+            "await_all".to_string(),
+            Value::Builtin("await_all".to_string()),
+        );
         global.insert("pmap".to_string(), Value::Builtin("pmap".to_string()));
         global.insert("timeout".to_string(), Value::Builtin("timeout".to_string()));
         // Phase 8: Iterators & Generators
         global.insert("next".to_string(), Value::Builtin("next".to_string()));
-        global.insert("is_generator".to_string(), Value::Builtin("is_generator".to_string()));
+        global.insert(
+            "is_generator".to_string(),
+            Value::Builtin("is_generator".to_string()),
+        );
         global.insert("iter".to_string(), Value::Builtin("iter".to_string()));
         global.insert("take".to_string(), Value::Builtin("take".to_string()));
         global.insert("skip".to_string(), Value::Builtin("skip".to_string()));
-        global.insert("gen_collect".to_string(), Value::Builtin("gen_collect".to_string()));
+        global.insert(
+            "gen_collect".to_string(),
+            Value::Builtin("gen_collect".to_string()),
+        );
         global.insert("gen_map".to_string(), Value::Builtin("gen_map".to_string()));
-        global.insert("gen_filter".to_string(), Value::Builtin("gen_filter".to_string()));
+        global.insert(
+            "gen_filter".to_string(),
+            Value::Builtin("gen_filter".to_string()),
+        );
         global.insert("chain".to_string(), Value::Builtin("chain".to_string()));
         global.insert("gen_zip".to_string(), Value::Builtin("gen_zip".to_string()));
-        global.insert("gen_enumerate".to_string(), Value::Builtin("gen_enumerate".to_string()));
+        global.insert(
+            "gen_enumerate".to_string(),
+            Value::Builtin("gen_enumerate".to_string()),
+        );
         // Phase 10: Result builtins
         global.insert("Ok".to_string(), Value::Builtin("Ok".to_string()));
         global.insert("Err".to_string(), Value::Builtin("Err".to_string()));
@@ -608,104 +785,275 @@ impl Environment {
         global.insert("is_err".to_string(), Value::Builtin("is_err".to_string()));
         global.insert("unwrap".to_string(), Value::Builtin("unwrap".to_string()));
         // Phase 10: Set builtins
-        global.insert("set_from".to_string(), Value::Builtin("set_from".to_string()));
+        global.insert(
+            "set_from".to_string(),
+            Value::Builtin("set_from".to_string()),
+        );
         global.insert("set_add".to_string(), Value::Builtin("set_add".to_string()));
-        global.insert("set_remove".to_string(), Value::Builtin("set_remove".to_string()));
-        global.insert("set_contains".to_string(), Value::Builtin("set_contains".to_string()));
-        global.insert("set_union".to_string(), Value::Builtin("set_union".to_string()));
-        global.insert("set_intersection".to_string(), Value::Builtin("set_intersection".to_string()));
-        global.insert("set_difference".to_string(), Value::Builtin("set_difference".to_string()));
+        global.insert(
+            "set_remove".to_string(),
+            Value::Builtin("set_remove".to_string()),
+        );
+        global.insert(
+            "set_contains".to_string(),
+            Value::Builtin("set_contains".to_string()),
+        );
+        global.insert(
+            "set_union".to_string(),
+            Value::Builtin("set_union".to_string()),
+        );
+        global.insert(
+            "set_intersection".to_string(),
+            Value::Builtin("set_intersection".to_string()),
+        );
+        global.insert(
+            "set_difference".to_string(),
+            Value::Builtin("set_difference".to_string()),
+        );
         // Phase 15: Data Quality & Connectors
-        global.insert("fill_null".to_string(), Value::Builtin("fill_null".to_string()));
-        global.insert("drop_null".to_string(), Value::Builtin("drop_null".to_string()));
+        global.insert(
+            "fill_null".to_string(),
+            Value::Builtin("fill_null".to_string()),
+        );
+        global.insert(
+            "drop_null".to_string(),
+            Value::Builtin("drop_null".to_string()),
+        );
         global.insert("dedup".to_string(), Value::Builtin("dedup".to_string()));
         global.insert("clamp".to_string(), Value::Builtin("clamp".to_string()));
-        global.insert("data_profile".to_string(), Value::Builtin("data_profile".to_string()));
-        global.insert("row_count".to_string(), Value::Builtin("row_count".to_string()));
-        global.insert("null_rate".to_string(), Value::Builtin("null_rate".to_string()));
-        global.insert("is_unique".to_string(), Value::Builtin("is_unique".to_string()));
-        global.insert("is_email".to_string(), Value::Builtin("is_email".to_string()));
+        global.insert(
+            "data_profile".to_string(),
+            Value::Builtin("data_profile".to_string()),
+        );
+        global.insert(
+            "row_count".to_string(),
+            Value::Builtin("row_count".to_string()),
+        );
+        global.insert(
+            "null_rate".to_string(),
+            Value::Builtin("null_rate".to_string()),
+        );
+        global.insert(
+            "is_unique".to_string(),
+            Value::Builtin("is_unique".to_string()),
+        );
+        global.insert(
+            "is_email".to_string(),
+            Value::Builtin("is_email".to_string()),
+        );
         global.insert("is_url".to_string(), Value::Builtin("is_url".to_string()));
-        global.insert("is_phone".to_string(), Value::Builtin("is_phone".to_string()));
-        global.insert("is_between".to_string(), Value::Builtin("is_between".to_string()));
-        global.insert("levenshtein".to_string(), Value::Builtin("levenshtein".to_string()));
+        global.insert(
+            "is_phone".to_string(),
+            Value::Builtin("is_phone".to_string()),
+        );
+        global.insert(
+            "is_between".to_string(),
+            Value::Builtin("is_between".to_string()),
+        );
+        global.insert(
+            "levenshtein".to_string(),
+            Value::Builtin("levenshtein".to_string()),
+        );
         global.insert("soundex".to_string(), Value::Builtin("soundex".to_string()));
-        global.insert("read_mysql".to_string(), Value::Builtin("read_mysql".to_string()));
-        global.insert("read_sqlite".to_string(), Value::Builtin("read_sqlite".to_string()));
-        global.insert("write_sqlite".to_string(), Value::Builtin("write_sqlite".to_string()));
-        global.insert("redis_connect".to_string(), Value::Builtin("redis_connect".to_string()));
-        global.insert("redis_get".to_string(), Value::Builtin("redis_get".to_string()));
-        global.insert("redis_set".to_string(), Value::Builtin("redis_set".to_string()));
-        global.insert("redis_del".to_string(), Value::Builtin("redis_del".to_string()));
-        global.insert("graphql_query".to_string(), Value::Builtin("graphql_query".to_string()));
-        global.insert("register_s3".to_string(), Value::Builtin("register_s3".to_string()));
+        global.insert(
+            "read_mysql".to_string(),
+            Value::Builtin("read_mysql".to_string()),
+        );
+        global.insert(
+            "read_sqlite".to_string(),
+            Value::Builtin("read_sqlite".to_string()),
+        );
+        global.insert(
+            "write_sqlite".to_string(),
+            Value::Builtin("write_sqlite".to_string()),
+        );
+        global.insert(
+            "redis_connect".to_string(),
+            Value::Builtin("redis_connect".to_string()),
+        );
+        global.insert(
+            "redis_get".to_string(),
+            Value::Builtin("redis_get".to_string()),
+        );
+        global.insert(
+            "redis_set".to_string(),
+            Value::Builtin("redis_set".to_string()),
+        );
+        global.insert(
+            "redis_del".to_string(),
+            Value::Builtin("redis_del".to_string()),
+        );
+        global.insert(
+            "graphql_query".to_string(),
+            Value::Builtin("graphql_query".to_string()),
+        );
+        global.insert(
+            "register_s3".to_string(),
+            Value::Builtin("register_s3".to_string()),
+        );
         // Phase 20: Python FFI
-        global.insert("py_import".to_string(), Value::Builtin("py_import".to_string()));
+        global.insert(
+            "py_import".to_string(),
+            Value::Builtin("py_import".to_string()),
+        );
         global.insert("py_call".to_string(), Value::Builtin("py_call".to_string()));
         global.insert("py_eval".to_string(), Value::Builtin("py_eval".to_string()));
-        global.insert("py_getattr".to_string(), Value::Builtin("py_getattr".to_string()));
-        global.insert("py_setattr".to_string(), Value::Builtin("py_setattr".to_string()));
-        global.insert("py_to_tl".to_string(), Value::Builtin("py_to_tl".to_string()));
+        global.insert(
+            "py_getattr".to_string(),
+            Value::Builtin("py_getattr".to_string()),
+        );
+        global.insert(
+            "py_setattr".to_string(),
+            Value::Builtin("py_setattr".to_string()),
+        );
+        global.insert(
+            "py_to_tl".to_string(),
+            Value::Builtin("py_to_tl".to_string()),
+        );
         // Phase 21: Schema Evolution
-        global.insert("schema_register".to_string(), Value::Builtin("schema_register".to_string()));
-        global.insert("schema_get".to_string(), Value::Builtin("schema_get".to_string()));
-        global.insert("schema_latest".to_string(), Value::Builtin("schema_latest".to_string()));
-        global.insert("schema_history".to_string(), Value::Builtin("schema_history".to_string()));
-        global.insert("schema_check".to_string(), Value::Builtin("schema_check".to_string()));
-        global.insert("schema_diff".to_string(), Value::Builtin("schema_diff".to_string()));
-        global.insert("schema_versions".to_string(), Value::Builtin("schema_versions".to_string()));
-        global.insert("schema_fields".to_string(), Value::Builtin("schema_fields".to_string()));
+        global.insert(
+            "schema_register".to_string(),
+            Value::Builtin("schema_register".to_string()),
+        );
+        global.insert(
+            "schema_get".to_string(),
+            Value::Builtin("schema_get".to_string()),
+        );
+        global.insert(
+            "schema_latest".to_string(),
+            Value::Builtin("schema_latest".to_string()),
+        );
+        global.insert(
+            "schema_history".to_string(),
+            Value::Builtin("schema_history".to_string()),
+        );
+        global.insert(
+            "schema_check".to_string(),
+            Value::Builtin("schema_check".to_string()),
+        );
+        global.insert(
+            "schema_diff".to_string(),
+            Value::Builtin("schema_diff".to_string()),
+        );
+        global.insert(
+            "schema_versions".to_string(),
+            Value::Builtin("schema_versions".to_string()),
+        );
+        global.insert(
+            "schema_fields".to_string(),
+            Value::Builtin("schema_fields".to_string()),
+        );
         // Phase 22: Advanced Types
         global.insert("decimal".to_string(), Value::Builtin("decimal".to_string()));
         // Phase 23: Security & Access Control
-        global.insert("secret_get".to_string(), Value::Builtin("secret_get".to_string()));
-        global.insert("secret_set".to_string(), Value::Builtin("secret_set".to_string()));
-        global.insert("secret_delete".to_string(), Value::Builtin("secret_delete".to_string()));
-        global.insert("secret_list".to_string(), Value::Builtin("secret_list".to_string()));
-        global.insert("check_permission".to_string(), Value::Builtin("check_permission".to_string()));
-        global.insert("mask_email".to_string(), Value::Builtin("mask_email".to_string()));
-        global.insert("mask_phone".to_string(), Value::Builtin("mask_phone".to_string()));
+        global.insert(
+            "secret_get".to_string(),
+            Value::Builtin("secret_get".to_string()),
+        );
+        global.insert(
+            "secret_set".to_string(),
+            Value::Builtin("secret_set".to_string()),
+        );
+        global.insert(
+            "secret_delete".to_string(),
+            Value::Builtin("secret_delete".to_string()),
+        );
+        global.insert(
+            "secret_list".to_string(),
+            Value::Builtin("secret_list".to_string()),
+        );
+        global.insert(
+            "check_permission".to_string(),
+            Value::Builtin("check_permission".to_string()),
+        );
+        global.insert(
+            "mask_email".to_string(),
+            Value::Builtin("mask_email".to_string()),
+        );
+        global.insert(
+            "mask_phone".to_string(),
+            Value::Builtin("mask_phone".to_string()),
+        );
         global.insert("mask_cc".to_string(), Value::Builtin("mask_cc".to_string()));
         global.insert("redact".to_string(), Value::Builtin("redact".to_string()));
         global.insert("hash".to_string(), Value::Builtin("hash".to_string()));
         // Phase 25: Async builtins
-        global.insert("async_read_file".to_string(), Value::Builtin("async_read_file".to_string()));
-        global.insert("async_write_file".to_string(), Value::Builtin("async_write_file".to_string()));
-        global.insert("async_http_get".to_string(), Value::Builtin("async_http_get".to_string()));
-        global.insert("async_http_post".to_string(), Value::Builtin("async_http_post".to_string()));
-        global.insert("async_sleep".to_string(), Value::Builtin("async_sleep".to_string()));
+        global.insert(
+            "async_read_file".to_string(),
+            Value::Builtin("async_read_file".to_string()),
+        );
+        global.insert(
+            "async_write_file".to_string(),
+            Value::Builtin("async_write_file".to_string()),
+        );
+        global.insert(
+            "async_http_get".to_string(),
+            Value::Builtin("async_http_get".to_string()),
+        );
+        global.insert(
+            "async_http_post".to_string(),
+            Value::Builtin("async_http_post".to_string()),
+        );
+        global.insert(
+            "async_sleep".to_string(),
+            Value::Builtin("async_sleep".to_string()),
+        );
         global.insert("select".to_string(), Value::Builtin("select".to_string()));
-        global.insert("race_all".to_string(), Value::Builtin("race_all".to_string()));
-        global.insert("async_map".to_string(), Value::Builtin("async_map".to_string()));
-        global.insert("async_filter".to_string(), Value::Builtin("async_filter".to_string()));
+        global.insert(
+            "race_all".to_string(),
+            Value::Builtin("race_all".to_string()),
+        );
+        global.insert(
+            "async_map".to_string(),
+            Value::Builtin("async_map".to_string()),
+        );
+        global.insert(
+            "async_filter".to_string(),
+            Value::Builtin("async_filter".to_string()),
+        );
         // Phase 27: Data Error Hierarchy
-        global.insert("is_error".to_string(), Value::Builtin("is_error".to_string()));
-        global.insert("error_type".to_string(), Value::Builtin("error_type".to_string()));
-        global.insert("DataError".to_string(), Value::EnumDef {
-            name: "DataError".to_string(),
-            variants: vec![
-                ("ParseError".to_string(), 2),
-                ("SchemaError".to_string(), 3),
-                ("ValidationError".to_string(), 2),
-                ("NotFound".to_string(), 1),
-            ],
-        });
-        global.insert("NetworkError".to_string(), Value::EnumDef {
-            name: "NetworkError".to_string(),
-            variants: vec![
-                ("ConnectionError".to_string(), 2),
-                ("TimeoutError".to_string(), 1),
-                ("HttpError".to_string(), 2),
-            ],
-        });
-        global.insert("ConnectorError".to_string(), Value::EnumDef {
-            name: "ConnectorError".to_string(),
-            variants: vec![
-                ("AuthError".to_string(), 2),
-                ("QueryError".to_string(), 2),
-                ("ConfigError".to_string(), 2),
-            ],
-        });
+        global.insert(
+            "is_error".to_string(),
+            Value::Builtin("is_error".to_string()),
+        );
+        global.insert(
+            "error_type".to_string(),
+            Value::Builtin("error_type".to_string()),
+        );
+        global.insert(
+            "DataError".to_string(),
+            Value::EnumDef {
+                name: "DataError".to_string(),
+                variants: vec![
+                    ("ParseError".to_string(), 2),
+                    ("SchemaError".to_string(), 3),
+                    ("ValidationError".to_string(), 2),
+                    ("NotFound".to_string(), 1),
+                ],
+            },
+        );
+        global.insert(
+            "NetworkError".to_string(),
+            Value::EnumDef {
+                name: "NetworkError".to_string(),
+                variants: vec![
+                    ("ConnectionError".to_string(), 2),
+                    ("TimeoutError".to_string(), 1),
+                    ("HttpError".to_string(), 2),
+                ],
+            },
+        );
+        global.insert(
+            "ConnectorError".to_string(),
+            Value::EnumDef {
+                name: "ConnectorError".to_string(),
+                variants: vec![
+                    ("AuthError".to_string(), 2),
+                    ("QueryError".to_string(), 2),
+                    ("ConfigError".to_string(), 2),
+                ],
+            },
+        );
 
         Self {
             scopes: vec![global],
@@ -817,7 +1165,7 @@ impl Interpreter {
                 tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
                     .build()
-                    .expect("Failed to create tokio runtime")
+                    .expect("Failed to create tokio runtime"),
             ));
         }
         self.runtime.as_ref().unwrap().clone()
@@ -843,14 +1191,14 @@ impl Interpreter {
                         message: format!("Unhandled throw: {val}"),
                         span: None,
                         stack_trace: vec![],
-                        }))
+                    }));
                 }
                 Signal::Break | Signal::Continue => {
                     return Err(TlError::Runtime(RuntimeError {
                         message: "break/continue outside of loop".to_string(),
                         span: None,
                         stack_trace: vec![],
-                        }))
+                    }));
                 }
                 Signal::Yield(_) => {} // yield outside generator is a no-op at top level
             }
@@ -870,7 +1218,6 @@ impl Interpreter {
             _ => Ok(self.last_expr_value.clone().unwrap_or(Value::None)),
         }
     }
-
 }
 
 impl Default for Interpreter {
@@ -884,11 +1231,7 @@ impl Default for Interpreter {
 impl Interpreter {
     fn exec_stmt(&mut self, stmt: &Stmt) -> Result<Signal, TlError> {
         match &stmt.kind {
-            StmtKind::Let {
-                name,
-                value,
-                ..
-            } => {
+            StmtKind::Let { name, value, .. } => {
                 let val = self.eval_expr(value)?;
                 self.env.set(name.clone(), val);
                 Ok(Signal::None)
@@ -957,15 +1300,16 @@ impl Interpreter {
                 }
                 Ok(Signal::None)
             }
-            StmtKind::For { name, iter, body }
-            | StmtKind::ParallelFor { name, iter, body } => {
+            StmtKind::For { name, iter, body } | StmtKind::ParallelFor { name, iter, body } => {
                 let iter_val = self.eval_expr(iter)?;
                 // Handle generator iteration
                 if let Value::Generator(ref g) = iter_val {
                     let g = g.clone();
                     loop {
                         let val = self.interpreter_next(&g)?;
-                        if matches!(val, Value::None) { break; }
+                        if matches!(val, Value::None) {
+                            break;
+                        }
                         self.env.push_scope();
                         self.env.set(name.clone(), val);
                         let signal = self.exec_block(body)?;
@@ -984,7 +1328,8 @@ impl Interpreter {
                     Value::List(items) => items,
                     Value::Map(pairs) => {
                         // Map iteration yields [key, value] pairs
-                        pairs.into_iter()
+                        pairs
+                            .into_iter()
                             .map(|(k, v)| Value::List(vec![Value::String(k), v]))
                             .collect()
                     }
@@ -994,7 +1339,7 @@ impl Interpreter {
                             message: format!("Cannot iterate over {}", iter_val.type_name()),
                             span: None,
                             stack_trace: vec![],
-                            }))
+                        }));
                     }
                 };
                 for item in items {
@@ -1011,7 +1356,12 @@ impl Interpreter {
                 }
                 Ok(Signal::None)
             }
-            StmtKind::Schema { name, fields, version, .. } => {
+            StmtKind::Schema {
+                name,
+                fields,
+                version,
+                ..
+            } => {
                 let arrow_fields: Vec<ArrowField> = fields
                     .iter()
                     .map(|f| {
@@ -1033,18 +1383,22 @@ impl Interpreter {
                                     if let Ok(v) = rest.trim().parse::<i64>() {
                                         metadata.field_since.insert(f.name.clone(), v);
                                     }
-                                } else if let Some(rest) = trimmed.strip_prefix("@deprecated") {
-                                    if let Ok(v) = rest.trim().parse::<i64>() {
-                                        metadata.field_deprecated.insert(f.name.clone(), v);
-                                    }
+                                } else if let Some(rest) = trimmed.strip_prefix("@deprecated")
+                                    && let Ok(v) = rest.trim().parse::<i64>()
+                                {
+                                    metadata.field_deprecated.insert(f.name.clone(), v);
                                 }
                             }
                         }
                         if let Some(ref _def) = f.default_value {
-                            metadata.field_defaults.insert(f.name.clone(), format!("{:?}", f.default_value));
+                            metadata
+                                .field_defaults
+                                .insert(f.name.clone(), format!("{:?}", f.default_value));
                         }
                     }
-                    let _ = self.schema_registry.register(name, *ver, arrow_schema.clone(), metadata);
+                    let _ =
+                        self.schema_registry
+                            .register(name, *ver, arrow_schema.clone(), metadata);
                 }
 
                 let schema = TlSchema {
@@ -1054,21 +1408,42 @@ impl Interpreter {
                 self.env.set(name.clone(), Value::Schema(schema));
                 Ok(Signal::None)
             }
-            StmtKind::Train { name, algorithm, config } => {
-                self.exec_train(name, algorithm, config)
-            }
-            StmtKind::Pipeline { name, extract, transform, load, schedule, timeout, retries, on_failure, on_success } => {
-                self.exec_pipeline(name, extract, transform, load, schedule, timeout, retries, on_failure, on_success)
-            }
-            StmtKind::StreamDecl { name, source, transform, sink, window, watermark } => {
-                self.exec_stream_decl(name, source, transform, sink, window, watermark)
-            }
-            StmtKind::SourceDecl { name, connector_type, config } => {
-                self.exec_source_decl(name, connector_type, config)
-            }
-            StmtKind::SinkDecl { name, connector_type, config } => {
-                self.exec_sink_decl(name, connector_type, config)
-            }
+            StmtKind::Train {
+                name,
+                algorithm,
+                config,
+            } => self.exec_train(name, algorithm, config),
+            StmtKind::Pipeline {
+                name,
+                extract,
+                transform,
+                load,
+                schedule,
+                timeout,
+                retries,
+                on_failure,
+                on_success,
+            } => self.exec_pipeline(
+                name, extract, transform, load, schedule, timeout, retries, on_failure, on_success,
+            ),
+            StmtKind::StreamDecl {
+                name,
+                source,
+                transform,
+                sink,
+                window,
+                watermark,
+            } => self.exec_stream_decl(name, source, transform, sink, window, watermark),
+            StmtKind::SourceDecl {
+                name,
+                connector_type,
+                config,
+            } => self.exec_source_decl(name, connector_type, config),
+            StmtKind::SinkDecl {
+                name,
+                connector_type,
+                config,
+            } => self.exec_sink_decl(name, connector_type, config),
             StmtKind::StructDecl { name, fields, .. } => {
                 let field_names: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
                 self.env.set(
@@ -1094,13 +1469,19 @@ impl Interpreter {
                 );
                 Ok(Signal::None)
             }
-            StmtKind::ImplBlock { type_name, methods, .. } => {
-                let mut method_map = self
-                    .method_table
-                    .remove(type_name)
-                    .unwrap_or_default();
+            StmtKind::ImplBlock {
+                type_name, methods, ..
+            } => {
+                let mut method_map = self.method_table.remove(type_name).unwrap_or_default();
                 for method in methods {
-                    if let StmtKind::FnDecl { name, params, body, is_generator, .. } = &method.kind {
+                    if let StmtKind::FnDecl {
+                        name,
+                        params,
+                        body,
+                        is_generator,
+                        ..
+                    } = &method.kind
+                    {
                         method_map.insert(
                             name.clone(),
                             Value::Function {
@@ -1115,7 +1496,11 @@ impl Interpreter {
                 self.method_table.insert(type_name.clone(), method_map);
                 Ok(Signal::None)
             }
-            StmtKind::TryCatch { try_body, catch_var, catch_body } => {
+            StmtKind::TryCatch {
+                try_body,
+                catch_var,
+                catch_body,
+            } => {
                 self.env.push_scope();
                 let mut result = Signal::None;
                 let mut caught = None;
@@ -1171,9 +1556,7 @@ impl Interpreter {
                 let val = self.eval_expr(expr)?;
                 Ok(Signal::Throw(val))
             }
-            StmtKind::Import { path, alias } => {
-                self.exec_import(path, alias.as_deref())
-            }
+            StmtKind::Import { path, alias } => self.exec_import(path, alias.as_deref()),
             StmtKind::Test { name, body } => {
                 if self.test_mode {
                     self.env.push_scope();
@@ -1207,9 +1590,7 @@ impl Interpreter {
                 }
                 Ok(Signal::None)
             }
-            StmtKind::Use { item, .. } => {
-                self.exec_use(item)
-            }
+            StmtKind::Use { item, .. } => self.exec_use(item),
             StmtKind::ModDecl { .. } => {
                 // ModDecl is handled at module load time
                 Ok(Signal::None)
@@ -1218,14 +1599,20 @@ impl Interpreter {
                 // Trait definitions are type-checker only; no runtime effect
                 Ok(Signal::None)
             }
-            StmtKind::TraitImpl { type_name, methods, .. } => {
+            StmtKind::TraitImpl {
+                type_name, methods, ..
+            } => {
                 // Execute as a regular impl block — trait impls are type-erased at runtime
-                let mut method_map = self
-                    .method_table
-                    .remove(type_name)
-                    .unwrap_or_default();
+                let mut method_map = self.method_table.remove(type_name).unwrap_or_default();
                 for method in methods {
-                    if let StmtKind::FnDecl { name, params, body, is_generator, .. } = &method.kind {
+                    if let StmtKind::FnDecl {
+                        name,
+                        params,
+                        body,
+                        is_generator,
+                        ..
+                    } = &method.kind
+                    {
                         method_map.insert(
                             name.clone(),
                             Value::Function {
@@ -1252,50 +1639,74 @@ impl Interpreter {
                 // Type aliases are type-checker only; no runtime effect
                 Ok(Signal::None)
             }
-            StmtKind::Migrate { schema_name, from_version, to_version, operations } => {
-                self.exec_migrate(schema_name, *from_version, *to_version, operations)
-            }
+            StmtKind::Migrate {
+                schema_name,
+                from_version,
+                to_version,
+                operations,
+            } => self.exec_migrate(schema_name, *from_version, *to_version, operations),
             StmtKind::Break => Ok(Signal::Break),
             StmtKind::Continue => Ok(Signal::Continue),
         }
     }
 
     /// Execute a migrate block — apply migration operations to schema registry
-    fn exec_migrate(&mut self, schema_name: &str, from_version: i64, to_version: i64, operations: &[MigrateOp]) -> Result<Signal, TlError> {
-        let ops: Vec<tl_compiler::schema::MigrationOp> = operations.iter().map(|op| {
-            match op {
-                MigrateOp::AddColumn { name, type_ann, default } => {
-                    tl_compiler::schema::MigrationOp::AddColumn {
+    fn exec_migrate(
+        &mut self,
+        schema_name: &str,
+        from_version: i64,
+        to_version: i64,
+        operations: &[MigrateOp],
+    ) -> Result<Signal, TlError> {
+        let ops: Vec<tl_compiler::schema::MigrationOp> = operations
+            .iter()
+            .map(|op| {
+                match op {
+                    MigrateOp::AddColumn {
+                        name,
+                        type_ann,
+                        default,
+                    } => tl_compiler::schema::MigrationOp::AddColumn {
                         name: name.clone(),
                         type_name: format!("{:?}", type_ann),
                         default: default.as_ref().map(|d| format!("{:?}", d)),
+                    },
+                    MigrateOp::DropColumn { name } => {
+                        tl_compiler::schema::MigrationOp::DropColumn { name: name.clone() }
+                    }
+                    MigrateOp::RenameColumn { from, to } => {
+                        tl_compiler::schema::MigrationOp::RenameColumn {
+                            from: from.clone(),
+                            to: to.clone(),
+                        }
+                    }
+                    MigrateOp::AlterType { column, new_type } => {
+                        tl_compiler::schema::MigrationOp::AlterType {
+                            column: column.clone(),
+                            new_type: format!("{:?}", new_type),
+                        }
+                    }
+                    MigrateOp::AddConstraint { .. } | MigrateOp::DropConstraint { .. } => {
+                        // Constraints are metadata-only; no Arrow schema change
+                        tl_compiler::schema::MigrationOp::AddColumn {
+                            name: String::new(),
+                            type_name: String::new(),
+                            default: None,
+                        }
                     }
                 }
-                MigrateOp::DropColumn { name } => {
-                    tl_compiler::schema::MigrationOp::DropColumn { name: name.clone() }
-                }
-                MigrateOp::RenameColumn { from, to } => {
-                    tl_compiler::schema::MigrationOp::RenameColumn { from: from.clone(), to: to.clone() }
-                }
-                MigrateOp::AlterType { column, new_type } => {
-                    tl_compiler::schema::MigrationOp::AlterType {
-                        column: column.clone(),
-                        new_type: format!("{:?}", new_type),
-                    }
-                }
-                MigrateOp::AddConstraint { .. } | MigrateOp::DropConstraint { .. } => {
-                    // Constraints are metadata-only; no Arrow schema change
-                    tl_compiler::schema::MigrationOp::AddColumn { name: String::new(), type_name: String::new(), default: None }
-                }
-            }
-        }).collect();
+            })
+            .collect();
 
-        self.schema_registry.apply_migration(schema_name, from_version, to_version, &ops)
-            .map_err(|e| TlError::Runtime(RuntimeError {
-                message: format!("Migration error: {}", e),
-                span: None,
-                stack_trace: vec![],
-            }))?;
+        self.schema_registry
+            .apply_migration(schema_name, from_version, to_version, &ops)
+            .map_err(|e| {
+                TlError::Runtime(RuntimeError {
+                    message: format!("Migration error: {}", e),
+                    span: None,
+                    stack_trace: vec![],
+                })
+            })?;
         Ok(Signal::None)
     }
 
@@ -1307,11 +1718,13 @@ impl Interpreter {
                 for s in stmts {
                     match self.exec_stmt(s)? {
                         Signal::Return(val) => return Ok(val),
-                        Signal::Throw(val) => return Err(TlError::Runtime(RuntimeError {
-                            message: format!("{}", val),
-                            span: None,
-                            stack_trace: vec![],
-                        })),
+                        Signal::Throw(val) => {
+                            return Err(TlError::Runtime(RuntimeError {
+                                message: format!("{}", val),
+                                span: None,
+                                stack_trace: vec![],
+                            }));
+                        }
                         _ => {}
                     }
                 }
@@ -1353,46 +1766,57 @@ impl Interpreter {
                     None
                 }
             }
-            Pattern::Enum { type_name: _, variant, args } => {
-                if let Value::EnumInstance { variant: sv, fields, .. } = value {
-                    if variant == sv {
-                        let mut bindings = vec![];
-                        for (i, arg_pat) in args.iter().enumerate() {
-                            let field_val = fields.get(i).cloned().unwrap_or(Value::None);
-                            match self.match_pattern(arg_pat, &field_val) {
-                                Some(sub_bindings) => bindings.extend(sub_bindings),
-                                None => return None,
-                            }
+            Pattern::Enum {
+                type_name: _,
+                variant,
+                args,
+            } => {
+                if let Value::EnumInstance {
+                    variant: sv,
+                    fields,
+                    ..
+                } = value
+                    && variant == sv
+                {
+                    let mut bindings = vec![];
+                    for (i, arg_pat) in args.iter().enumerate() {
+                        let field_val = fields.get(i).cloned().unwrap_or(Value::None);
+                        match self.match_pattern(arg_pat, &field_val) {
+                            Some(sub_bindings) => bindings.extend(sub_bindings),
+                            None => return None,
                         }
-                        return Some(bindings);
                     }
+                    return Some(bindings);
                 }
                 None
             }
-            Pattern::Struct { name: struct_name, fields } => {
+            Pattern::Struct {
+                name: struct_name,
+                fields,
+            } => {
                 // Check it's a struct instance
-                if let Value::StructInstance { type_name, fields: sfields } = value {
-                    if let Some(expected) = struct_name {
-                        if expected != type_name {
-                            return None;
-                        }
+                if let Value::StructInstance {
+                    type_name,
+                    fields: sfields,
+                } = value
+                {
+                    if let Some(expected) = struct_name
+                        && expected != type_name
+                    {
+                        return None;
                     }
                     let mut bindings = vec![];
                     for field in fields {
-                        let field_val = sfields.get(&field.name)
-                            .cloned()
-                            .unwrap_or(Value::None);
+                        let field_val = sfields.get(&field.name).cloned().unwrap_or(Value::None);
                         match &field.pattern {
                             None => {
                                 // Shorthand: { x } binds x
                                 bindings.push((field.name.clone(), field_val));
                             }
-                            Some(sub_pat) => {
-                                match self.match_pattern(sub_pat, &field_val) {
-                                    Some(sub_bindings) => bindings.extend(sub_bindings),
-                                    None => return None,
-                                }
-                            }
+                            Some(sub_pat) => match self.match_pattern(sub_pat, &field_val) {
+                                Some(sub_bindings) => bindings.extend(sub_bindings),
+                                None => return None,
+                            },
                         }
                     }
                     return Some(bindings);
@@ -1441,7 +1865,11 @@ impl Interpreter {
         for stmt in stmts {
             result = self.exec_stmt(stmt)?;
             match &result {
-                Signal::Return(_) | Signal::Break | Signal::Continue | Signal::Throw(_) | Signal::Yield(_) => {
+                Signal::Return(_)
+                | Signal::Break
+                | Signal::Continue
+                | Signal::Throw(_)
+                | Signal::Yield(_) => {
                     self.env.pop_scope();
                     return Ok(result);
                 }
@@ -1475,7 +1903,7 @@ impl Interpreter {
                         message: format!("Undefined variable: `{name}`"),
                         span: None,
                         stack_trace: vec![],
-                        })
+                    })
                 })?;
                 if matches!(val, Value::Moved) {
                     return Err(runtime_err(format!(
@@ -1498,10 +1926,7 @@ impl Interpreter {
                         Value::Int(n) => Ok(Value::Int(-n)),
                         Value::Float(n) => Ok(Value::Float(-n)),
                         Value::Decimal(d) => Ok(Value::Decimal(-d)),
-                        _ => Err(runtime_err(format!(
-                            "Cannot negate {}",
-                            val.type_name()
-                        ))),
+                        _ => Err(runtime_err(format!("Cannot negate {}", val.type_name()))),
                     },
                     UnaryOp::Not => Ok(Value::Bool(!val.is_truthy())),
                     UnaryOp::Ref => Ok(Value::Ref(Arc::new(val))),
@@ -1529,26 +1954,22 @@ impl Interpreter {
             Expr::Member { object, field } => {
                 let obj = self.eval_expr(object)?;
                 match &obj {
-                    Value::StructInstance { fields, .. } => {
-                        fields.get(field).cloned().ok_or_else(|| {
-                            runtime_err(format!("Struct has no field `{field}`"))
-                        })
-                    }
+                    Value::StructInstance { fields, .. } => fields
+                        .get(field)
+                        .cloned()
+                        .ok_or_else(|| runtime_err(format!("Struct has no field `{field}`"))),
                     Value::Module { exports, name } => {
                         exports.get(field).cloned().ok_or_else(|| {
                             runtime_err(format!("Module `{name}` has no export `{field}`"))
                         })
                     }
-                    Value::Map(pairs) => {
-                        Ok(pairs.iter()
-                            .find(|(k, _)| k == field)
-                            .map(|(_, v)| v.clone())
-                            .unwrap_or(Value::None))
-                    }
+                    Value::Map(pairs) => Ok(pairs
+                        .iter()
+                        .find(|(k, _)| k == field)
+                        .map(|(_, v)| v.clone())
+                        .unwrap_or(Value::None)),
                     #[cfg(feature = "python")]
-                    Value::PyObject(wrapper) => {
-                        Ok(interp_py_get_member(wrapper, field))
-                    }
+                    Value::PyObject(wrapper) => Ok(interp_py_get_member(wrapper, field)),
                     _ => Err(runtime_err(format!(
                         "Cannot access field `{field}` on {}",
                         obj.type_name()
@@ -1582,7 +2003,7 @@ impl Interpreter {
                                 message: format!("Undefined function: `{name}`"),
                                 span: None,
                                 stack_trace: vec![],
-                                })
+                            })
                         })?;
                         self.call_function(&func, &[left_val])
                     }
@@ -1613,12 +2034,11 @@ impl Interpreter {
                             ))
                         })
                     }
-                    (Value::Map(pairs), Value::String(key)) => {
-                        Ok(pairs.iter()
-                            .find(|(k, _)| k == key)
-                            .map(|(_, v)| v.clone())
-                            .unwrap_or(Value::None))
-                    }
+                    (Value::Map(pairs), Value::String(key)) => Ok(pairs
+                        .iter()
+                        .find(|(k, _)| k == key)
+                        .map(|(_, v)| v.clone())
+                        .unwrap_or(Value::None)),
                     _ => Err(runtime_err(format!(
                         "Cannot index {} with {}",
                         obj.type_name(),
@@ -1678,13 +2098,11 @@ impl Interpreter {
                 }
             }
 
-            Expr::Closure { params, body, .. } => {
-                Ok(Value::Closure {
-                    params: params.clone(),
-                    body: body.clone(),
-                    captured_env: self.env.scopes.clone(),
-                })
-            }
+            Expr::Closure { params, body, .. } => Ok(Value::Closure {
+                params: params.clone(),
+                body: body.clone(),
+                captured_env: self.env.scopes.clone(),
+            }),
 
             Expr::Assign { target, value } => {
                 let val = self.eval_expr(value)?;
@@ -1701,13 +2119,18 @@ impl Interpreter {
                         if let Expr::Ident(name) = object.as_ref() {
                             let obj = self.env.get(name).cloned();
                             match obj {
-                                Some(Value::StructInstance { type_name, mut fields }) => {
+                                Some(Value::StructInstance {
+                                    type_name,
+                                    mut fields,
+                                }) => {
                                     fields.insert(field.clone(), val.clone());
-                                    self.env.update(name, Value::StructInstance { type_name, fields });
+                                    self.env
+                                        .update(name, Value::StructInstance { type_name, fields });
                                     Ok(val)
                                 }
                                 Some(Value::Map(mut pairs)) => {
-                                    if let Some(entry) = pairs.iter_mut().find(|(k, _)| k == field) {
+                                    if let Some(entry) = pairs.iter_mut().find(|(k, _)| k == field)
+                                    {
                                         entry.1 = val.clone();
                                     } else {
                                         pairs.push((field.clone(), val.clone()));
@@ -1746,7 +2169,9 @@ impl Interpreter {
                                         Err(runtime_err(format!("Index {i} out of bounds")))
                                     }
                                 }
-                                _ => Err(runtime_err("Invalid index assignment target".to_string())),
+                                _ => {
+                                    Err(runtime_err("Invalid index assignment target".to_string()))
+                                }
                             }
                         } else {
                             Err(runtime_err("Invalid assignment target".to_string()))
@@ -1759,7 +2184,10 @@ impl Interpreter {
             Expr::StructInit { name, fields } => {
                 let def = self.env.get(name).cloned();
                 match def {
-                    Some(Value::StructDef { name: type_name, fields: def_fields }) => {
+                    Some(Value::StructDef {
+                        name: type_name,
+                        fields: def_fields,
+                    }) => {
                         let mut field_map = HashMap::new();
                         for (fname, fexpr) in fields {
                             let fval = self.eval_expr(fexpr)?;
@@ -1779,11 +2207,20 @@ impl Interpreter {
                 }
             }
 
-            Expr::EnumVariant { enum_name, variant, args } => {
+            Expr::EnumVariant {
+                enum_name,
+                variant,
+                args,
+            } => {
                 let def = self.env.get(enum_name).cloned();
                 match def {
-                    Some(Value::EnumDef { name: type_name, variants }) => {
-                        if let Some((_, expected_count)) = variants.iter().find(|(v, _)| v == variant) {
+                    Some(Value::EnumDef {
+                        name: type_name,
+                        variants,
+                    }) => {
+                        if let Some((_, expected_count)) =
+                            variants.iter().find(|(v, _)| v == variant)
+                        {
                             let mut eval_args = Vec::new();
                             for arg in args {
                                 eval_args.push(self.eval_expr(arg)?);
@@ -1791,7 +2228,10 @@ impl Interpreter {
                             if eval_args.len() != *expected_count {
                                 return Err(runtime_err(format!(
                                     "Enum variant {}::{} expects {} arguments, got {}",
-                                    type_name, variant, expected_count, eval_args.len()
+                                    type_name,
+                                    variant,
+                                    expected_count,
+                                    eval_args.len()
                                 )));
                             }
                             Ok(Value::EnumInstance {
@@ -1813,7 +2253,9 @@ impl Interpreter {
                 // Yield should not be directly evaluated in interpreter — it's handled
                 // by the generator thread infrastructure. If we get here, yield was used
                 // outside a generator context.
-                Err(runtime_err("yield used outside of a generator function".to_string()))
+                Err(runtime_err(
+                    "yield used outside of a generator function".to_string(),
+                ))
             }
             Expr::Await(inner) => {
                 let val = self.eval_expr(inner)?;
@@ -1824,13 +2266,11 @@ impl Interpreter {
                             guard.take()
                         };
                         match rx {
-                            Some(receiver) => {
-                                match receiver.recv() {
-                                    Ok(Ok(result)) => Ok(result),
-                                    Ok(Err(err_msg)) => Err(runtime_err(err_msg)),
-                                    Err(_) => Err(runtime_err("Task channel disconnected".to_string())),
-                                }
-                            }
+                            Some(receiver) => match receiver.recv() {
+                                Ok(Ok(result)) => Ok(result),
+                                Ok(Err(err_msg)) => Err(runtime_err(err_msg)),
+                                Err(_) => Err(runtime_err("Task channel disconnected".to_string())),
+                            },
                             None => Err(runtime_err("Task already awaited".to_string())),
                         }
                     }
@@ -1842,12 +2282,20 @@ impl Interpreter {
             Expr::Try(inner) => {
                 let val = self.eval_expr(inner)?;
                 match val {
-                    Value::EnumInstance { ref type_name, ref variant, ref fields } if type_name == "Result" => {
+                    Value::EnumInstance {
+                        ref type_name,
+                        ref variant,
+                        ref fields,
+                    } if type_name == "Result" => {
                         if variant == "Ok" && !fields.is_empty() {
                             Ok(fields[0].clone())
                         } else if variant == "Err" {
                             // Propagate: signal early return with Err value
-                            let err_msg = if fields.is_empty() { "error".to_string() } else { format!("{}", fields[0]) };
+                            let err_msg = if fields.is_empty() {
+                                "error".to_string()
+                            } else {
+                                format!("{}", fields[0])
+                            };
                             Err(TlError::Runtime(tl_errors::RuntimeError {
                                 message: format!("__try_propagate__:{err_msg}"),
                                 span: None,
@@ -1894,7 +2342,7 @@ impl Interpreter {
                         Ok(Value::Int(a % b))
                     }
                 }
-                BinOp::Pow => Ok(Value::Int(a.pow(*b as u32)),),
+                BinOp::Pow => Ok(Value::Int(a.pow(*b as u32))),
                 BinOp::Eq => Ok(Value::Bool(a == b)),
                 BinOp::Neq => Ok(Value::Bool(a != b)),
                 BinOp::Lt => Ok(Value::Bool(a < b)),
@@ -1953,34 +2401,34 @@ impl Interpreter {
             (Value::String(a), Value::String(b)) => match op {
                 BinOp::Eq => Ok(Value::Bool(a == b)),
                 BinOp::Neq => Ok(Value::Bool(a != b)),
-                _ => Err(runtime_err(format!(
-                    "Unsupported op: string {op} string"
-                ))),
+                _ => Err(runtime_err(format!("Unsupported op: string {op} string"))),
             },
 
             // Tensor arithmetic
             (Value::Tensor(a), Value::Tensor(b)) => match op {
                 BinOp::Add => {
-                    let result = a.add(b).map_err(|e| runtime_err(e))?;
+                    let result = a.add(b).map_err(runtime_err)?;
                     Ok(Value::Tensor(result))
                 }
                 BinOp::Sub => {
-                    let result = a.sub(b).map_err(|e| runtime_err(e))?;
+                    let result = a.sub(b).map_err(runtime_err)?;
                     Ok(Value::Tensor(result))
                 }
                 BinOp::Mul => {
-                    let result = a.mul(b).map_err(|e| runtime_err(e))?;
+                    let result = a.mul(b).map_err(runtime_err)?;
                     Ok(Value::Tensor(result))
                 }
                 BinOp::Div => {
-                    let result = a.div(b).map_err(|e| runtime_err(e))?;
+                    let result = a.div(b).map_err(runtime_err)?;
                     Ok(Value::Tensor(result))
                 }
                 _ => Err(runtime_err(format!("Unsupported op: tensor {op} tensor"))),
             },
 
             // Tensor * scalar
-            (Value::Tensor(t), Value::Float(s)) | (Value::Float(s), Value::Tensor(t)) if *op == BinOp::Mul => {
+            (Value::Tensor(t), Value::Float(s)) | (Value::Float(s), Value::Tensor(t))
+                if *op == BinOp::Mul =>
+            {
                 Ok(Value::Tensor(t.scale(*s)))
             }
 
@@ -2037,7 +2485,10 @@ impl Interpreter {
         match func {
             Value::Builtin(name) => self.call_builtin(name, args),
             Value::Function {
-                params, body, is_generator, ..
+                params,
+                body,
+                is_generator,
+                ..
             } => {
                 if args.len() != params.len() {
                     return Err(runtime_err(format!(
@@ -2068,9 +2519,14 @@ impl Interpreter {
                                 result = val.clone();
                             }
                         }
-                        Err(TlError::Runtime(ref e)) if e.message.starts_with("__try_propagate__:") => {
+                        Err(TlError::Runtime(ref e))
+                            if e.message.starts_with("__try_propagate__:") =>
+                        {
                             // ? operator hit an Err — return the Err as this function's return value
-                            let err_msg = e.message.strip_prefix("__try_propagate__:").unwrap_or("error");
+                            let err_msg = e
+                                .message
+                                .strip_prefix("__try_propagate__:")
+                                .unwrap_or("error");
                             self.env.pop_scope();
                             return Ok(Value::EnumInstance {
                                 type_name: "Result".to_string(),
@@ -2141,16 +2597,18 @@ impl Interpreter {
                 self.env.scopes = saved_env;
                 result
             }
-            _ => Err(runtime_err(format!(
-                "Cannot call {}",
-                func.type_name()
-            ))),
+            _ => Err(runtime_err(format!("Cannot call {}", func.type_name()))),
         }
     }
 
     /// Create a generator from a function with yield.
     /// Spawns a thread that executes the function body, pausing at each yield.
-    fn create_generator(&mut self, params: &[Param], body: &[Stmt], args: &[Value]) -> Result<Value, TlError> {
+    fn create_generator(
+        &mut self,
+        params: &[Param],
+        body: &[Stmt],
+        args: &[Value],
+    ) -> Result<Value, TlError> {
         let params = params.to_vec();
         let body = body.to_vec();
         let args = args.to_vec();
@@ -2216,7 +2674,10 @@ impl Interpreter {
         }
 
         match &gen_arc.kind {
-            TlGeneratorKind::UserDefined { receiver, resume_tx } => {
+            TlGeneratorKind::UserDefined {
+                receiver,
+                resume_tx,
+            } => {
                 // Signal the generator thread to continue
                 if resume_tx.send(()).is_err() {
                     *gen_arc.done.lock().unwrap() = true;
@@ -2293,20 +2754,22 @@ impl Interpreter {
                 }
                 self.call_function(func, &[val])
             }
-            TlGeneratorKind::Filter { source, func } => {
-                loop {
-                    let val = self.interpreter_next(source)?;
-                    if matches!(val, Value::None) {
-                        *gen_arc.done.lock().unwrap() = true;
-                        return Ok(Value::None);
-                    }
-                    let test = self.call_function(func, &[val.clone()])?;
-                    if test.is_truthy() {
-                        return Ok(val);
-                    }
+            TlGeneratorKind::Filter { source, func } => loop {
+                let val = self.interpreter_next(source)?;
+                if matches!(val, Value::None) {
+                    *gen_arc.done.lock().unwrap() = true;
+                    return Ok(Value::None);
                 }
-            }
-            TlGeneratorKind::Chain { first, second, on_second } => {
+                let test = self.call_function(func, std::slice::from_ref(&val))?;
+                if test.is_truthy() {
+                    return Ok(val);
+                }
+            },
+            TlGeneratorKind::Chain {
+                first,
+                second,
+                on_second,
+            } => {
                 let is_second = *on_second.lock().unwrap();
                 if !is_second {
                     let val = self.interpreter_next(first)?;
@@ -2355,8 +2818,10 @@ impl Interpreter {
                 for a in args {
                     match a {
                         Value::Table(t) => {
-                            let batches = self.engine().collect(t.df.clone()).map_err(|e| runtime_err(e))?;
-                            let formatted = DataEngine::format_batches(&batches).map_err(|e| runtime_err(e))?;
+                            let batches =
+                                self.engine().collect(t.df.clone()).map_err(runtime_err)?;
+                            let formatted =
+                                DataEngine::format_batches(&batches).map_err(runtime_err)?;
                             parts.push(formatted);
                         }
                         _ => parts.push(format!("{a}")),
@@ -2372,7 +2837,9 @@ impl Interpreter {
                 Some(Value::List(l)) => Ok(Value::Int(l.len() as i64)),
                 Some(Value::Map(pairs)) => Ok(Value::Int(pairs.len() as i64)),
                 Some(Value::Set(items)) => Ok(Value::Int(items.len() as i64)),
-                _ => Err(runtime_err("len() expects a string, list, map, or set".to_string())),
+                _ => Err(runtime_err(
+                    "len() expects a string, list, map, or set".to_string(),
+                )),
             },
             "str" => Ok(Value::String(
                 args.first().map(|v| format!("{v}")).unwrap_or_default(),
@@ -2385,7 +2852,9 @@ impl Interpreter {
                     .map_err(|_| runtime_err(format!("Cannot convert '{s}' to int"))),
                 Some(Value::Int(n)) => Ok(Value::Int(*n)),
                 Some(Value::Bool(b)) => Ok(Value::Int(if *b { 1 } else { 0 })),
-                _ => Err(runtime_err("int() expects a number, string, or bool".to_string())),
+                _ => Err(runtime_err(
+                    "int() expects a number, string, or bool".to_string(),
+                )),
             },
             "float" => match args.first() {
                 Some(Value::Int(n)) => Ok(Value::Float(*n as f64)),
@@ -2395,7 +2864,9 @@ impl Interpreter {
                     .map_err(|_| runtime_err(format!("Cannot convert '{s}' to float"))),
                 Some(Value::Float(n)) => Ok(Value::Float(*n)),
                 Some(Value::Bool(b)) => Ok(Value::Float(if *b { 1.0 } else { 0.0 })),
-                _ => Err(runtime_err("float() expects a number, string, or bool".to_string())),
+                _ => Err(runtime_err(
+                    "float() expects a number, string, or bool".to_string(),
+                )),
             },
             "abs" => match args.first() {
                 Some(Value::Int(n)) => Ok(Value::Int(n.abs())),
@@ -2438,21 +2909,33 @@ impl Interpreter {
                         Err(runtime_err("range() expects integers".to_string()))
                     }
                 } else if args.len() == 3 {
-                    if let (Value::Int(start), Value::Int(end), Value::Int(step)) = (&args[0], &args[1], &args[2]) {
-                        if *step == 0 { return Err(runtime_err("range() step cannot be zero".to_string())); }
+                    if let (Value::Int(start), Value::Int(end), Value::Int(step)) =
+                        (&args[0], &args[1], &args[2])
+                    {
+                        if *step == 0 {
+                            return Err(runtime_err("range() step cannot be zero".to_string()));
+                        }
                         let mut result = Vec::new();
                         let mut i = *start;
                         if *step > 0 {
-                            while i < *end { result.push(Value::Int(i)); i += step; }
+                            while i < *end {
+                                result.push(Value::Int(i));
+                                i += step;
+                            }
                         } else {
-                            while i > *end { result.push(Value::Int(i)); i += step; }
+                            while i > *end {
+                                result.push(Value::Int(i));
+                                i += step;
+                            }
                         }
                         Ok(Value::List(result))
                     } else {
                         Err(runtime_err("range() expects integers".to_string()))
                     }
                 } else {
-                    Err(runtime_err("range() expects 1, 2, or 3 arguments".to_string()))
+                    Err(runtime_err(
+                        "range() expects 1, 2, or 3 arguments".to_string(),
+                    ))
                 }
             }
             "push" => {
@@ -2474,7 +2957,9 @@ impl Interpreter {
             )),
             "map" => {
                 if args.len() != 2 {
-                    return Err(runtime_err("map() expects 2 arguments (list, fn)".to_string()));
+                    return Err(runtime_err(
+                        "map() expects 2 arguments (list, fn)".to_string(),
+                    ));
                 }
                 let items = match &args[0] {
                     Value::List(items) => items.clone(),
@@ -2489,7 +2974,9 @@ impl Interpreter {
             }
             "filter" => {
                 if args.len() != 2 {
-                    return Err(runtime_err("filter() expects 2 arguments (list, fn)".to_string()));
+                    return Err(runtime_err(
+                        "filter() expects 2 arguments (list, fn)".to_string(),
+                    ));
                 }
                 let items = match &args[0] {
                     Value::List(items) => items.clone(),
@@ -2498,7 +2985,7 @@ impl Interpreter {
                 let func = args[1].clone();
                 let mut result = Vec::new();
                 for item in items {
-                    let val = self.call_function(&func, &[item.clone()])?;
+                    let val = self.call_function(&func, std::slice::from_ref(&item))?;
                     if val.is_truthy() {
                         result.push(item);
                     }
@@ -2507,7 +2994,9 @@ impl Interpreter {
             }
             "reduce" => {
                 if args.len() != 3 {
-                    return Err(runtime_err("reduce() expects 3 arguments (list, init, fn)".to_string()));
+                    return Err(runtime_err(
+                        "reduce() expects 3 arguments (list, init, fn)".to_string(),
+                    ));
                 }
                 let items = match &args[0] {
                     Value::List(items) => items.clone(),
@@ -2547,7 +3036,9 @@ impl Interpreter {
                             }
                             total_f += n;
                         }
-                        _ => return Err(runtime_err("sum() list must contain numbers".to_string())),
+                        _ => {
+                            return Err(runtime_err("sum() list must contain numbers".to_string()));
+                        }
                     }
                 }
                 if is_float {
@@ -2558,7 +3049,9 @@ impl Interpreter {
             }
             "any" => {
                 if args.len() != 2 {
-                    return Err(runtime_err("any() expects 2 arguments (list, fn)".to_string()));
+                    return Err(runtime_err(
+                        "any() expects 2 arguments (list, fn)".to_string(),
+                    ));
                 }
                 let items = match &args[0] {
                     Value::List(items) => items.clone(),
@@ -2575,7 +3068,9 @@ impl Interpreter {
             }
             "all" => {
                 if args.len() != 2 {
-                    return Err(runtime_err("all() expects 2 arguments (list, fn)".to_string()));
+                    return Err(runtime_err(
+                        "all() expects 2 arguments (list, fn)".to_string(),
+                    ));
                 }
                 let items = match &args[0] {
                     Value::List(items) => items.clone(),
@@ -2599,23 +3094,27 @@ impl Interpreter {
                     Value::String(s) => s.clone(),
                     _ => return Err(runtime_err("read_csv() path must be a string".into())),
                 };
-                let df = self.engine().read_csv(&path).map_err(|e| runtime_err(e))?;
+                let df = self.engine().read_csv(&path).map_err(runtime_err)?;
                 Ok(Value::Table(TlTable { df }))
             }
             "read_parquet" => {
                 if args.len() != 1 {
-                    return Err(runtime_err("read_parquet() expects 1 argument (path)".into()));
+                    return Err(runtime_err(
+                        "read_parquet() expects 1 argument (path)".into(),
+                    ));
                 }
                 let path = match &args[0] {
                     Value::String(s) => s.clone(),
                     _ => return Err(runtime_err("read_parquet() path must be a string".into())),
                 };
-                let df = self.engine().read_parquet(&path).map_err(|e| runtime_err(e))?;
+                let df = self.engine().read_parquet(&path).map_err(runtime_err)?;
                 Ok(Value::Table(TlTable { df }))
             }
             "write_csv" => {
                 if args.len() != 2 {
-                    return Err(runtime_err("write_csv() expects 2 arguments (table, path)".into()));
+                    return Err(runtime_err(
+                        "write_csv() expects 2 arguments (table, path)".into(),
+                    ));
                 }
                 let df = match &args[0] {
                     Value::Table(t) => t.df.clone(),
@@ -2625,22 +3124,30 @@ impl Interpreter {
                     Value::String(s) => s.clone(),
                     _ => return Err(runtime_err("write_csv() path must be a string".into())),
                 };
-                self.engine().write_csv(df, &path).map_err(|e| runtime_err(e))?;
+                self.engine().write_csv(df, &path).map_err(runtime_err)?;
                 Ok(Value::None)
             }
             "write_parquet" => {
                 if args.len() != 2 {
-                    return Err(runtime_err("write_parquet() expects 2 arguments (table, path)".into()));
+                    return Err(runtime_err(
+                        "write_parquet() expects 2 arguments (table, path)".into(),
+                    ));
                 }
                 let df = match &args[0] {
                     Value::Table(t) => t.df.clone(),
-                    _ => return Err(runtime_err("write_parquet() first arg must be a table".into())),
+                    _ => {
+                        return Err(runtime_err(
+                            "write_parquet() first arg must be a table".into(),
+                        ));
+                    }
                 };
                 let path = match &args[1] {
                     Value::String(s) => s.clone(),
                     _ => return Err(runtime_err("write_parquet() path must be a string".into())),
                 };
-                self.engine().write_parquet(df, &path).map_err(|e| runtime_err(e))?;
+                self.engine()
+                    .write_parquet(df, &path)
+                    .map_err(runtime_err)?;
                 Ok(Value::None)
             }
             "collect" => {
@@ -2651,8 +3158,8 @@ impl Interpreter {
                     Value::Table(t) => t.df.clone(),
                     _ => return Err(runtime_err("collect() expects a table".into())),
                 };
-                let batches = self.engine().collect(df).map_err(|e| runtime_err(e))?;
-                let formatted = DataEngine::format_batches(&batches).map_err(|e| runtime_err(e))?;
+                let batches = self.engine().collect(df).map_err(runtime_err)?;
+                let formatted = DataEngine::format_batches(&batches).map_err(runtime_err)?;
                 Ok(Value::String(formatted))
             }
             "show" => {
@@ -2665,9 +3172,11 @@ impl Interpreter {
                     None => 20,
                     _ => return Err(runtime_err("show() second arg must be an int".into())),
                 };
-                let limited = df.limit(0, Some(limit)).map_err(|e| runtime_err(format!("{e}")))?;
-                let batches = self.engine().collect(limited).map_err(|e| runtime_err(e))?;
-                let formatted = DataEngine::format_batches(&batches).map_err(|e| runtime_err(e))?;
+                let limited = df
+                    .limit(0, Some(limit))
+                    .map_err(|e| runtime_err(format!("{e}")))?;
+                let batches = self.engine().collect(limited).map_err(runtime_err)?;
+                let formatted = DataEngine::format_batches(&batches).map_err(runtime_err)?;
                 println!("{formatted}");
                 self.output.push(formatted.clone());
                 Ok(Value::None)
@@ -2688,7 +3197,12 @@ impl Interpreter {
                         Some(q) => format!("{q}."),
                         None => String::new(),
                     };
-                    lines.push(format!("  {}{}: {}", prefix, field.name(), field.data_type()));
+                    lines.push(format!(
+                        "  {}{}: {}",
+                        prefix,
+                        field.name(),
+                        field.data_type()
+                    ));
                 }
                 let output = lines.join("\n");
                 println!("{output}");
@@ -2697,7 +3211,9 @@ impl Interpreter {
             }
             "head" => {
                 if args.is_empty() {
-                    return Err(runtime_err("head() expects at least 1 argument (table)".into()));
+                    return Err(runtime_err(
+                        "head() expects at least 1 argument (table)".into(),
+                    ));
                 }
                 let df = match &args[0] {
                     Value::Table(t) => t.df.clone(),
@@ -2708,12 +3224,16 @@ impl Interpreter {
                     None => 10,
                     _ => return Err(runtime_err("head() second arg must be an int".into())),
                 };
-                let limited = df.limit(0, Some(n)).map_err(|e| runtime_err(format!("{e}")))?;
+                let limited = df
+                    .limit(0, Some(n))
+                    .map_err(|e| runtime_err(format!("{e}")))?;
                 Ok(Value::Table(TlTable { df: limited }))
             }
             "postgres" => {
                 if args.len() != 2 {
-                    return Err(runtime_err("postgres() expects 2 arguments (conn_str, table_name)".into()));
+                    return Err(runtime_err(
+                        "postgres() expects 2 arguments (conn_str, table_name)".into(),
+                    ));
                 }
                 let conn_str = match &args[0] {
                     Value::String(s) => s.clone(),
@@ -2723,8 +3243,10 @@ impl Interpreter {
                     Value::String(s) => s.clone(),
                     _ => return Err(runtime_err("postgres() table_name must be a string".into())),
                 };
-                let df = self.engine().read_postgres(&conn_str, &table_name)
-                    .map_err(|e| runtime_err(e))?;
+                let df = self
+                    .engine()
+                    .read_postgres(&conn_str, &table_name)
+                    .map_err(runtime_err)?;
                 Ok(Value::Table(TlTable { df }))
             }
             // ── AI builtins ──
@@ -2746,34 +3268,56 @@ impl Interpreter {
             "model_register" => self.builtin_model_register(args),
             "model_list" => self.builtin_model_list(args),
             "model_get" => self.builtin_model_get(args),
-            "embed" | _ if name == "embed" => {
-                Err(runtime_err("embed() requires an API key. Set TL_OPENAI_KEY env var.".to_string()))
-            }
+            "embed" => Err(runtime_err(
+                "embed() requires an API key. Set TL_OPENAI_KEY env var.".to_string(),
+            )),
             // Streaming builtins
             "alert_slack" => {
                 if args.len() != 2 {
-                    return Err(runtime_err("alert_slack(url, message) requires 2 args".to_string()));
+                    return Err(runtime_err(
+                        "alert_slack(url, message) requires 2 args".to_string(),
+                    ));
                 }
-                let url = match &args[0] { Value::String(s) => s.clone(), _ => return Err(runtime_err("alert_slack: url must be a string".to_string())) };
-                let msg = match &args[1] { Value::String(s) => s.clone(), _ => format!("{}", args[1]) };
+                let url = match &args[0] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err("alert_slack: url must be a string".to_string())),
+                };
+                let msg = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => format!("{}", args[1]),
+                };
                 tl_stream::send_alert(&tl_stream::AlertTarget::Slack(url), &msg)
-                    .map_err(|e| runtime_err(e))?;
+                    .map_err(runtime_err)?;
                 Ok(Value::None)
             }
             "alert_webhook" => {
                 if args.len() != 2 {
-                    return Err(runtime_err("alert_webhook(url, message) requires 2 args".to_string()));
+                    return Err(runtime_err(
+                        "alert_webhook(url, message) requires 2 args".to_string(),
+                    ));
                 }
-                let url = match &args[0] { Value::String(s) => s.clone(), _ => return Err(runtime_err("alert_webhook: url must be a string".to_string())) };
-                let msg = match &args[1] { Value::String(s) => s.clone(), _ => format!("{}", args[1]) };
+                let url = match &args[0] {
+                    Value::String(s) => s.clone(),
+                    _ => {
+                        return Err(runtime_err(
+                            "alert_webhook: url must be a string".to_string(),
+                        ));
+                    }
+                };
+                let msg = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => format!("{}", args[1]),
+                };
                 tl_stream::send_alert(&tl_stream::AlertTarget::Webhook(url), &msg)
-                    .map_err(|e| runtime_err(e))?;
+                    .map_err(runtime_err)?;
                 Ok(Value::None)
             }
             "emit" => {
                 // emit(value) — output a value in a stream context
                 if args.is_empty() {
-                    return Err(runtime_err("emit() requires at least 1 argument".to_string()));
+                    return Err(runtime_err(
+                        "emit() requires at least 1 argument".to_string(),
+                    ));
                 }
                 let val = &args[0];
                 self.output.push(format!("emit: {val}"));
@@ -2786,12 +3330,16 @@ impl Interpreter {
             }
             "run_pipeline" => {
                 if args.is_empty() {
-                    return Err(runtime_err("run_pipeline() requires a pipeline name".to_string()));
+                    return Err(runtime_err(
+                        "run_pipeline() requires a pipeline name".to_string(),
+                    ));
                 }
                 if let Value::Pipeline(ref def) = args[0] {
                     Ok(Value::String(format!("Pipeline '{}' triggered", def.name)))
                 } else {
-                    Err(runtime_err("run_pipeline: argument must be a pipeline".to_string()))
+                    Err(runtime_err(
+                        "run_pipeline: argument must be a pipeline".to_string(),
+                    ))
                 }
             }
             // Math builtins
@@ -2804,7 +3352,9 @@ impl Interpreter {
                 if args.len() == 2 {
                     match (&args[0], &args[1]) {
                         (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a.powf(*b))),
-                        (Value::Int(a), Value::Int(b)) => Ok(Value::Float((*a as f64).powf(*b as f64))),
+                        (Value::Int(a), Value::Int(b)) => {
+                            Ok(Value::Float((*a as f64).powf(*b as f64)))
+                        }
                         (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a.powf(*b as f64))),
                         (Value::Int(a), Value::Float(b)) => Ok(Value::Float((*a as f64).powf(*b))),
                         _ => Err(runtime_err_s("pow() expects two numbers")),
@@ -2864,7 +3414,9 @@ impl Interpreter {
                         let parts: Vec<String> = items.iter().map(|v| format!("{v}")).collect();
                         Ok(Value::String(parts.join(sep.as_str())))
                     } else {
-                        Err(runtime_err_s("join() expects a separator string and a list"))
+                        Err(runtime_err_s(
+                            "join() expects a separator string and a list",
+                        ))
                     }
                 } else {
                     Err(runtime_err_s("join() expects 2 arguments"))
@@ -2943,7 +3495,9 @@ impl Interpreter {
             }
             // ── Phase 6: Stdlib & Ecosystem builtins ──
             "json_parse" => {
-                if args.is_empty() { return Err(runtime_err_s("json_parse() expects a string")); }
+                if args.is_empty() {
+                    return Err(runtime_err_s("json_parse() expects a string"));
+                }
                 if let Value::String(s) = &args[0] {
                     let json_val: serde_json::Value = serde_json::from_str(s)
                         .map_err(|e| runtime_err(format!("JSON parse error: {e}")))?;
@@ -2953,13 +3507,17 @@ impl Interpreter {
                 }
             }
             "json_stringify" => {
-                if args.is_empty() { return Err(runtime_err_s("json_stringify() expects a value")); }
+                if args.is_empty() {
+                    return Err(runtime_err_s("json_stringify() expects a value"));
+                }
                 let json = value_to_json(&args[0]);
                 Ok(Value::String(json.to_string()))
             }
             "map_from" => {
-                if args.len() % 2 != 0 {
-                    return Err(runtime_err_s("map_from() expects even number of arguments (key, value pairs)"));
+                if !args.len().is_multiple_of(2) {
+                    return Err(runtime_err_s(
+                        "map_from() expects even number of arguments (key, value pairs)",
+                    ));
                 }
                 let mut pairs = Vec::new();
                 for chunk in args.chunks(2) {
@@ -2972,7 +3530,9 @@ impl Interpreter {
                 Ok(Value::Map(pairs))
             }
             "read_file" => {
-                if args.is_empty() { return Err(runtime_err_s("read_file() expects a path")); }
+                if args.is_empty() {
+                    return Err(runtime_err_s("read_file() expects a path"));
+                }
                 if let Value::String(path) = &args[0] {
                     let content = std::fs::read_to_string(path)
                         .map_err(|e| runtime_err(format!("read_file error: {e}")))?;
@@ -2982,31 +3542,43 @@ impl Interpreter {
                 }
             }
             "write_file" => {
-                if args.len() < 2 { return Err(runtime_err_s("write_file() expects path and content")); }
+                if args.len() < 2 {
+                    return Err(runtime_err_s("write_file() expects path and content"));
+                }
                 if let (Value::String(path), Value::String(content)) = (&args[0], &args[1]) {
                     std::fs::write(path, content)
                         .map_err(|e| runtime_err(format!("write_file error: {e}")))?;
                     Ok(Value::None)
                 } else {
-                    Err(runtime_err_s("write_file() expects string path and content"))
+                    Err(runtime_err_s(
+                        "write_file() expects string path and content",
+                    ))
                 }
             }
             "append_file" => {
-                if args.len() < 2 { return Err(runtime_err_s("append_file() expects path and content")); }
+                if args.len() < 2 {
+                    return Err(runtime_err_s("append_file() expects path and content"));
+                }
                 if let (Value::String(path), Value::String(content)) = (&args[0], &args[1]) {
                     use std::io::Write;
                     let mut file = std::fs::OpenOptions::new()
-                        .create(true).append(true).open(path)
+                        .create(true)
+                        .append(true)
+                        .open(path)
                         .map_err(|e| runtime_err(format!("append_file error: {e}")))?;
                     file.write_all(content.as_bytes())
                         .map_err(|e| runtime_err(format!("append_file error: {e}")))?;
                     Ok(Value::None)
                 } else {
-                    Err(runtime_err_s("append_file() expects string path and content"))
+                    Err(runtime_err_s(
+                        "append_file() expects string path and content",
+                    ))
                 }
             }
             "file_exists" => {
-                if args.is_empty() { return Err(runtime_err_s("file_exists() expects a path")); }
+                if args.is_empty() {
+                    return Err(runtime_err_s("file_exists() expects a path"));
+                }
                 if let Value::String(path) = &args[0] {
                     Ok(Value::Bool(std::path::Path::new(path).exists()))
                 } else {
@@ -3014,7 +3586,9 @@ impl Interpreter {
                 }
             }
             "list_dir" => {
-                if args.is_empty() { return Err(runtime_err_s("list_dir() expects a path")); }
+                if args.is_empty() {
+                    return Err(runtime_err_s("list_dir() expects a path"));
+                }
                 if let Value::String(path) = &args[0] {
                     let entries: Vec<Value> = std::fs::read_dir(path)
                         .map_err(|e| runtime_err(format!("list_dir error: {e}")))?
@@ -3027,7 +3601,9 @@ impl Interpreter {
                 }
             }
             "env_get" => {
-                if args.is_empty() { return Err(runtime_err_s("env_get() expects a name")); }
+                if args.is_empty() {
+                    return Err(runtime_err_s("env_get() expects a name"));
+                }
                 if let Value::String(name) = &args[0] {
                     match std::env::var(name) {
                         Ok(val) => Ok(Value::String(val)),
@@ -3038,43 +3614,64 @@ impl Interpreter {
                 }
             }
             "env_set" => {
-                if args.len() < 2 { return Err(runtime_err_s("env_set() expects name and value")); }
+                if args.len() < 2 {
+                    return Err(runtime_err_s("env_set() expects name and value"));
+                }
                 if let (Value::String(name), Value::String(val)) = (&args[0], &args[1]) {
-                    unsafe { std::env::set_var(name, val); }
+                    unsafe {
+                        std::env::set_var(name, val);
+                    }
                     Ok(Value::None)
                 } else {
                     Err(runtime_err_s("env_set() expects two strings"))
                 }
             }
             "regex_match" => {
-                if args.len() < 2 { return Err(runtime_err_s("regex_match() expects pattern and string")); }
+                if args.len() < 2 {
+                    return Err(runtime_err_s("regex_match() expects pattern and string"));
+                }
                 if let (Value::String(pattern), Value::String(text)) = (&args[0], &args[1]) {
                     let re = regex::Regex::new(pattern)
                         .map_err(|e| runtime_err(format!("Invalid regex: {e}")))?;
                     Ok(Value::Bool(re.is_match(text)))
                 } else {
-                    Err(runtime_err_s("regex_match() expects string pattern and string"))
+                    Err(runtime_err_s(
+                        "regex_match() expects string pattern and string",
+                    ))
                 }
             }
             "regex_find" => {
-                if args.len() < 2 { return Err(runtime_err_s("regex_find() expects pattern and string")); }
+                if args.len() < 2 {
+                    return Err(runtime_err_s("regex_find() expects pattern and string"));
+                }
                 if let (Value::String(pattern), Value::String(text)) = (&args[0], &args[1]) {
                     let re = regex::Regex::new(pattern)
                         .map_err(|e| runtime_err(format!("Invalid regex: {e}")))?;
-                    let matches: Vec<Value> = re.find_iter(text)
+                    let matches: Vec<Value> = re
+                        .find_iter(text)
                         .map(|m| Value::String(m.as_str().to_string()))
                         .collect();
                     Ok(Value::List(matches))
                 } else {
-                    Err(runtime_err_s("regex_find() expects string pattern and string"))
+                    Err(runtime_err_s(
+                        "regex_find() expects string pattern and string",
+                    ))
                 }
             }
             "regex_replace" => {
-                if args.len() < 3 { return Err(runtime_err_s("regex_replace() expects pattern, string, replacement")); }
-                if let (Value::String(pattern), Value::String(text), Value::String(replacement)) = (&args[0], &args[1], &args[2]) {
+                if args.len() < 3 {
+                    return Err(runtime_err_s(
+                        "regex_replace() expects pattern, string, replacement",
+                    ));
+                }
+                if let (Value::String(pattern), Value::String(text), Value::String(replacement)) =
+                    (&args[0], &args[1], &args[2])
+                {
                     let re = regex::Regex::new(pattern)
                         .map_err(|e| runtime_err(format!("Invalid regex: {e}")))?;
-                    Ok(Value::String(re.replace_all(text, replacement.as_str()).to_string()))
+                    Ok(Value::String(
+                        re.replace_all(text, replacement.as_str()).to_string(),
+                    ))
                 } else {
                     Err(runtime_err_s("regex_replace() expects three strings"))
                 }
@@ -3084,21 +3681,30 @@ impl Interpreter {
                 Ok(Value::Int(ts))
             }
             "date_format" => {
-                if args.len() < 2 { return Err(runtime_err_s("date_format() expects timestamp_ms and format")); }
+                if args.len() < 2 {
+                    return Err(runtime_err_s(
+                        "date_format() expects timestamp_ms and format",
+                    ));
+                }
                 if let (Value::Int(ts), Value::String(fmt)) = (&args[0], &args[1]) {
                     use chrono::TimeZone;
                     let secs = *ts / 1000;
                     let nsecs = ((*ts % 1000) * 1_000_000) as u32;
-                    let dt = chrono::Utc.timestamp_opt(secs, nsecs)
+                    let dt = chrono::Utc
+                        .timestamp_opt(secs, nsecs)
                         .single()
                         .ok_or_else(|| runtime_err_s("Invalid timestamp"))?;
                     Ok(Value::String(dt.format(fmt).to_string()))
                 } else {
-                    Err(runtime_err_s("date_format() expects int timestamp and string format"))
+                    Err(runtime_err_s(
+                        "date_format() expects int timestamp and string format",
+                    ))
                 }
             }
             "date_parse" => {
-                if args.len() < 2 { return Err(runtime_err_s("date_parse() expects string and format")); }
+                if args.len() < 2 {
+                    return Err(runtime_err_s("date_parse() expects string and format"));
+                }
                 if let (Value::String(s), Value::String(fmt)) = (&args[0], &args[1]) {
                     let dt = chrono::NaiveDateTime::parse_from_str(s, fmt)
                         .map_err(|e| runtime_err(format!("date_parse error: {e}")))?;
@@ -3109,9 +3715,13 @@ impl Interpreter {
                 }
             }
             "zip" => {
-                if args.len() < 2 { return Err(runtime_err_s("zip() expects two lists")); }
+                if args.len() < 2 {
+                    return Err(runtime_err_s("zip() expects two lists"));
+                }
                 if let (Value::List(a), Value::List(b)) = (&args[0], &args[1]) {
-                    let pairs: Vec<Value> = a.iter().zip(b.iter())
+                    let pairs: Vec<Value> = a
+                        .iter()
+                        .zip(b.iter())
                         .map(|(x, y)| Value::List(vec![x.clone(), y.clone()]))
                         .collect();
                     Ok(Value::List(pairs))
@@ -3120,9 +3730,13 @@ impl Interpreter {
                 }
             }
             "enumerate" => {
-                if args.is_empty() { return Err(runtime_err_s("enumerate() expects a list")); }
+                if args.is_empty() {
+                    return Err(runtime_err_s("enumerate() expects a list"));
+                }
                 if let Value::List(items) = &args[0] {
-                    let pairs: Vec<Value> = items.iter().enumerate()
+                    let pairs: Vec<Value> = items
+                        .iter()
+                        .enumerate()
                         .map(|(i, v)| Value::List(vec![Value::Int(i as i64), v.clone()]))
                         .collect();
                     Ok(Value::List(pairs))
@@ -3131,7 +3745,9 @@ impl Interpreter {
                 }
             }
             "bool" => {
-                if args.is_empty() { return Err(runtime_err_s("bool() expects a value")); }
+                if args.is_empty() {
+                    return Err(runtime_err_s("bool() expects a value"));
+                }
                 Ok(Value::Bool(args[0].is_truthy()))
             }
 
@@ -3141,7 +3757,9 @@ impl Interpreter {
                     return Err(runtime_err_s("spawn() expects a function argument"));
                 }
                 match &args[0] {
-                    Value::Function { params, body, name, .. } => {
+                    Value::Function {
+                        params, body, name, ..
+                    } => {
                         let params = params.clone();
                         let body = body.clone();
                         let _name = name.clone();
@@ -3162,7 +3780,10 @@ impl Interpreter {
                             let mut err = None;
                             for stmt in &body {
                                 match interp.exec_stmt(stmt) {
-                                    Ok(Signal::Return(val)) => { result = val; break; }
+                                    Ok(Signal::Return(val)) => {
+                                        result = val;
+                                        break;
+                                    }
                                     Ok(Signal::None) => {
                                         if let Some(val) = &interp.last_expr_value {
                                             result = val.clone();
@@ -3172,7 +3793,10 @@ impl Interpreter {
                                         err = Some(format!("{val}"));
                                         break;
                                     }
-                                    Err(e) => { err = Some(format!("{e}")); break; }
+                                    Err(e) => {
+                                        err = Some(format!("{e}"));
+                                        break;
+                                    }
                                     _ => {}
                                 }
                             }
@@ -3184,7 +3808,11 @@ impl Interpreter {
                         });
                         Ok(Value::Task(Arc::new(TlTask::new(rx))))
                     }
-                    Value::Closure { params, body, captured_env } => {
+                    Value::Closure {
+                        params,
+                        body,
+                        captured_env,
+                    } => {
                         let params = params.clone();
                         let body = body.clone();
                         let captured_env = captured_env.clone();
@@ -3223,7 +3851,11 @@ impl Interpreter {
                 let capacity = match args.first() {
                     Some(Value::Int(n)) => *n as usize,
                     None => 64,
-                    _ => return Err(runtime_err_s("channel() expects an optional integer capacity")),
+                    _ => {
+                        return Err(runtime_err_s(
+                            "channel() expects an optional integer capacity",
+                        ));
+                    }
                 };
                 Ok(Value::Channel(Arc::new(TlChannel::new(capacity))))
             }
@@ -3233,7 +3865,8 @@ impl Interpreter {
                 }
                 match &args[0] {
                     Value::Channel(ch) => {
-                        ch.sender.send(args[1].clone())
+                        ch.sender
+                            .send(args[1].clone())
                             .map_err(|_| runtime_err_s("Channel disconnected"))?;
                         Ok(Value::None)
                     }
@@ -3285,13 +3918,15 @@ impl Interpreter {
                                         guard.take()
                                     };
                                     match rx {
-                                        Some(receiver) => {
-                                            match receiver.recv() {
-                                                Ok(Ok(val)) => results.push(val),
-                                                Ok(Err(e)) => return Err(runtime_err(e)),
-                                                Err(_) => return Err(runtime_err_s("Task channel disconnected")),
+                                        Some(receiver) => match receiver.recv() {
+                                            Ok(Ok(val)) => results.push(val),
+                                            Ok(Err(e)) => return Err(runtime_err(e)),
+                                            Err(_) => {
+                                                return Err(runtime_err_s(
+                                                    "Task channel disconnected",
+                                                ));
                                             }
-                                        }
+                                        },
                                         None => return Err(runtime_err_s("Task already awaited")),
                                     }
                                 }
@@ -3336,7 +3971,10 @@ impl Interpreter {
                                 let mut result = Value::None;
                                 for stmt in &body {
                                     match interp.exec_stmt(stmt) {
-                                        Ok(Signal::Return(val)) => { result = val; break; }
+                                        Ok(Signal::Return(val)) => {
+                                            result = val;
+                                            break;
+                                        }
                                         Ok(Signal::None) => {
                                             if let Some(val) = &interp.last_expr_value {
                                                 result = val.clone();
@@ -3346,7 +3984,10 @@ impl Interpreter {
                                             interp.env.pop_scope();
                                             return Err(format!("{val}"));
                                         }
-                                        Err(e) => { interp.env.pop_scope(); return Err(format!("{e}")); }
+                                        Err(e) => {
+                                            interp.env.pop_scope();
+                                            return Err(format!("{e}"));
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -3365,7 +4006,11 @@ impl Interpreter {
                         }
                         Ok(Value::List(results))
                     }
-                    Value::Closure { params, body, captured_env } => {
+                    Value::Closure {
+                        params,
+                        body,
+                        captured_env,
+                    } => {
                         let params = params.clone();
                         let body = body.clone();
                         let captured_env = captured_env.clone();
@@ -3399,12 +4044,16 @@ impl Interpreter {
                         }
                         Ok(Value::List(results))
                     }
-                    _ => Err(runtime_err_s("pmap() expects a function as second argument")),
+                    _ => Err(runtime_err_s(
+                        "pmap() expects a function as second argument",
+                    )),
                 }
             }
             "timeout" => {
                 if args.len() < 2 {
-                    return Err(runtime_err_s("timeout() expects a task and a duration in milliseconds"));
+                    return Err(runtime_err_s(
+                        "timeout() expects a task and a duration in milliseconds",
+                    ));
                 }
                 let ms = match &args[1] {
                     Value::Int(n) => *n as u64,
@@ -3522,7 +4171,9 @@ impl Interpreter {
             }
             "gen_map" => {
                 if args.len() < 2 {
-                    return Err(runtime_err_s("gen_map() expects a generator and a function"));
+                    return Err(runtime_err_s(
+                        "gen_map() expects a generator and a function",
+                    ));
                 }
                 let g = match &args[0] {
                     Value::Generator(g) => g.clone(),
@@ -3536,7 +4187,9 @@ impl Interpreter {
             }
             "gen_filter" => {
                 if args.len() < 2 {
-                    return Err(runtime_err_s("gen_filter() expects a generator and a function"));
+                    return Err(runtime_err_s(
+                        "gen_filter() expects a generator and a function",
+                    ));
                 }
                 let g = match &args[0] {
                     Value::Generator(g) => g.clone(),
@@ -3599,7 +4252,11 @@ impl Interpreter {
 
             // Phase 10: Result builtins
             "Ok" => {
-                let val = if args.is_empty() { Value::None } else { args[0].clone() };
+                let val = if args.is_empty() {
+                    Value::None
+                } else {
+                    args[0].clone()
+                };
                 Ok(Value::EnumInstance {
                     type_name: "Result".to_string(),
                     variant: "Ok".to_string(),
@@ -3607,7 +4264,11 @@ impl Interpreter {
                 })
             }
             "Err" => {
-                let val = if args.is_empty() { Value::String("error".to_string()) } else { args[0].clone() };
+                let val = if args.is_empty() {
+                    Value::String("error".to_string())
+                } else {
+                    args[0].clone()
+                };
                 Ok(Value::EnumInstance {
                     type_name: "Result".to_string(),
                     variant: "Err".to_string(),
@@ -3619,9 +4280,9 @@ impl Interpreter {
                     return Err(runtime_err_s("is_ok() expects an argument"));
                 }
                 match &args[0] {
-                    Value::EnumInstance { type_name, variant, .. } if type_name == "Result" => {
-                        Ok(Value::Bool(variant == "Ok"))
-                    }
+                    Value::EnumInstance {
+                        type_name, variant, ..
+                    } if type_name == "Result" => Ok(Value::Bool(variant == "Ok")),
                     _ => Ok(Value::Bool(false)),
                 }
             }
@@ -3630,9 +4291,9 @@ impl Interpreter {
                     return Err(runtime_err_s("is_err() expects an argument"));
                 }
                 match &args[0] {
-                    Value::EnumInstance { type_name, variant, .. } if type_name == "Result" => {
-                        Ok(Value::Bool(variant == "Err"))
-                    }
+                    Value::EnumInstance {
+                        type_name, variant, ..
+                    } if type_name == "Result" => Ok(Value::Bool(variant == "Err")),
                     _ => Ok(Value::Bool(false)),
                 }
             }
@@ -3641,7 +4302,11 @@ impl Interpreter {
                     return Err(runtime_err_s("unwrap() expects an argument"));
                 }
                 match &args[0] {
-                    Value::EnumInstance { type_name, variant, fields } if type_name == "Result" => {
+                    Value::EnumInstance {
+                        type_name,
+                        variant,
+                        fields,
+                    } if type_name == "Result" => {
                         if variant == "Ok" && !fields.is_empty() {
                             Ok(fields[0].clone())
                         } else if variant == "Err" {
@@ -3699,13 +4364,16 @@ impl Interpreter {
                 match &args[0] {
                     Value::Set(items) => {
                         let val = &args[1];
-                        let new_items: Vec<Value> = items.iter()
+                        let new_items: Vec<Value> = items
+                            .iter()
                             .filter(|x| !values_equal(x, val))
                             .cloned()
                             .collect();
                         Ok(Value::Set(new_items))
                     }
-                    _ => Err(runtime_err_s("set_remove() expects a set as first argument")),
+                    _ => Err(runtime_err_s(
+                        "set_remove() expects a set as first argument",
+                    )),
                 }
             }
             "set_contains" => {
@@ -3717,7 +4385,9 @@ impl Interpreter {
                         let val = &args[1];
                         Ok(Value::Bool(items.iter().any(|x| values_equal(x, val))))
                     }
-                    _ => Err(runtime_err_s("set_contains() expects a set as first argument")),
+                    _ => Err(runtime_err_s(
+                        "set_contains() expects a set as first argument",
+                    )),
                 }
             }
             "set_union" => {
@@ -3743,7 +4413,8 @@ impl Interpreter {
                 }
                 match (&args[0], &args[1]) {
                     (Value::Set(a), Value::Set(b)) => {
-                        let result: Vec<Value> = a.iter()
+                        let result: Vec<Value> = a
+                            .iter()
                             .filter(|x| b.iter().any(|y| values_equal(x, y)))
                             .cloned()
                             .collect();
@@ -3758,7 +4429,8 @@ impl Interpreter {
                 }
                 match (&args[0], &args[1]) {
                     (Value::Set(a), Value::Set(b)) => {
-                        let result: Vec<Value> = a.iter()
+                        let result: Vec<Value> = a
+                            .iter()
                             .filter(|x| !b.iter().any(|y| values_equal(x, y)))
                             .cloned()
                             .collect();
@@ -3770,7 +4442,11 @@ impl Interpreter {
 
             // ── Phase 15: Data Quality & Connectors ──
             "fill_null" => {
-                if args.len() < 2 { return Err(runtime_err_s("fill_null() expects (table, column, [strategy], [value])")); }
+                if args.len() < 2 {
+                    return Err(runtime_err_s(
+                        "fill_null() expects (table, column, [strategy], [value])",
+                    ));
+                }
                 let df = match &args[0] {
                     Value::Table(t) => t.df.clone(),
                     _ => return Err(runtime_err_s("fill_null() first arg must be a table")),
@@ -3780,8 +4456,13 @@ impl Interpreter {
                     _ => return Err(runtime_err_s("fill_null() column must be a string")),
                 };
                 let strategy = if args.len() > 2 {
-                    match &args[2] { Value::String(s) => s.clone(), _ => "value".to_string() }
-                } else { "value".to_string() };
+                    match &args[2] {
+                        Value::String(s) => s.clone(),
+                        _ => "value".to_string(),
+                    }
+                } else {
+                    "value".to_string()
+                };
                 let fill_value = if args.len() > 3 {
                     match &args[3] {
                         Value::Int(n) => Some(*n as f64),
@@ -3790,16 +4471,35 @@ impl Interpreter {
                     }
                 } else if args.len() > 2 && strategy == "value" {
                     match &args[2] {
-                        Value::Int(n) => { let r = self.engine().fill_null(df, &column, "value", Some(*n as f64)).map_err(|e| runtime_err(e))?; return Ok(Value::Table(TlTable { df: r })); }
-                        Value::Float(f) => { let r = self.engine().fill_null(df, &column, "value", Some(*f)).map_err(|e| runtime_err(e))?; return Ok(Value::Table(TlTable { df: r })); }
+                        Value::Int(n) => {
+                            let r = self
+                                .engine()
+                                .fill_null(df, &column, "value", Some(*n as f64))
+                                .map_err(runtime_err)?;
+                            return Ok(Value::Table(TlTable { df: r }));
+                        }
+                        Value::Float(f) => {
+                            let r = self
+                                .engine()
+                                .fill_null(df, &column, "value", Some(*f))
+                                .map_err(runtime_err)?;
+                            return Ok(Value::Table(TlTable { df: r }));
+                        }
                         _ => None,
                     }
-                } else { None };
-                let result = self.engine().fill_null(df, &column, &strategy, fill_value).map_err(|e| runtime_err(e))?;
+                } else {
+                    None
+                };
+                let result = self
+                    .engine()
+                    .fill_null(df, &column, &strategy, fill_value)
+                    .map_err(runtime_err)?;
                 Ok(Value::Table(TlTable { df: result }))
             }
             "drop_null" => {
-                if args.len() < 2 { return Err(runtime_err_s("drop_null() expects (table, column)")); }
+                if args.len() < 2 {
+                    return Err(runtime_err_s("drop_null() expects (table, column)"));
+                }
                 let df = match &args[0] {
                     Value::Table(t) => t.df.clone(),
                     _ => return Err(runtime_err_s("drop_null() first arg must be a table")),
@@ -3808,23 +4508,34 @@ impl Interpreter {
                     Value::String(s) => s.clone(),
                     _ => return Err(runtime_err_s("drop_null() column must be a string")),
                 };
-                let result = self.engine().drop_null(df, &column).map_err(|e| runtime_err(e))?;
+                let result = self.engine().drop_null(df, &column).map_err(runtime_err)?;
                 Ok(Value::Table(TlTable { df: result }))
             }
             "dedup" => {
-                if args.is_empty() { return Err(runtime_err_s("dedup() expects (table, [columns...])")); }
+                if args.is_empty() {
+                    return Err(runtime_err_s("dedup() expects (table, [columns...])"));
+                }
                 let df = match &args[0] {
                     Value::Table(t) => t.df.clone(),
                     _ => return Err(runtime_err_s("dedup() first arg must be a table")),
                 };
-                let columns: Vec<String> = args[1..].iter().filter_map(|a| {
-                    if let Value::String(s) = a { Some(s.clone()) } else { None }
-                }).collect();
-                let result = self.engine().dedup(df, &columns).map_err(|e| runtime_err(e))?;
+                let columns: Vec<String> = args[1..]
+                    .iter()
+                    .filter_map(|a| {
+                        if let Value::String(s) = a {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let result = self.engine().dedup(df, &columns).map_err(runtime_err)?;
                 Ok(Value::Table(TlTable { df: result }))
             }
             "clamp" => {
-                if args.len() < 4 { return Err(runtime_err_s("clamp() expects (table, column, min, max)")); }
+                if args.len() < 4 {
+                    return Err(runtime_err_s("clamp() expects (table, column, min, max)"));
+                }
                 let df = match &args[0] {
                     Value::Table(t) => t.df.clone(),
                     _ => return Err(runtime_err_s("clamp() first arg must be a table")),
@@ -3843,29 +4554,38 @@ impl Interpreter {
                     Value::Float(f) => *f,
                     _ => return Err(runtime_err_s("clamp() max must be a number")),
                 };
-                let result = self.engine().clamp(df, &column, min_val, max_val).map_err(|e| runtime_err(e))?;
+                let result = self
+                    .engine()
+                    .clamp(df, &column, min_val, max_val)
+                    .map_err(runtime_err)?;
                 Ok(Value::Table(TlTable { df: result }))
             }
             "data_profile" => {
-                if args.is_empty() { return Err(runtime_err_s("data_profile() expects (table)")); }
+                if args.is_empty() {
+                    return Err(runtime_err_s("data_profile() expects (table)"));
+                }
                 let df = match &args[0] {
                     Value::Table(t) => t.df.clone(),
                     _ => return Err(runtime_err_s("data_profile() arg must be a table")),
                 };
-                let result = self.engine().data_profile(df).map_err(|e| runtime_err(e))?;
+                let result = self.engine().data_profile(df).map_err(runtime_err)?;
                 Ok(Value::Table(TlTable { df: result }))
             }
             "row_count" => {
-                if args.is_empty() { return Err(runtime_err_s("row_count() expects (table)")); }
+                if args.is_empty() {
+                    return Err(runtime_err_s("row_count() expects (table)"));
+                }
                 let df = match &args[0] {
                     Value::Table(t) => t.df.clone(),
                     _ => return Err(runtime_err_s("row_count() arg must be a table")),
                 };
-                let count = self.engine().row_count(df).map_err(|e| runtime_err(e))?;
+                let count = self.engine().row_count(df).map_err(runtime_err)?;
                 Ok(Value::Int(count))
             }
             "null_rate" => {
-                if args.len() < 2 { return Err(runtime_err_s("null_rate() expects (table, column)")); }
+                if args.len() < 2 {
+                    return Err(runtime_err_s("null_rate() expects (table, column)"));
+                }
                 let df = match &args[0] {
                     Value::Table(t) => t.df.clone(),
                     _ => return Err(runtime_err_s("null_rate() first arg must be a table")),
@@ -3874,11 +4594,13 @@ impl Interpreter {
                     Value::String(s) => s.clone(),
                     _ => return Err(runtime_err_s("null_rate() column must be a string")),
                 };
-                let rate = self.engine().null_rate(df, &column).map_err(|e| runtime_err(e))?;
+                let rate = self.engine().null_rate(df, &column).map_err(runtime_err)?;
                 Ok(Value::Float(rate))
             }
             "is_unique" => {
-                if args.len() < 2 { return Err(runtime_err_s("is_unique() expects (table, column)")); }
+                if args.len() < 2 {
+                    return Err(runtime_err_s("is_unique() expects (table, column)"));
+                }
                 let df = match &args[0] {
                     Value::Table(t) => t.df.clone(),
                     _ => return Err(runtime_err_s("is_unique() first arg must be a table")),
@@ -3887,11 +4609,13 @@ impl Interpreter {
                     Value::String(s) => s.clone(),
                     _ => return Err(runtime_err_s("is_unique() column must be a string")),
                 };
-                let unique = self.engine().is_unique(df, &column).map_err(|e| runtime_err(e))?;
+                let unique = self.engine().is_unique(df, &column).map_err(runtime_err)?;
                 Ok(Value::Bool(unique))
             }
             "is_email" => {
-                if args.is_empty() { return Err(runtime_err_s("is_email() expects 1 argument")); }
+                if args.is_empty() {
+                    return Err(runtime_err_s("is_email() expects 1 argument"));
+                }
                 let s = match &args[0] {
                     Value::String(s) => s.clone(),
                     _ => return Err(runtime_err_s("is_email() arg must be a string")),
@@ -3899,7 +4623,9 @@ impl Interpreter {
                 Ok(Value::Bool(tl_data::validate::is_email(&s)))
             }
             "is_url" => {
-                if args.is_empty() { return Err(runtime_err_s("is_url() expects 1 argument")); }
+                if args.is_empty() {
+                    return Err(runtime_err_s("is_url() expects 1 argument"));
+                }
                 let s = match &args[0] {
                     Value::String(s) => s.clone(),
                     _ => return Err(runtime_err_s("is_url() arg must be a string")),
@@ -3907,7 +4633,9 @@ impl Interpreter {
                 Ok(Value::Bool(tl_data::validate::is_url(&s)))
             }
             "is_phone" => {
-                if args.is_empty() { return Err(runtime_err_s("is_phone() expects 1 argument")); }
+                if args.is_empty() {
+                    return Err(runtime_err_s("is_phone() expects 1 argument"));
+                }
                 let s = match &args[0] {
                     Value::String(s) => s.clone(),
                     _ => return Err(runtime_err_s("is_phone() arg must be a string")),
@@ -3915,7 +4643,9 @@ impl Interpreter {
                 Ok(Value::Bool(tl_data::validate::is_phone(&s)))
             }
             "is_between" => {
-                if args.len() < 3 { return Err(runtime_err_s("is_between() expects (value, low, high)")); }
+                if args.len() < 3 {
+                    return Err(runtime_err_s("is_between() expects (value, low, high)"));
+                }
                 let val = match &args[0] {
                     Value::Int(n) => *n as f64,
                     Value::Float(f) => *f,
@@ -3934,7 +4664,9 @@ impl Interpreter {
                 Ok(Value::Bool(tl_data::validate::is_between(val, low, high)))
             }
             "levenshtein" => {
-                if args.len() < 2 { return Err(runtime_err_s("levenshtein() expects (str_a, str_b)")); }
+                if args.len() < 2 {
+                    return Err(runtime_err_s("levenshtein() expects (str_a, str_b)"));
+                }
                 let a = match &args[0] {
                     Value::String(s) => s.clone(),
                     _ => return Err(runtime_err_s("levenshtein() args must be strings")),
@@ -3946,7 +4678,9 @@ impl Interpreter {
                 Ok(Value::Int(tl_data::validate::levenshtein(&a, &b) as i64))
             }
             "soundex" => {
-                if args.is_empty() { return Err(runtime_err_s("soundex() expects 1 argument")); }
+                if args.is_empty() {
+                    return Err(runtime_err_s("soundex() expects 1 argument"));
+                }
                 let s = match &args[0] {
                     Value::String(s) => s.clone(),
                     _ => return Err(runtime_err_s("soundex() arg must be a string")),
@@ -3956,7 +4690,9 @@ impl Interpreter {
             "read_mysql" => {
                 #[cfg(feature = "mysql")]
                 {
-                    if args.len() < 2 { return Err(runtime_err_s("read_mysql() expects (conn_str, query)")); }
+                    if args.len() < 2 {
+                        return Err(runtime_err_s("read_mysql() expects (conn_str, query)"));
+                    }
                     let conn_str = match &args[0] {
                         Value::String(s) => s.clone(),
                         _ => return Err(runtime_err_s("read_mysql() conn_str must be a string")),
@@ -3965,7 +4701,10 @@ impl Interpreter {
                         Value::String(s) => s.clone(),
                         _ => return Err(runtime_err_s("read_mysql() query must be a string")),
                     };
-                    let df = self.engine().read_mysql(&conn_str, &query).map_err(|e| runtime_err(e))?;
+                    let df = self
+                        .engine()
+                        .read_mysql(&conn_str, &query)
+                        .map_err(|e| runtime_err(e))?;
                     Ok(Value::Table(TlTable { df }))
                 }
                 #[cfg(not(feature = "mysql"))]
@@ -3974,7 +4713,9 @@ impl Interpreter {
             "read_sqlite" => {
                 #[cfg(feature = "sqlite")]
                 {
-                    if args.len() < 2 { return Err(runtime_err_s("read_sqlite() expects (db_path, query)")); }
+                    if args.len() < 2 {
+                        return Err(runtime_err_s("read_sqlite() expects (db_path, query)"));
+                    }
                     let db_path = match &args[0] {
                         Value::String(s) => s.clone(),
                         _ => return Err(runtime_err_s("read_sqlite() db_path must be a string")),
@@ -3983,7 +4724,10 @@ impl Interpreter {
                         Value::String(s) => s.clone(),
                         _ => return Err(runtime_err_s("read_sqlite() query must be a string")),
                     };
-                    let df = self.engine().read_sqlite(&db_path, &query).map_err(|e| runtime_err(e))?;
+                    let df = self
+                        .engine()
+                        .read_sqlite(&db_path, &query)
+                        .map_err(|e| runtime_err(e))?;
                     Ok(Value::Table(TlTable { df }))
                 }
                 #[cfg(not(feature = "sqlite"))]
@@ -3992,7 +4736,11 @@ impl Interpreter {
             "write_sqlite" => {
                 #[cfg(feature = "sqlite")]
                 {
-                    if args.len() < 3 { return Err(runtime_err_s("write_sqlite() expects (table, db_path, table_name)")); }
+                    if args.len() < 3 {
+                        return Err(runtime_err_s(
+                            "write_sqlite() expects (table, db_path, table_name)",
+                        ));
+                    }
                     let df = match &args[0] {
                         Value::Table(t) => t.df.clone(),
                         _ => return Err(runtime_err_s("write_sqlite() first arg must be a table")),
@@ -4003,32 +4751,47 @@ impl Interpreter {
                     };
                     let table_name = match &args[2] {
                         Value::String(s) => s.clone(),
-                        _ => return Err(runtime_err_s("write_sqlite() table_name must be a string")),
+                        _ => {
+                            return Err(runtime_err_s(
+                                "write_sqlite() table_name must be a string",
+                            ));
+                        }
                     };
-                    self.engine().write_sqlite(df, &db_path, &table_name).map_err(|e| runtime_err(e))?;
+                    self.engine()
+                        .write_sqlite(df, &db_path, &table_name)
+                        .map_err(|e| runtime_err(e))?;
                     Ok(Value::None)
                 }
                 #[cfg(not(feature = "sqlite"))]
-                Err(runtime_err_s("write_sqlite() requires the 'sqlite' feature"))
+                Err(runtime_err_s(
+                    "write_sqlite() requires the 'sqlite' feature",
+                ))
             }
             "redis_connect" => {
                 #[cfg(feature = "redis")]
                 {
-                    if args.is_empty() { return Err(runtime_err_s("redis_connect() expects (url)")); }
+                    if args.is_empty() {
+                        return Err(runtime_err_s("redis_connect() expects (url)"));
+                    }
                     let url = match &args[0] {
                         Value::String(s) => s.clone(),
                         _ => return Err(runtime_err_s("redis_connect() url must be a string")),
                     };
-                    let result = tl_data::redis_conn::redis_connect(&url).map_err(|e| runtime_err(e))?;
+                    let result =
+                        tl_data::redis_conn::redis_connect(&url).map_err(|e| runtime_err(e))?;
                     Ok(Value::String(result))
                 }
                 #[cfg(not(feature = "redis"))]
-                Err(runtime_err_s("redis_connect() requires the 'redis' feature"))
+                Err(runtime_err_s(
+                    "redis_connect() requires the 'redis' feature",
+                ))
             }
             "redis_get" => {
                 #[cfg(feature = "redis")]
                 {
-                    if args.len() < 2 { return Err(runtime_err_s("redis_get() expects (url, key)")); }
+                    if args.len() < 2 {
+                        return Err(runtime_err_s("redis_get() expects (url, key)"));
+                    }
                     let url = match &args[0] {
                         Value::String(s) => s.clone(),
                         _ => return Err(runtime_err_s("redis_get() url must be a string")),
@@ -4048,7 +4811,9 @@ impl Interpreter {
             "redis_set" => {
                 #[cfg(feature = "redis")]
                 {
-                    if args.len() < 3 { return Err(runtime_err_s("redis_set() expects (url, key, value)")); }
+                    if args.len() < 3 {
+                        return Err(runtime_err_s("redis_set() expects (url, key, value)"));
+                    }
                     let url = match &args[0] {
                         Value::String(s) => s.clone(),
                         _ => return Err(runtime_err_s("redis_set() url must be a string")),
@@ -4061,7 +4826,8 @@ impl Interpreter {
                         Value::String(s) => s.clone(),
                         _ => format!("{}", &args[2]),
                     };
-                    tl_data::redis_conn::redis_set(&url, &key, &value).map_err(|e| runtime_err(e))?;
+                    tl_data::redis_conn::redis_set(&url, &key, &value)
+                        .map_err(|e| runtime_err(e))?;
                     Ok(Value::None)
                 }
                 #[cfg(not(feature = "redis"))]
@@ -4070,7 +4836,9 @@ impl Interpreter {
             "redis_del" => {
                 #[cfg(feature = "redis")]
                 {
-                    if args.len() < 2 { return Err(runtime_err_s("redis_del() expects (url, key)")); }
+                    if args.len() < 2 {
+                        return Err(runtime_err_s("redis_del() expects (url, key)"));
+                    }
                     let url = match &args[0] {
                         Value::String(s) => s.clone(),
                         _ => return Err(runtime_err_s("redis_del() url must be a string")),
@@ -4079,14 +4847,19 @@ impl Interpreter {
                         Value::String(s) => s.clone(),
                         _ => return Err(runtime_err_s("redis_del() key must be a string")),
                     };
-                    let deleted = tl_data::redis_conn::redis_del(&url, &key).map_err(|e| runtime_err(e))?;
+                    let deleted =
+                        tl_data::redis_conn::redis_del(&url, &key).map_err(|e| runtime_err(e))?;
                     Ok(Value::Bool(deleted))
                 }
                 #[cfg(not(feature = "redis"))]
                 Err(runtime_err_s("redis_del() requires the 'redis' feature"))
             }
             "graphql_query" => {
-                if args.len() < 2 { return Err(runtime_err_s("graphql_query() expects (endpoint, query, [variables])")); }
+                if args.len() < 2 {
+                    return Err(runtime_err_s(
+                        "graphql_query() expects (endpoint, query, [variables])",
+                    ));
+                }
                 let endpoint = match &args[0] {
                     Value::String(s) => s.clone(),
                     _ => return Err(runtime_err_s("graphql_query() endpoint must be a string")),
@@ -4106,12 +4879,15 @@ impl Interpreter {
                     body.insert("variables".to_string(), variables);
                 }
                 let client = reqwest::blocking::Client::new();
-                let resp = client.post(&endpoint)
+                let resp = client
+                    .post(&endpoint)
                     .header("Content-Type", "application/json")
                     .json(&body)
                     .send()
                     .map_err(|e| runtime_err(format!("graphql_query() request error: {e}")))?;
-                let text = resp.text().map_err(|e| runtime_err(format!("graphql_query() response error: {e}")))?;
+                let text = resp
+                    .text()
+                    .map_err(|e| runtime_err(format!("graphql_query() response error: {e}")))?;
                 let json: serde_json::Value = serde_json::from_str(&text)
                     .map_err(|e| runtime_err(format!("graphql_query() JSON parse error: {e}")))?;
                 Ok(json_to_value(&json))
@@ -4119,7 +4895,11 @@ impl Interpreter {
             "register_s3" => {
                 #[cfg(feature = "s3")]
                 {
-                    if args.len() < 2 { return Err(runtime_err_s("register_s3() expects (bucket, region, [access_key], [secret_key], [endpoint])")); }
+                    if args.len() < 2 {
+                        return Err(runtime_err_s(
+                            "register_s3() expects (bucket, region, [access_key], [secret_key], [endpoint])",
+                        ));
+                    }
                     let bucket = match &args[0] {
                         Value::String(s) => s.clone(),
                         _ => return Err(runtime_err_s("register_s3() bucket must be a string")),
@@ -4128,13 +4908,36 @@ impl Interpreter {
                         Value::String(s) => s.clone(),
                         _ => return Err(runtime_err_s("register_s3() region must be a string")),
                     };
-                    let access_key = args.get(2).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None });
-                    let secret_key = args.get(3).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None });
-                    let endpoint = args.get(4).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None });
-                    self.engine().register_s3(
-                        &bucket, &region,
-                        access_key.as_deref(), secret_key.as_deref(), endpoint.as_deref(),
-                    ).map_err(|e| runtime_err(e))?;
+                    let access_key = args.get(2).and_then(|v| {
+                        if let Value::String(s) = v {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    });
+                    let secret_key = args.get(3).and_then(|v| {
+                        if let Value::String(s) = v {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    });
+                    let endpoint = args.get(4).and_then(|v| {
+                        if let Value::String(s) = v {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    });
+                    self.engine()
+                        .register_s3(
+                            &bucket,
+                            &region,
+                            access_key.as_deref(),
+                            secret_key.as_deref(),
+                            endpoint.as_deref(),
+                        )
+                        .map_err(|e| runtime_err(e))?;
                     Ok(Value::None)
                 }
                 #[cfg(not(feature = "s3"))]
@@ -4144,112 +4947,207 @@ impl Interpreter {
             // Phase 20: Python FFI
             "py_import" => {
                 #[cfg(feature = "python")]
-                { self.interp_py_import(args) }
+                {
+                    self.interp_py_import(args)
+                }
                 #[cfg(not(feature = "python"))]
                 Err(runtime_err_s("py_import() requires the 'python' feature"))
             }
             "py_call" => {
                 #[cfg(feature = "python")]
-                { self.interp_py_call(args) }
+                {
+                    self.interp_py_call(args)
+                }
                 #[cfg(not(feature = "python"))]
                 Err(runtime_err_s("py_call() requires the 'python' feature"))
             }
             "py_eval" => {
                 #[cfg(feature = "python")]
-                { self.interp_py_eval(args) }
+                {
+                    self.interp_py_eval(args)
+                }
                 #[cfg(not(feature = "python"))]
                 Err(runtime_err_s("py_eval() requires the 'python' feature"))
             }
             "py_getattr" => {
                 #[cfg(feature = "python")]
-                { self.interp_py_getattr(args) }
+                {
+                    self.interp_py_getattr(args)
+                }
                 #[cfg(not(feature = "python"))]
                 Err(runtime_err_s("py_getattr() requires the 'python' feature"))
             }
             "py_setattr" => {
                 #[cfg(feature = "python")]
-                { self.interp_py_setattr(args) }
+                {
+                    self.interp_py_setattr(args)
+                }
                 #[cfg(not(feature = "python"))]
                 Err(runtime_err_s("py_setattr() requires the 'python' feature"))
             }
             "py_to_tl" => {
                 #[cfg(feature = "python")]
-                { self.interp_py_to_tl(args) }
+                {
+                    self.interp_py_to_tl(args)
+                }
                 #[cfg(not(feature = "python"))]
                 Err(runtime_err_s("py_to_tl() requires the 'python' feature"))
             }
 
             // Phase 21: Schema Evolution
             "schema_register" => {
-                let name = match args.first() { Some(Value::String(s)) => s.clone(), _ => return Err(runtime_err_s("schema_register: need name")) };
-                let version = match args.get(1) { Some(Value::Int(v)) => *v, _ => return Err(runtime_err_s("schema_register: need version")) };
+                let name = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => return Err(runtime_err_s("schema_register: need name")),
+                };
+                let version = match args.get(1) {
+                    Some(Value::Int(v)) => *v,
+                    _ => return Err(runtime_err_s("schema_register: need version")),
+                };
                 let fields = match args.get(2) {
                     Some(Value::Map(pairs)) => {
                         let mut arrow_fields = Vec::new();
                         for (k, v) in pairs {
-                            let ftype = match v { Value::String(s) => s.clone(), _ => "string".to_string() };
-                            arrow_fields.push(ArrowField::new(k, tl_compiler::schema::type_name_to_arrow_pub(&ftype), true));
+                            let ftype = match v {
+                                Value::String(s) => s.clone(),
+                                _ => "string".to_string(),
+                            };
+                            arrow_fields.push(ArrowField::new(
+                                k,
+                                tl_compiler::schema::type_name_to_arrow_pub(&ftype),
+                                true,
+                            ));
                         }
                         arrow_fields
                     }
                     _ => return Err(runtime_err_s("schema_register: third arg must be a map")),
                 };
                 let schema = Arc::new(ArrowSchema::new(fields));
-                self.schema_registry.register(&name, version, schema, tl_compiler::schema::SchemaMetadata::default())
-                    .map_err(|e| runtime_err(e))?;
+                self.schema_registry
+                    .register(
+                        &name,
+                        version,
+                        schema,
+                        tl_compiler::schema::SchemaMetadata::default(),
+                    )
+                    .map_err(runtime_err)?;
                 Ok(Value::None)
             }
             "schema_get" => {
-                let name = match args.first() { Some(Value::String(s)) => s.clone(), _ => return Err(runtime_err_s("schema_get: need name")) };
-                let version = match args.get(1) { Some(Value::Int(v)) => *v, _ => return Err(runtime_err_s("schema_get: need version")) };
+                let name = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => return Err(runtime_err_s("schema_get: need name")),
+                };
+                let version = match args.get(1) {
+                    Some(Value::Int(v)) => *v,
+                    _ => return Err(runtime_err_s("schema_get: need version")),
+                };
                 match self.schema_registry.get(&name, version) {
                     Some(vs) => {
-                        let fields: Vec<Value> = vs.schema.fields().iter().map(|f: &std::sync::Arc<ArrowField>| {
-                            Value::String(format!("{}: {}", f.name(), f.data_type()))
-                        }).collect();
+                        let fields: Vec<Value> = vs
+                            .schema
+                            .fields()
+                            .iter()
+                            .map(|f: &std::sync::Arc<ArrowField>| {
+                                Value::String(format!("{}: {}", f.name(), f.data_type()))
+                            })
+                            .collect();
                         Ok(Value::List(fields))
                     }
                     None => Ok(Value::None),
                 }
             }
             "schema_latest" => {
-                let name = match args.first() { Some(Value::String(s)) => s.clone(), _ => return Err(runtime_err_s("schema_latest: need name")) };
+                let name = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => return Err(runtime_err_s("schema_latest: need name")),
+                };
                 match self.schema_registry.latest(&name) {
                     Some(vs) => Ok(Value::Int(vs.version)),
                     None => Ok(Value::None),
                 }
             }
             "schema_history" => {
-                let name = match args.first() { Some(Value::String(s)) => s.clone(), _ => return Err(runtime_err_s("schema_history: need name")) };
+                let name = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => return Err(runtime_err_s("schema_history: need name")),
+                };
                 let versions = self.schema_registry.versions(&name);
                 Ok(Value::List(versions.into_iter().map(Value::Int).collect()))
             }
             "schema_check" => {
-                let name = match args.first() { Some(Value::String(s)) => s.clone(), _ => return Err(runtime_err_s("schema_check: need name")) };
-                let v1 = match args.get(1) { Some(Value::Int(v)) => *v, _ => return Err(runtime_err_s("schema_check: need v1")) };
-                let v2 = match args.get(2) { Some(Value::Int(v)) => *v, _ => return Err(runtime_err_s("schema_check: need v2")) };
-                let mode_str = match args.get(3) { Some(Value::String(s)) => s.clone(), _ => "backward".to_string() };
+                let name = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => return Err(runtime_err_s("schema_check: need name")),
+                };
+                let v1 = match args.get(1) {
+                    Some(Value::Int(v)) => *v,
+                    _ => return Err(runtime_err_s("schema_check: need v1")),
+                };
+                let v2 = match args.get(2) {
+                    Some(Value::Int(v)) => *v,
+                    _ => return Err(runtime_err_s("schema_check: need v2")),
+                };
+                let mode_str = match args.get(3) {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => "backward".to_string(),
+                };
                 let mode = tl_compiler::schema::CompatibilityMode::from_str(&mode_str);
-                let issues = self.schema_registry.check_compatibility(&name, v1, v2, mode);
-                Ok(Value::List(issues.into_iter().map(|i: tl_compiler::schema::CompatIssue| Value::String(i.to_string())).collect()))
+                let issues = self
+                    .schema_registry
+                    .check_compatibility(&name, v1, v2, mode);
+                Ok(Value::List(
+                    issues
+                        .into_iter()
+                        .map(|i: tl_compiler::schema::CompatIssue| Value::String(i.to_string()))
+                        .collect(),
+                ))
             }
             "schema_diff" => {
-                let name = match args.first() { Some(Value::String(s)) => s.clone(), _ => return Err(runtime_err_s("schema_diff: need name")) };
-                let v1 = match args.get(1) { Some(Value::Int(v)) => *v, _ => return Err(runtime_err_s("schema_diff: need v1")) };
-                let v2 = match args.get(2) { Some(Value::Int(v)) => *v, _ => return Err(runtime_err_s("schema_diff: need v2")) };
+                let name = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => return Err(runtime_err_s("schema_diff: need name")),
+                };
+                let v1 = match args.get(1) {
+                    Some(Value::Int(v)) => *v,
+                    _ => return Err(runtime_err_s("schema_diff: need v1")),
+                };
+                let v2 = match args.get(2) {
+                    Some(Value::Int(v)) => *v,
+                    _ => return Err(runtime_err_s("schema_diff: need v2")),
+                };
                 let diffs = self.schema_registry.diff(&name, v1, v2);
-                Ok(Value::List(diffs.into_iter().map(|d: tl_compiler::schema::SchemaDiff| Value::String(d.to_string())).collect()))
+                Ok(Value::List(
+                    diffs
+                        .into_iter()
+                        .map(|d: tl_compiler::schema::SchemaDiff| Value::String(d.to_string()))
+                        .collect(),
+                ))
             }
             "schema_versions" => {
-                let name = match args.first() { Some(Value::String(s)) => s.clone(), _ => return Err(runtime_err_s("schema_versions: need name")) };
+                let name = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => return Err(runtime_err_s("schema_versions: need name")),
+                };
                 let versions = self.schema_registry.versions(&name);
                 Ok(Value::List(versions.into_iter().map(Value::Int).collect()))
             }
             "schema_fields" => {
-                let name = match args.first() { Some(Value::String(s)) => s.clone(), _ => return Err(runtime_err_s("schema_fields: need name")) };
-                let version = match args.get(1) { Some(Value::Int(v)) => *v, _ => return Err(runtime_err_s("schema_fields: need version")) };
+                let name = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => return Err(runtime_err_s("schema_fields: need name")),
+                };
+                let version = match args.get(1) {
+                    Some(Value::Int(v)) => *v,
+                    _ => return Err(runtime_err_s("schema_fields: need version")),
+                };
                 let fields = self.schema_registry.fields(&name, version);
-                Ok(Value::List(fields.into_iter().map(|(n, t)| Value::String(format!("{}: {}", n, t))).collect()))
+                Ok(Value::List(
+                    fields
+                        .into_iter()
+                        .map(|(n, t)| Value::String(format!("{}: {}", n, t)))
+                        .collect(),
+                ))
             }
 
             // Phase 22: decimal() builtin
@@ -4265,7 +5163,9 @@ impl Interpreter {
                     Some(Value::Int(n)) => Ok(Value::Decimal(rust_decimal::Decimal::from(*n))),
                     Some(Value::Float(n)) => {
                         use rust_decimal::prelude::FromPrimitive;
-                        Ok(Value::Decimal(rust_decimal::Decimal::from_f64(*n).unwrap_or_default()))
+                        Ok(Value::Decimal(
+                            rust_decimal::Decimal::from_f64(*n).unwrap_or_default(),
+                        ))
                     }
                     Some(Value::Decimal(d)) => Ok(Value::Decimal(*d)),
                     _ => Err(runtime_err_s("decimal() expects a string, int, or float")),
@@ -4274,7 +5174,10 @@ impl Interpreter {
 
             // Phase 23: Secret vault
             "secret_get" => {
-                let key = match args.first() { Some(Value::String(s)) => s.clone(), _ => return Err(runtime_err_s("secret_get: need key")) };
+                let key = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => return Err(runtime_err_s("secret_get: need key")),
+                };
                 if let Some(val) = self.secret_vault.get(&key) {
                     Ok(Value::Secret(val.clone()))
                 } else {
@@ -4287,7 +5190,10 @@ impl Interpreter {
                 }
             }
             "secret_set" => {
-                let key = match args.first() { Some(Value::String(s)) => s.clone(), _ => return Err(runtime_err_s("secret_set: need key")) };
+                let key = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => return Err(runtime_err_s("secret_set: need key")),
+                };
                 let val = match args.get(1) {
                     Some(Value::String(s)) => s.clone(),
                     Some(Value::Secret(s)) => s.clone(),
@@ -4297,16 +5203,26 @@ impl Interpreter {
                 Ok(Value::None)
             }
             "secret_delete" => {
-                let key = match args.first() { Some(Value::String(s)) => s.clone(), _ => return Err(runtime_err_s("secret_delete: need key")) };
+                let key = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => return Err(runtime_err_s("secret_delete: need key")),
+                };
                 self.secret_vault.remove(&key);
                 Ok(Value::None)
             }
             "secret_list" => {
-                let keys: Vec<Value> = self.secret_vault.keys().map(|k| Value::String(k.clone())).collect();
+                let keys: Vec<Value> = self
+                    .secret_vault
+                    .keys()
+                    .map(|k| Value::String(k.clone()))
+                    .collect();
                 Ok(Value::List(keys))
             }
             "check_permission" => {
-                let perm = match args.first() { Some(Value::String(s)) => s.clone(), _ => return Err(runtime_err_s("check_permission: need permission string")) };
+                let perm = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => return Err(runtime_err_s("check_permission: need permission string")),
+                };
                 let allowed = match &self.security_policy {
                     Some(policy) => policy.check(&perm),
                     None => true,
@@ -4316,7 +5232,11 @@ impl Interpreter {
 
             // Phase 23: Data masking
             "mask_email" => {
-                let email = match args.first() { Some(Value::String(s)) => s.clone(), Some(Value::Secret(s)) => s.clone(), _ => return Err(runtime_err_s("mask_email: need string")) };
+                let email = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    Some(Value::Secret(s)) => s.clone(),
+                    _ => return Err(runtime_err_s("mask_email: need string")),
+                };
                 let masked = if let Some(at_pos) = email.find('@') {
                     let local = &email[..at_pos];
                     let domain = &email[at_pos..];
@@ -4331,20 +5251,28 @@ impl Interpreter {
                 Ok(Value::String(masked))
             }
             "mask_phone" => {
-                let phone = match args.first() { Some(Value::String(s)) => s.clone(), Some(Value::Secret(s)) => s.clone(), _ => return Err(runtime_err_s("mask_phone: need string")) };
+                let phone = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    Some(Value::Secret(s)) => s.clone(),
+                    _ => return Err(runtime_err_s("mask_phone: need string")),
+                };
                 let digits: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
                 if digits.len() >= 4 {
-                    let last4 = &digits[digits.len()-4..];
+                    let last4 = &digits[digits.len() - 4..];
                     Ok(Value::String(format!("***-***-{last4}")))
                 } else {
                     Ok(Value::String("***".to_string()))
                 }
             }
             "mask_cc" => {
-                let cc = match args.first() { Some(Value::String(s)) => s.clone(), Some(Value::Secret(s)) => s.clone(), _ => return Err(runtime_err_s("mask_cc: need string")) };
+                let cc = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    Some(Value::Secret(s)) => s.clone(),
+                    _ => return Err(runtime_err_s("mask_cc: need string")),
+                };
                 let digits: String = cc.chars().filter(|c| c.is_ascii_digit()).collect();
                 if digits.len() >= 4 {
-                    let last4 = &digits[digits.len()-4..];
+                    let last4 = &digits[digits.len() - 4..];
                     Ok(Value::String(format!("****-****-****-{last4}")))
                 } else {
                     Ok(Value::String("****-****-****-****".to_string()))
@@ -4357,11 +5285,17 @@ impl Interpreter {
                     Some(v) => format!("{v}"),
                     None => return Err(runtime_err_s("redact: need value")),
                 };
-                let policy = match args.get(1) { Some(Value::String(s)) => s.as_str(), _ => "full" };
+                let policy = match args.get(1) {
+                    Some(Value::String(s)) => s.as_str(),
+                    _ => "full",
+                };
                 let result = match policy {
                     "partial" => {
-                        if val.len() <= 2 { "***".to_string() }
-                        else { format!("{}***{}", &val[..1], &val[val.len()-1..]) }
+                        if val.len() <= 2 {
+                            "***".to_string()
+                        } else {
+                            format!("{}***{}", &val[..1], &val[val.len() - 1..])
+                        }
                     }
                     "hash" => {
                         use sha2::Digest;
@@ -4379,7 +5313,10 @@ impl Interpreter {
                     Some(v) => format!("{v}"),
                     None => return Err(runtime_err_s("hash: need value")),
                 };
-                let algo = match args.get(1) { Some(Value::String(s)) => s.as_str(), _ => "sha256" };
+                let algo = match args.get(1) {
+                    Some(Value::String(s)) => s.as_str(),
+                    _ => "sha256",
+                };
                 let result = match algo {
                     "sha256" => {
                         use sha2::Digest;
@@ -4396,7 +5333,11 @@ impl Interpreter {
                         let hash = md5::Md5::digest(val.as_bytes());
                         format!("{:x}", hash)
                     }
-                    _ => return Err(runtime_err(format!("hash: unknown algorithm '{algo}', use sha256/sha512/md5"))),
+                    _ => {
+                        return Err(runtime_err(format!(
+                            "hash: unknown algorithm '{algo}', use sha256/sha512/md5"
+                        )));
+                    }
                 };
                 Ok(Value::String(result))
             }
@@ -4410,16 +5351,20 @@ impl Interpreter {
                 };
                 if let Some(policy) = &self.security_policy {
                     if !policy.check("file_read") {
-                        return Err(runtime_err_s("async_read_file: file_read not allowed by security policy"));
+                        return Err(runtime_err_s(
+                            "async_read_file: file_read not allowed by security policy",
+                        ));
                     }
                 }
                 let rt = self.ensure_runtime();
                 let (tx, rx) = mpsc::channel();
                 rt.spawn(async move {
                     let result = tokio::fs::read_to_string(&path).await;
-                    let _ = tx.send(result
-                        .map(|s| Value::String(s))
-                        .map_err(|e| format!("async_read_file error: {e}")));
+                    let _ = tx.send(
+                        result
+                            .map(|s| Value::String(s))
+                            .map_err(|e| format!("async_read_file error: {e}")),
+                    );
                 });
                 Ok(Value::Task(Arc::new(TlTask::new(rx))))
             }
@@ -4435,16 +5380,20 @@ impl Interpreter {
                 };
                 if let Some(policy) = &self.security_policy {
                     if !policy.check("file_write") {
-                        return Err(runtime_err_s("async_write_file: file_write not allowed by security policy"));
+                        return Err(runtime_err_s(
+                            "async_write_file: file_write not allowed by security policy",
+                        ));
                     }
                 }
                 let rt = self.ensure_runtime();
                 let (tx, rx) = mpsc::channel();
                 rt.spawn(async move {
                     let result = tokio::fs::write(&path, content.as_bytes()).await;
-                    let _ = tx.send(result
-                        .map(|_| Value::None)
-                        .map_err(|e| format!("async_write_file error: {e}")));
+                    let _ = tx.send(
+                        result
+                            .map(|_| Value::None)
+                            .map_err(|e| format!("async_write_file error: {e}")),
+                    );
                 });
                 Ok(Value::Task(Arc::new(TlTask::new(rx))))
             }
@@ -4456,19 +5405,24 @@ impl Interpreter {
                 };
                 if let Some(policy) = &self.security_policy {
                     if !policy.check("network") {
-                        return Err(runtime_err_s("async_http_get: network not allowed by security policy"));
+                        return Err(runtime_err_s(
+                            "async_http_get: network not allowed by security policy",
+                        ));
                     }
                 }
                 let rt = self.ensure_runtime();
                 let (tx, rx) = mpsc::channel();
                 rt.spawn(async move {
                     let result: Result<Value, String> = async {
-                        let body = reqwest::get(&url).await
+                        let body = reqwest::get(&url)
+                            .await
                             .map_err(|e| format!("async_http_get error: {e}"))?
-                            .text().await
+                            .text()
+                            .await
                             .map_err(|e| format!("async_http_get response error: {e}"))?;
                         Ok(Value::String(body))
-                    }.await;
+                    }
+                    .await;
                     let _ = tx.send(result);
                 });
                 Ok(Value::Task(Arc::new(TlTask::new(rx))))
@@ -4485,7 +5439,9 @@ impl Interpreter {
                 };
                 if let Some(policy) = &self.security_policy {
                     if !policy.check("network") {
-                        return Err(runtime_err_s("async_http_post: network not allowed by security policy"));
+                        return Err(runtime_err_s(
+                            "async_http_post: network not allowed by security policy",
+                        ));
                     }
                 }
                 let rt = self.ensure_runtime();
@@ -4495,12 +5451,15 @@ impl Interpreter {
                         let resp = reqwest::Client::new()
                             .post(&url)
                             .body(body)
-                            .send().await
+                            .send()
+                            .await
                             .map_err(|e| format!("async_http_post error: {e}"))?
-                            .text().await
+                            .text()
+                            .await
                             .map_err(|e| format!("async_http_post response error: {e}"))?;
                         Ok(Value::String(resp))
-                    }.await;
+                    }
+                    .await;
                     let _ = tx.send(result);
                 });
                 Ok(Value::Task(Arc::new(TlTask::new(rx))))
@@ -4509,7 +5468,11 @@ impl Interpreter {
             "async_sleep" => {
                 let ms = match args.first() {
                     Some(Value::Int(n)) => *n as u64,
-                    _ => return Err(runtime_err_s("async_sleep() expects an integer (milliseconds)")),
+                    _ => {
+                        return Err(runtime_err_s(
+                            "async_sleep() expects an integer (milliseconds)",
+                        ));
+                    }
                 };
                 let rt = self.ensure_runtime();
                 let (tx, rx) = mpsc::channel();
@@ -4531,10 +5494,20 @@ impl Interpreter {
                             let rx = task.receiver.lock().unwrap().take();
                             match rx {
                                 Some(r) => receivers.push(r),
-                                None => return Err(runtime_err(format!("select: task {} already consumed", i))),
+                                None => {
+                                    return Err(runtime_err(format!(
+                                        "select: task {} already consumed",
+                                        i
+                                    )));
+                                }
                             }
                         }
-                        _ => return Err(runtime_err(format!("select: argument {} is not a task", i))),
+                        _ => {
+                            return Err(runtime_err(format!(
+                                "select: argument {} is not a task",
+                                i
+                            )));
+                        }
                     }
                 }
                 let (winner_tx, winner_rx) = mpsc::channel::<Result<Value, String>>();
@@ -4556,7 +5529,9 @@ impl Interpreter {
                     _ => return Err(runtime_err_s("race_all() expects a list of tasks")),
                 };
                 if tasks.is_empty() {
-                    return Err(runtime_err_s("race_all() expects a non-empty list of tasks"));
+                    return Err(runtime_err_s(
+                        "race_all() expects a non-empty list of tasks",
+                    ));
                 }
                 let mut receivers = Vec::new();
                 for (i, task_val) in tasks.iter().enumerate() {
@@ -4565,10 +5540,20 @@ impl Interpreter {
                             let rx = task.receiver.lock().unwrap().take();
                             match rx {
                                 Some(r) => receivers.push(r),
-                                None => return Err(runtime_err(format!("race_all: task {} already consumed", i))),
+                                None => {
+                                    return Err(runtime_err(format!(
+                                        "race_all: task {} already consumed",
+                                        i
+                                    )));
+                                }
                             }
                         }
-                        _ => return Err(runtime_err(format!("race_all: element {} is not a task", i))),
+                        _ => {
+                            return Err(runtime_err(format!(
+                                "race_all: element {} is not a task",
+                                i
+                            )));
+                        }
                     }
                 }
                 let (winner_tx, winner_rx) = mpsc::channel::<Result<Value, String>>();
@@ -4587,16 +5572,31 @@ impl Interpreter {
             "async_map" => {
                 let items = match args.first() {
                     Some(Value::List(list)) => list.clone(),
-                    _ => return Err(runtime_err_s("async_map() expects a list as first argument")),
+                    _ => {
+                        return Err(runtime_err_s(
+                            "async_map() expects a list as first argument",
+                        ));
+                    }
                 };
                 let (closure_params, closure_body, closure_env) = match args.get(1) {
-                    Some(Value::Closure { params, body, captured_env }) => {
-                        (params.clone(), body.clone(), captured_env.clone())
+                    Some(Value::Closure {
+                        params,
+                        body,
+                        captured_env,
+                    }) => (params.clone(), body.clone(), captured_env.clone()),
+                    Some(Value::Function { params, body, .. }) => (
+                        params.clone(),
+                        ClosureBody::Block {
+                            stmts: body.clone(),
+                            expr: None,
+                        },
+                        self.env.scopes.clone(),
+                    ),
+                    _ => {
+                        return Err(runtime_err_s(
+                            "async_map() expects a function as second argument",
+                        ));
                     }
-                    Some(Value::Function { params, body, .. }) => {
-                        (params.clone(), ClosureBody::Block { stmts: body.clone(), expr: None }, self.env.scopes.clone())
-                    }
-                    _ => return Err(runtime_err_s("async_map() expects a function as second argument")),
                 };
                 let method_table = self.method_table.clone();
                 let (tx, rx) = mpsc::channel();
@@ -4643,16 +5643,31 @@ impl Interpreter {
             "async_filter" => {
                 let items = match args.first() {
                     Some(Value::List(list)) => list.clone(),
-                    _ => return Err(runtime_err_s("async_filter() expects a list as first argument")),
+                    _ => {
+                        return Err(runtime_err_s(
+                            "async_filter() expects a list as first argument",
+                        ));
+                    }
                 };
                 let (closure_params, closure_body, closure_env) = match args.get(1) {
-                    Some(Value::Closure { params, body, captured_env }) => {
-                        (params.clone(), body.clone(), captured_env.clone())
+                    Some(Value::Closure {
+                        params,
+                        body,
+                        captured_env,
+                    }) => (params.clone(), body.clone(), captured_env.clone()),
+                    Some(Value::Function { params, body, .. }) => (
+                        params.clone(),
+                        ClosureBody::Block {
+                            stmts: body.clone(),
+                            expr: None,
+                        },
+                        self.env.scopes.clone(),
+                    ),
+                    _ => {
+                        return Err(runtime_err_s(
+                            "async_filter() expects a function as second argument",
+                        ));
                     }
-                    Some(Value::Function { params, body, .. }) => {
-                        (params.clone(), ClosureBody::Block { stmts: body.clone(), expr: None }, self.env.scopes.clone())
-                    }
-                    _ => return Err(runtime_err_s("async_filter() expects a function as second argument")),
                 };
                 let method_table = self.method_table.clone();
                 let items_clone = items.clone();
@@ -4701,14 +5716,18 @@ impl Interpreter {
                 Ok(Value::Task(Arc::new(TlTask::new(rx))))
             }
             #[cfg(not(feature = "async-runtime"))]
-            "async_read_file" | "async_write_file" | "async_http_get" | "async_http_post" |
-            "async_sleep" | "select" | "race_all" | "async_map" | "async_filter" => {
-                Err(runtime_err(format!("{name}: async builtins require the 'async-runtime' feature")))
+            "async_read_file" | "async_write_file" | "async_http_get" | "async_http_post"
+            | "async_sleep" | "select" | "race_all" | "async_map" | "async_filter" => {
+                Err(runtime_err(format!(
+                    "{name}: async builtins require the 'async-runtime' feature"
+                )))
             }
 
             // Phase 27: Data Error Hierarchy builtins
             "is_error" => {
-                if args.is_empty() { return Err(runtime_err_s("is_error() expects 1 argument")); }
+                if args.is_empty() {
+                    return Err(runtime_err_s("is_error() expects 1 argument"));
+                }
                 let is_err = matches!(&args[0], Value::EnumInstance { type_name, .. } if
                     type_name == "DataError" ||
                     type_name == "NetworkError" ||
@@ -4717,7 +5736,9 @@ impl Interpreter {
                 Ok(Value::Bool(is_err))
             }
             "error_type" => {
-                if args.is_empty() { return Err(runtime_err_s("error_type() expects 1 argument")); }
+                if args.is_empty() {
+                    return Err(runtime_err_s("error_type() expects 1 argument"));
+                }
                 match &args[0] {
                     Value::EnumInstance { type_name, .. } => Ok(Value::String(type_name.clone())),
                     _ => Ok(Value::None),
@@ -4733,17 +5754,24 @@ impl Interpreter {
     fn deep_clone_interp_value(&self, val: &Value) -> Result<Value, TlError> {
         match val {
             Value::List(items) => {
-                let cloned: Result<Vec<_>, _> = items.iter().map(|v| self.deep_clone_interp_value(v)).collect();
+                let cloned: Result<Vec<_>, _> = items
+                    .iter()
+                    .map(|v| self.deep_clone_interp_value(v))
+                    .collect();
                 Ok(Value::List(cloned?))
             }
             Value::Map(pairs) => {
-                let cloned: Result<Vec<_>, _> = pairs.iter()
+                let cloned: Result<Vec<_>, _> = pairs
+                    .iter()
                     .map(|(k, v)| Ok((k.clone(), self.deep_clone_interp_value(v)?)))
                     .collect();
                 Ok(Value::Map(cloned?))
             }
             Value::Set(items) => {
-                let cloned: Result<Vec<_>, _> = items.iter().map(|v| self.deep_clone_interp_value(v)).collect();
+                let cloned: Result<Vec<_>, _> = items
+                    .iter()
+                    .map(|v| self.deep_clone_interp_value(v))
+                    .collect();
                 Ok(Value::Set(cloned?))
             }
             Value::StructInstance { type_name, fields } => {
@@ -4756,8 +5784,15 @@ impl Interpreter {
                     fields: cloned_fields,
                 })
             }
-            Value::EnumInstance { type_name, variant, fields } => {
-                let cloned_fields: Result<Vec<_>, _> = fields.iter().map(|v| self.deep_clone_interp_value(v)).collect();
+            Value::EnumInstance {
+                type_name,
+                variant,
+                fields,
+            } => {
+                let cloned_fields: Result<Vec<_>, _> = fields
+                    .iter()
+                    .map(|v| self.deep_clone_interp_value(v))
+                    .collect();
                 Ok(Value::EnumInstance {
                     type_name: type_name.clone(),
                     variant: variant.clone(),
@@ -4792,7 +5827,10 @@ impl Interpreter {
                         Some(Value::String(sep)) => sep.as_str().to_string(),
                         _ => return Err(runtime_err_s("split() expects a string separator")),
                     };
-                    let parts: Vec<Value> = s.split(&sep).map(|p| Value::String(p.to_string())).collect();
+                    let parts: Vec<Value> = s
+                        .split(&sep)
+                        .map(|p| Value::String(p.to_string()))
+                        .collect();
                     Ok(Value::List(parts))
                 }
                 "trim" => Ok(Value::String(s.trim().to_string())),
@@ -4830,7 +5868,8 @@ impl Interpreter {
                 "to_upper" => Ok(Value::String(s.to_uppercase())),
                 "to_lower" => Ok(Value::String(s.to_lowercase())),
                 "chars" => {
-                    let chars: Vec<Value> = s.chars().map(|c| Value::String(c.to_string())).collect();
+                    let chars: Vec<Value> =
+                        s.chars().map(|c| Value::String(c.to_string())).collect();
                     Ok(Value::List(chars))
                 }
                 "repeat" => {
@@ -4848,32 +5887,64 @@ impl Interpreter {
                     Ok(Value::Int(s.find(needle).map(|i| i as i64).unwrap_or(-1)))
                 }
                 "substring" => {
-                    if args.len() < 2 { return Err(runtime_err_s("substring() expects start and end")); }
-                    let start = match &args[0] { Value::Int(n) => *n as usize, _ => return Err(runtime_err_s("substring() expects integers")) };
-                    let end = match &args[1] { Value::Int(n) => *n as usize, _ => return Err(runtime_err_s("substring() expects integers")) };
+                    if args.len() < 2 {
+                        return Err(runtime_err_s("substring() expects start and end"));
+                    }
+                    let start = match &args[0] {
+                        Value::Int(n) => *n as usize,
+                        _ => return Err(runtime_err_s("substring() expects integers")),
+                    };
+                    let end = match &args[1] {
+                        Value::Int(n) => *n as usize,
+                        _ => return Err(runtime_err_s("substring() expects integers")),
+                    };
                     let end = end.min(s.len());
                     let start = start.min(end);
                     Ok(Value::String(s[start..end].to_string()))
                 }
                 "pad_left" => {
-                    if args.is_empty() { return Err(runtime_err_s("pad_left() expects width")); }
-                    let width = match &args[0] { Value::Int(n) => *n as usize, _ => return Err(runtime_err_s("pad_left() expects integer width")) };
+                    if args.is_empty() {
+                        return Err(runtime_err_s("pad_left() expects width"));
+                    }
+                    let width = match &args[0] {
+                        Value::Int(n) => *n as usize,
+                        _ => return Err(runtime_err_s("pad_left() expects integer width")),
+                    };
                     let ch = match args.get(1) {
                         Some(Value::String(c)) => c.chars().next().unwrap_or(' '),
                         _ => ' ',
                     };
-                    if s.len() >= width { Ok(Value::String(s.clone())) }
-                    else { Ok(Value::String(format!("{}{}", std::iter::repeat(ch).take(width - s.len()).collect::<String>(), s))) }
+                    if s.len() >= width {
+                        Ok(Value::String(s.clone()))
+                    } else {
+                        Ok(Value::String(format!(
+                            "{}{}",
+                            std::iter::repeat_n(ch, width - s.len()).collect::<String>(),
+                            s
+                        )))
+                    }
                 }
                 "pad_right" => {
-                    if args.is_empty() { return Err(runtime_err_s("pad_right() expects width")); }
-                    let width = match &args[0] { Value::Int(n) => *n as usize, _ => return Err(runtime_err_s("pad_right() expects integer width")) };
+                    if args.is_empty() {
+                        return Err(runtime_err_s("pad_right() expects width"));
+                    }
+                    let width = match &args[0] {
+                        Value::Int(n) => *n as usize,
+                        _ => return Err(runtime_err_s("pad_right() expects integer width")),
+                    };
                     let ch = match args.get(1) {
                         Some(Value::String(c)) => c.chars().next().unwrap_or(' '),
                         _ => ' ',
                     };
-                    if s.len() >= width { Ok(Value::String(s.clone())) }
-                    else { Ok(Value::String(format!("{}{}", s, std::iter::repeat(ch).take(width - s.len()).collect::<String>()))) }
+                    if s.len() >= width {
+                        Ok(Value::String(s.clone()))
+                    } else {
+                        Ok(Value::String(format!(
+                            "{}{}",
+                            s,
+                            std::iter::repeat_n(ch, width - s.len()).collect::<String>()
+                        )))
+                    }
                 }
                 "join" => {
                     if let Some(Value::List(items)) = args.first() {
@@ -4902,7 +5973,7 @@ impl Interpreter {
                     if let Some(func) = args.first() {
                         let mut result = Vec::new();
                         for item in items {
-                            result.push(self.call_function(func, &[item.clone()])?);
+                            result.push(self.call_function(func, std::slice::from_ref(item))?);
                         }
                         Ok(Value::List(result))
                     } else {
@@ -4913,7 +5984,7 @@ impl Interpreter {
                     if let Some(func) = args.first() {
                         let mut result = Vec::new();
                         for item in items {
-                            let keep = self.call_function(func, &[item.clone()])?;
+                            let keep = self.call_function(func, std::slice::from_ref(item))?;
                             if keep.is_truthy() {
                                 result.push(item.clone());
                             }
@@ -4925,7 +5996,9 @@ impl Interpreter {
                 }
                 "reduce" => {
                     if args.len() < 2 {
-                        return Err(runtime_err_s("reduce() expects a function and initial value"));
+                        return Err(runtime_err_s(
+                            "reduce() expects a function and initial value",
+                        ));
                     }
                     let func = &args[0];
                     let mut acc = args[1].clone();
@@ -4936,13 +6009,13 @@ impl Interpreter {
                 }
                 "sort" => {
                     let mut sorted = items.clone();
-                    sorted.sort_by(|a, b| {
-                        match (a, b) {
-                            (Value::Int(x), Value::Int(y)) => x.cmp(y),
-                            (Value::Float(x), Value::Float(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
-                            (Value::String(x), Value::String(y)) => x.cmp(y),
-                            _ => std::cmp::Ordering::Equal,
+                    sorted.sort_by(|a, b| match (a, b) {
+                        (Value::Int(x), Value::Int(y)) => x.cmp(y),
+                        (Value::Float(x), Value::Float(y)) => {
+                            x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal)
                         }
+                        (Value::String(x), Value::String(y)) => x.cmp(y),
+                        _ => std::cmp::Ordering::Equal,
                     });
                     Ok(Value::List(sorted))
                 }
@@ -4952,49 +6025,59 @@ impl Interpreter {
                     Ok(Value::List(reversed))
                 }
                 "contains" => {
-                    if args.is_empty() { return Err(runtime_err_s("contains() expects a value")); }
+                    if args.is_empty() {
+                        return Err(runtime_err_s("contains() expects a value"));
+                    }
                     let needle = &args[0];
-                    let found = items.iter().any(|item| {
-                        match (item, needle) {
-                            (Value::Int(a), Value::Int(b)) => a == b,
-                            (Value::Float(a), Value::Float(b)) => a == b,
-                            (Value::String(a), Value::String(b)) => a == b,
-                            (Value::Bool(a), Value::Bool(b)) => a == b,
-                            (Value::None, Value::None) => true,
-                            _ => false,
-                        }
+                    let found = items.iter().any(|item| match (item, needle) {
+                        (Value::Int(a), Value::Int(b)) => a == b,
+                        (Value::Float(a), Value::Float(b)) => a == b,
+                        (Value::String(a), Value::String(b)) => a == b,
+                        (Value::Bool(a), Value::Bool(b)) => a == b,
+                        (Value::None, Value::None) => true,
+                        _ => false,
                     });
                     Ok(Value::Bool(found))
                 }
                 "index_of" => {
-                    if args.is_empty() { return Err(runtime_err_s("index_of() expects a value")); }
+                    if args.is_empty() {
+                        return Err(runtime_err_s("index_of() expects a value"));
+                    }
                     let needle = &args[0];
-                    let idx = items.iter().position(|item| {
-                        match (item, needle) {
-                            (Value::Int(a), Value::Int(b)) => a == b,
-                            (Value::Float(a), Value::Float(b)) => a == b,
-                            (Value::String(a), Value::String(b)) => a == b,
-                            (Value::Bool(a), Value::Bool(b)) => a == b,
-                            (Value::None, Value::None) => true,
-                            _ => false,
-                        }
+                    let idx = items.iter().position(|item| match (item, needle) {
+                        (Value::Int(a), Value::Int(b)) => a == b,
+                        (Value::Float(a), Value::Float(b)) => a == b,
+                        (Value::String(a), Value::String(b)) => a == b,
+                        (Value::Bool(a), Value::Bool(b)) => a == b,
+                        (Value::None, Value::None) => true,
+                        _ => false,
                     });
                     Ok(Value::Int(idx.map(|i| i as i64).unwrap_or(-1)))
                 }
                 "slice" => {
-                    if args.len() < 2 { return Err(runtime_err_s("slice() expects start and end")); }
-                    let start = match &args[0] { Value::Int(n) => *n as usize, _ => return Err(runtime_err_s("slice() expects integers")) };
-                    let end = match &args[1] { Value::Int(n) => *n as usize, _ => return Err(runtime_err_s("slice() expects integers")) };
+                    if args.len() < 2 {
+                        return Err(runtime_err_s("slice() expects start and end"));
+                    }
+                    let start = match &args[0] {
+                        Value::Int(n) => *n as usize,
+                        _ => return Err(runtime_err_s("slice() expects integers")),
+                    };
+                    let end = match &args[1] {
+                        Value::Int(n) => *n as usize,
+                        _ => return Err(runtime_err_s("slice() expects integers")),
+                    };
                     let end = end.min(items.len());
                     let start = start.min(end);
                     Ok(Value::List(items[start..end].to_vec()))
                 }
                 "flat_map" => {
-                    if args.is_empty() { return Err(runtime_err_s("flat_map() expects a function")); }
+                    if args.is_empty() {
+                        return Err(runtime_err_s("flat_map() expects a function"));
+                    }
                     let func = &args[0];
                     let mut result = Vec::new();
                     for item in items {
-                        let val = self.call_function(func, &[item.clone()])?;
+                        let val = self.call_function(func, std::slice::from_ref(item))?;
                         match val {
                             Value::List(sub) => result.extend(sub),
                             other => result.push(other),
@@ -5010,14 +6093,17 @@ impl Interpreter {
         if let Value::Map(pairs) = obj {
             return match method {
                 "len" => Ok(Value::Int(pairs.len() as i64)),
-                "keys" => {
-                    Ok(Value::List(pairs.iter().map(|(k, _)| Value::String(k.clone())).collect()))
-                }
-                "values" => {
-                    Ok(Value::List(pairs.iter().map(|(_, v)| v.clone()).collect()))
-                }
+                "keys" => Ok(Value::List(
+                    pairs
+                        .iter()
+                        .map(|(k, _)| Value::String(k.clone()))
+                        .collect(),
+                )),
+                "values" => Ok(Value::List(pairs.iter().map(|(_, v)| v.clone()).collect())),
                 "contains_key" => {
-                    if args.is_empty() { return Err(runtime_err_s("contains_key() expects a key")); }
+                    if args.is_empty() {
+                        return Err(runtime_err_s("contains_key() expects a key"));
+                    }
                     if let Value::String(key) = &args[0] {
                         Ok(Value::Bool(pairs.iter().any(|(k, _)| k == key)))
                     } else {
@@ -5025,12 +6111,12 @@ impl Interpreter {
                     }
                 }
                 "remove" => {
-                    if args.is_empty() { return Err(runtime_err_s("remove() expects a key")); }
+                    if args.is_empty() {
+                        return Err(runtime_err_s("remove() expects a key"));
+                    }
                     if let Value::String(key) = &args[0] {
-                        let new_pairs: Vec<(String, Value)> = pairs.iter()
-                            .filter(|(k, _)| k != key)
-                            .cloned()
-                            .collect();
+                        let new_pairs: Vec<(String, Value)> =
+                            pairs.iter().filter(|(k, _)| k != key).cloned().collect();
                         Ok(Value::Map(new_pairs))
                     } else {
                         Err(runtime_err_s("remove() expects a string key"))
@@ -5045,11 +6131,15 @@ impl Interpreter {
             return match method {
                 "len" => Ok(Value::Int(items.len() as i64)),
                 "contains" => {
-                    if args.is_empty() { return Err(runtime_err_s("contains() expects a value")); }
+                    if args.is_empty() {
+                        return Err(runtime_err_s("contains() expects a value"));
+                    }
                     Ok(Value::Bool(items.iter().any(|x| values_equal(x, &args[0]))))
                 }
                 "add" => {
-                    if args.is_empty() { return Err(runtime_err_s("add() expects a value")); }
+                    if args.is_empty() {
+                        return Err(runtime_err_s("add() expects a value"));
+                    }
                     let mut new_items = items.clone();
                     if !new_items.iter().any(|x| values_equal(x, &args[0])) {
                         new_items.push(args[0].clone());
@@ -5057,8 +6147,11 @@ impl Interpreter {
                     Ok(Value::Set(new_items))
                 }
                 "remove" => {
-                    if args.is_empty() { return Err(runtime_err_s("remove() expects a value")); }
-                    let new_items: Vec<Value> = items.iter()
+                    if args.is_empty() {
+                        return Err(runtime_err_s("remove() expects a value"));
+                    }
+                    let new_items: Vec<Value> = items
+                        .iter()
                         .filter(|x| !values_equal(x, &args[0]))
                         .cloned()
                         .collect();
@@ -5066,7 +6159,9 @@ impl Interpreter {
                 }
                 "to_list" => Ok(Value::List(items.clone())),
                 "union" => {
-                    if args.is_empty() { return Err(runtime_err_s("union() expects a set")); }
+                    if args.is_empty() {
+                        return Err(runtime_err_s("union() expects a set"));
+                    }
                     if let Value::Set(b) = &args[0] {
                         let mut result = items.clone();
                         for item in b {
@@ -5080,9 +6175,12 @@ impl Interpreter {
                     }
                 }
                 "intersection" => {
-                    if args.is_empty() { return Err(runtime_err_s("intersection() expects a set")); }
+                    if args.is_empty() {
+                        return Err(runtime_err_s("intersection() expects a set"));
+                    }
                     if let Value::Set(b) = &args[0] {
-                        let result: Vec<Value> = items.iter()
+                        let result: Vec<Value> = items
+                            .iter()
                             .filter(|x| b.iter().any(|y| values_equal(x, y)))
                             .cloned()
                             .collect();
@@ -5092,9 +6190,12 @@ impl Interpreter {
                     }
                 }
                 "difference" => {
-                    if args.is_empty() { return Err(runtime_err_s("difference() expects a set")); }
+                    if args.is_empty() {
+                        return Err(runtime_err_s("difference() expects a set"));
+                    }
                     if let Value::Set(b) = &args[0] {
-                        let result: Vec<Value> = items.iter()
+                        let result: Vec<Value> = items
+                            .iter()
                             .filter(|x| !b.iter().any(|y| values_equal(x, y)))
                             .cloned()
                             .collect();
@@ -5133,22 +6234,22 @@ impl Interpreter {
                 return self.call_function(func, args);
             } else {
                 return Err(runtime_err(format!(
-                    "Module '{}' has no export '{}'", name, method
+                    "Module '{}' has no export '{}'",
+                    name, method
                 )));
             }
         }
 
         // Struct/impl method dispatch
-        if let Value::StructInstance { type_name, .. } = obj {
-            if let Some(methods) = self.method_table.get(type_name) {
-                if let Some(func) = methods.get(method) {
-                    let func = func.clone();
-                    // Prepend self to args
-                    let mut all_args = vec![obj.clone()];
-                    all_args.extend_from_slice(args);
-                    return self.call_function(&func, &all_args);
-                }
-            }
+        if let Value::StructInstance { type_name, .. } = obj
+            && let Some(methods) = self.method_table.get(type_name)
+            && let Some(func) = methods.get(method)
+        {
+            let func = func.clone();
+            // Prepend self to args
+            let mut all_args = vec![obj.clone()];
+            all_args.extend_from_slice(args);
+            return self.call_function(&func, &all_args);
         }
 
         // Python method dispatch
@@ -5231,7 +6332,9 @@ impl Interpreter {
         // Package import fallback: first segment as package name
         let pkg_name = &segments[0];
         let pkg_name_hyphen = pkg_name.replace('_', "-");
-        let pkg_root = self.package_roots.get(pkg_name.as_str())
+        let pkg_root = self
+            .package_roots
+            .get(pkg_name.as_str())
             .or_else(|| self.package_roots.get(&pkg_name_hyphen));
 
         if let Some(root) = pkg_root {
@@ -5252,7 +6355,9 @@ impl Interpreter {
     fn exec_import(&mut self, path: &str, alias: Option<&str>) -> Result<Signal, TlError> {
         // Resolve path relative to current file
         let resolved = if let Some(ref base) = self.file_path {
-            let base_dir = std::path::Path::new(base).parent().unwrap_or(std::path::Path::new("."));
+            let base_dir = std::path::Path::new(base)
+                .parent()
+                .unwrap_or(std::path::Path::new("."));
             base_dir.join(path).to_string_lossy().to_string()
         } else {
             path.to_string()
@@ -5264,16 +6369,19 @@ impl Interpreter {
                 message: format!("Circular import detected: {resolved}"),
                 span: None,
                 stack_trace: vec![],
-                }));
+            }));
         }
 
         // Check cache
         if let Some(exports) = self.module_cache.get(&resolved) {
             if let Some(alias) = alias {
-                self.env.set(alias.to_string(), Value::Module {
-                    name: alias.to_string(),
-                    exports: exports.clone(),
-                });
+                self.env.set(
+                    alias.to_string(),
+                    Value::Module {
+                        name: alias.to_string(),
+                        exports: exports.clone(),
+                    },
+                );
             } else {
                 for (k, v) in exports {
                     self.env.set(k.clone(), v.clone());
@@ -5314,10 +6422,13 @@ impl Interpreter {
 
         // Inject into current scope
         if let Some(alias) = alias {
-            self.env.set(alias.to_string(), Value::Module {
-                name: alias.to_string(),
-                exports,
-            });
+            self.env.set(
+                alias.to_string(),
+                Value::Module {
+                    name: alias.to_string(),
+                    exports,
+                },
+            );
         } else {
             for (k, v) in exports {
                 // Don't import builtins
@@ -5405,8 +6516,9 @@ impl Interpreter {
                     "head" => self.table_limit(df, args),
                     "limit" => self.table_limit(df, args),
                     "collect" => {
-                        let batches = self.engine().collect(df).map_err(|e| runtime_err(e))?;
-                        let formatted = DataEngine::format_batches(&batches).map_err(|e| runtime_err(e))?;
+                        let batches = self.engine().collect(df).map_err(runtime_err)?;
+                        let formatted =
+                            DataEngine::format_batches(&batches).map_err(runtime_err)?;
                         Ok(Value::String(formatted))
                     }
                     "show" => {
@@ -5420,9 +6532,12 @@ impl Interpreter {
                             }
                             None => 20,
                         };
-                        let limited = df.limit(0, Some(limit)).map_err(|e| runtime_err(format!("{e}")))?;
-                        let batches = self.engine().collect(limited).map_err(|e| runtime_err(e))?;
-                        let formatted = DataEngine::format_batches(&batches).map_err(|e| runtime_err(e))?;
+                        let limited = df
+                            .limit(0, Some(limit))
+                            .map_err(|e| runtime_err(format!("{e}")))?;
+                        let batches = self.engine().collect(limited).map_err(runtime_err)?;
+                        let formatted =
+                            DataEngine::format_batches(&batches).map_err(runtime_err)?;
                         println!("{formatted}");
                         self.output.push(formatted);
                         Ok(Value::None)
@@ -5441,32 +6556,54 @@ impl Interpreter {
                     }
                     "write_csv" => {
                         if args.len() != 1 {
-                            return Err(runtime_err("write_csv() expects 1 argument (path)".into()));
+                            return Err(runtime_err(
+                                "write_csv() expects 1 argument (path)".into(),
+                            ));
                         }
                         let path = match self.eval_expr(&args[0])? {
                             Value::String(s) => s,
-                            _ => return Err(runtime_err("write_csv() path must be a string".into())),
+                            _ => {
+                                return Err(runtime_err(
+                                    "write_csv() path must be a string".into(),
+                                ));
+                            }
                         };
-                        self.engine().write_csv(df, &path).map_err(|e| runtime_err(e))?;
+                        self.engine().write_csv(df, &path).map_err(runtime_err)?;
                         Ok(Value::None)
                     }
                     "write_parquet" => {
                         if args.len() != 1 {
-                            return Err(runtime_err("write_parquet() expects 1 argument (path)".into()));
+                            return Err(runtime_err(
+                                "write_parquet() expects 1 argument (path)".into(),
+                            ));
                         }
                         let path = match self.eval_expr(&args[0])? {
                             Value::String(s) => s,
-                            _ => return Err(runtime_err("write_parquet() path must be a string".into())),
+                            _ => {
+                                return Err(runtime_err(
+                                    "write_parquet() path must be a string".into(),
+                                ));
+                            }
                         };
-                        self.engine().write_parquet(df, &path).map_err(|e| runtime_err(e))?;
+                        self.engine()
+                            .write_parquet(df, &path)
+                            .map_err(runtime_err)?;
                         Ok(Value::None)
                     }
                     // Phase 15: Data quality pipe operations
                     "fill_null" => {
-                        if args.is_empty() { return Err(runtime_err("fill_null() expects (column, [strategy/value])".into())); }
+                        if args.is_empty() {
+                            return Err(runtime_err(
+                                "fill_null() expects (column, [strategy/value])".into(),
+                            ));
+                        }
                         let column = match self.eval_expr(&args[0])? {
                             Value::String(s) => s,
-                            _ => return Err(runtime_err("fill_null() column must be a string".into())),
+                            _ => {
+                                return Err(runtime_err(
+                                    "fill_null() column must be a string".into(),
+                                ));
+                            }
                         };
                         if args.len() >= 2 {
                             let val = self.eval_expr(&args[1])?;
@@ -5478,46 +6615,71 @@ impl Interpreter {
                                             Value::Float(f) => Some(f),
                                             _ => None,
                                         }
-                                    } else { None };
-                                    let result = self.engine().fill_null(df, &column, &s, fill_val).map_err(|e| runtime_err(e))?;
+                                    } else {
+                                        None
+                                    };
+                                    let result = self
+                                        .engine()
+                                        .fill_null(df, &column, &s, fill_val)
+                                        .map_err(runtime_err)?;
                                     Ok(Value::Table(TlTable { df: result }))
                                 }
                                 Value::Int(n) => {
-                                    let result = self.engine().fill_null(df, &column, "value", Some(n as f64)).map_err(|e| runtime_err(e))?;
+                                    let result = self
+                                        .engine()
+                                        .fill_null(df, &column, "value", Some(n as f64))
+                                        .map_err(runtime_err)?;
                                     Ok(Value::Table(TlTable { df: result }))
                                 }
                                 Value::Float(f) => {
-                                    let result = self.engine().fill_null(df, &column, "value", Some(f)).map_err(|e| runtime_err(e))?;
+                                    let result = self
+                                        .engine()
+                                        .fill_null(df, &column, "value", Some(f))
+                                        .map_err(runtime_err)?;
                                     Ok(Value::Table(TlTable { df: result }))
                                 }
-                                _ => Err(runtime_err("fill_null() second arg must be a strategy or value".into())),
+                                _ => Err(runtime_err(
+                                    "fill_null() second arg must be a strategy or value".into(),
+                                )),
                             }
                         } else {
-                            let result = self.engine().fill_null(df, &column, "zero", None).map_err(|e| runtime_err(e))?;
+                            let result = self
+                                .engine()
+                                .fill_null(df, &column, "zero", None)
+                                .map_err(runtime_err)?;
                             Ok(Value::Table(TlTable { df: result }))
                         }
                     }
                     "drop_null" => {
-                        if args.is_empty() { return Err(runtime_err("drop_null() expects (column)".into())); }
+                        if args.is_empty() {
+                            return Err(runtime_err("drop_null() expects (column)".into()));
+                        }
                         let column = match self.eval_expr(&args[0])? {
                             Value::String(s) => s,
-                            _ => return Err(runtime_err("drop_null() column must be a string".into())),
+                            _ => {
+                                return Err(runtime_err(
+                                    "drop_null() column must be a string".into(),
+                                ));
+                            }
                         };
-                        let result = self.engine().drop_null(df, &column).map_err(|e| runtime_err(e))?;
+                        let result = self.engine().drop_null(df, &column).map_err(runtime_err)?;
                         Ok(Value::Table(TlTable { df: result }))
                     }
                     "dedup" => {
-                        let columns: Vec<String> = args.iter()
+                        let columns: Vec<String> = args
+                            .iter()
                             .filter_map(|a| match self.eval_expr(a) {
                                 Ok(Value::String(s)) => Some(s),
                                 _ => None,
                             })
                             .collect();
-                        let result = self.engine().dedup(df, &columns).map_err(|e| runtime_err(e))?;
+                        let result = self.engine().dedup(df, &columns).map_err(runtime_err)?;
                         Ok(Value::Table(TlTable { df: result }))
                     }
                     "clamp" => {
-                        if args.len() < 3 { return Err(runtime_err("clamp() expects (column, min, max)".into())); }
+                        if args.len() < 3 {
+                            return Err(runtime_err("clamp() expects (column, min, max)".into()));
+                        }
                         let column = match self.eval_expr(&args[0])? {
                             Value::String(s) => s,
                             _ => return Err(runtime_err("clamp() column must be a string".into())),
@@ -5532,33 +6694,48 @@ impl Interpreter {
                             Value::Float(f) => f,
                             _ => return Err(runtime_err("clamp() max must be a number".into())),
                         };
-                        let result = self.engine().clamp(df, &column, min_val, max_val).map_err(|e| runtime_err(e))?;
+                        let result = self
+                            .engine()
+                            .clamp(df, &column, min_val, max_val)
+                            .map_err(runtime_err)?;
                         Ok(Value::Table(TlTable { df: result }))
                     }
                     "data_profile" => {
-                        let result = self.engine().data_profile(df).map_err(|e| runtime_err(e))?;
+                        let result = self.engine().data_profile(df).map_err(runtime_err)?;
                         Ok(Value::Table(TlTable { df: result }))
                     }
                     "row_count" => {
-                        let count = self.engine().row_count(df).map_err(|e| runtime_err(e))?;
+                        let count = self.engine().row_count(df).map_err(runtime_err)?;
                         Ok(Value::Int(count))
                     }
                     "null_rate" => {
-                        if args.is_empty() { return Err(runtime_err("null_rate() expects (column)".into())); }
+                        if args.is_empty() {
+                            return Err(runtime_err("null_rate() expects (column)".into()));
+                        }
                         let column = match self.eval_expr(&args[0])? {
                             Value::String(s) => s,
-                            _ => return Err(runtime_err("null_rate() column must be a string".into())),
+                            _ => {
+                                return Err(runtime_err(
+                                    "null_rate() column must be a string".into(),
+                                ));
+                            }
                         };
-                        let rate = self.engine().null_rate(df, &column).map_err(|e| runtime_err(e))?;
+                        let rate = self.engine().null_rate(df, &column).map_err(runtime_err)?;
                         Ok(Value::Float(rate))
                     }
                     "is_unique" => {
-                        if args.is_empty() { return Err(runtime_err("is_unique() expects (column)".into())); }
+                        if args.is_empty() {
+                            return Err(runtime_err("is_unique() expects (column)".into()));
+                        }
                         let column = match self.eval_expr(&args[0])? {
                             Value::String(s) => s,
-                            _ => return Err(runtime_err("is_unique() column must be a string".into())),
+                            _ => {
+                                return Err(runtime_err(
+                                    "is_unique() column must be a string".into(),
+                                ));
+                            }
                         };
-                        let unique = self.engine().is_unique(df, &column).map_err(|e| runtime_err(e))?;
+                        let unique = self.engine().is_unique(df, &column).map_err(runtime_err)?;
                         Ok(Value::Bool(unique))
                     }
                     // Unknown table op: fall through to regular call
@@ -5575,12 +6752,16 @@ impl Interpreter {
                 }
             }
             Expr::Ident(name) => {
-                let func = self.env.get(name).cloned().ok_or_else(|| {
-                    runtime_err(format!("Unknown table operation: `{name}`"))
-                })?;
+                let func = self
+                    .env
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| runtime_err(format!("Unknown table operation: `{name}`")))?;
                 self.call_function(&func, &[Value::Table(TlTable { df })])
             }
-            _ => Err(runtime_err("Right side of |> must be a function call".into())),
+            _ => Err(runtime_err(
+                "Right side of |> must be a function call".into(),
+            )),
         }
     }
 
@@ -5607,10 +6788,12 @@ impl Interpreter {
     /// `table |> filter(predicate)`
     fn table_filter(&mut self, df: DataFrame, args: &[Expr]) -> Result<Value, TlError> {
         if args.len() != 1 {
-            return Err(runtime_err("filter() expects 1 argument (predicate)".into()));
+            return Err(runtime_err(
+                "filter() expects 1 argument (predicate)".into(),
+            ));
         }
         let ctx = self.build_translate_context();
-        let pred = translate_expr(&args[0], &ctx).map_err(|e| runtime_err(e))?;
+        let pred = translate_expr(&args[0], &ctx).map_err(runtime_err)?;
         let filtered = df.filter(pred).map_err(|e| runtime_err(format!("{e}")))?;
         Ok(Value::Table(TlTable { df: filtered }))
     }
@@ -5628,26 +6811,30 @@ impl Interpreter {
                     select_exprs.push(col(name.as_str()));
                 }
                 Expr::NamedArg { name, value } => {
-                    let expr = translate_expr(value, &ctx).map_err(|e| runtime_err(e))?;
+                    let expr = translate_expr(value, &ctx).map_err(runtime_err)?;
                     select_exprs.push(expr.alias(name));
                 }
                 Expr::String(name) => {
                     select_exprs.push(col(name.as_str()));
                 }
                 _ => {
-                    let expr = translate_expr(arg, &ctx).map_err(|e| runtime_err(e))?;
+                    let expr = translate_expr(arg, &ctx).map_err(runtime_err)?;
                     select_exprs.push(expr);
                 }
             }
         }
-        let selected = df.select(select_exprs).map_err(|e| runtime_err(format!("{e}")))?;
+        let selected = df
+            .select(select_exprs)
+            .map_err(|e| runtime_err(format!("{e}")))?;
         Ok(Value::Table(TlTable { df: selected }))
     }
 
     /// `table |> sort(col, "desc")` or `table |> sort(col)` (default asc)
     fn table_sort(&mut self, df: DataFrame, args: &[Expr]) -> Result<Value, TlError> {
         if args.is_empty() {
-            return Err(runtime_err("sort() expects at least 1 argument (column)".into()));
+            return Err(runtime_err(
+                "sort() expects at least 1 argument (column)".into(),
+            ));
         }
         let mut sort_exprs = Vec::new();
         let mut i = 0;
@@ -5655,7 +6842,11 @@ impl Interpreter {
             let col_name = match &args[i] {
                 Expr::Ident(name) => name.clone(),
                 Expr::String(name) => name.clone(),
-                _ => return Err(runtime_err("sort() column must be an identifier or string".into())),
+                _ => {
+                    return Err(runtime_err(
+                        "sort() column must be an identifier or string".into(),
+                    ));
+                }
             };
             i += 1;
             // Check for optional "asc"/"desc" direction
@@ -5675,21 +6866,29 @@ impl Interpreter {
                 true
             };
             sort_exprs.push(
-                col(col_name.as_str()).sort(ascending, true) // nulls last
+                col(col_name.as_str()).sort(ascending, true), // nulls last
             );
         }
-        let sorted = df.sort(sort_exprs).map_err(|e| runtime_err(format!("{e}")))?;
+        let sorted = df
+            .sort(sort_exprs)
+            .map_err(|e| runtime_err(format!("{e}")))?;
         Ok(Value::Table(TlTable { df: sorted }))
     }
 
     /// `table |> with { col_name = expr, ... }` — add derived columns
     fn table_with(&mut self, df: DataFrame, args: &[Expr]) -> Result<Value, TlError> {
         if args.len() != 1 {
-            return Err(runtime_err("with() expects 1 argument (map of column definitions)".into()));
+            return Err(runtime_err(
+                "with() expects 1 argument (map of column definitions)".into(),
+            ));
         }
         let pairs = match &args[0] {
             Expr::Map(pairs) => pairs,
-            _ => return Err(runtime_err("with() expects a map { col = expr, ... }".into())),
+            _ => {
+                return Err(runtime_err(
+                    "with() expects a map { col = expr, ... }".into(),
+                ));
+            }
         };
         let ctx = self.build_translate_context();
         let mut result_df = df;
@@ -5697,9 +6896,13 @@ impl Interpreter {
             let col_name = match key {
                 Expr::String(s) => s.clone(),
                 Expr::Ident(s) => s.clone(),
-                _ => return Err(runtime_err("with() key must be a string or identifier".into())),
+                _ => {
+                    return Err(runtime_err(
+                        "with() key must be a string or identifier".into(),
+                    ));
+                }
             };
-            let df_expr = translate_expr(value_expr, &ctx).map_err(|e| runtime_err(e))?;
+            let df_expr = translate_expr(value_expr, &ctx).map_err(runtime_err)?;
             result_df = result_df
                 .with_column(&col_name, df_expr)
                 .map_err(|e| runtime_err(format!("{e}")))?;
@@ -5729,7 +6932,11 @@ impl Interpreter {
                                 match item {
                                     Expr::String(s) => group_by_cols.push(col(s.as_str())),
                                     Expr::Ident(s) => group_by_cols.push(col(s.as_str())),
-                                    _ => return Err(runtime_err("by: list items must be strings or identifiers".into())),
+                                    _ => {
+                                        return Err(runtime_err(
+                                            "by: list items must be strings or identifiers".into(),
+                                        ));
+                                    }
                                 }
                             }
                         }
@@ -5738,12 +6945,12 @@ impl Interpreter {
                 }
                 Expr::NamedArg { name, value } => {
                     // Named aggregate: total: sum(amount)
-                    let agg_expr = translate_expr(value, &ctx).map_err(|e| runtime_err(e))?;
+                    let agg_expr = translate_expr(value, &ctx).map_err(runtime_err)?;
                     agg_exprs.push(agg_expr.alias(name));
                 }
                 _ => {
                     // Positional aggregate
-                    let agg_expr = translate_expr(arg, &ctx).map_err(|e| runtime_err(e))?;
+                    let agg_expr = translate_expr(arg, &ctx).map_err(runtime_err)?;
                     agg_exprs.push(agg_expr);
                 }
             }
@@ -5758,7 +6965,9 @@ impl Interpreter {
     /// `table |> join(right_table, on: left_col == right_col, kind: "inner")`
     fn table_join(&mut self, df: DataFrame, args: &[Expr]) -> Result<Value, TlError> {
         if args.is_empty() {
-            return Err(runtime_err("join() expects at least 1 argument (right table)".into()));
+            return Err(runtime_err(
+                "join() expects at least 1 argument (right table)".into(),
+            ));
         }
 
         // First positional arg: right table (evaluate it)
@@ -5778,20 +6987,36 @@ impl Interpreter {
                 Expr::NamedArg { name, value } if name == "on" => {
                     // on: left_col == right_col
                     match value.as_ref() {
-                        Expr::BinOp { left, op: BinOp::Eq, right } => {
+                        Expr::BinOp {
+                            left,
+                            op: BinOp::Eq,
+                            right,
+                        } => {
                             let left_col = match left.as_ref() {
                                 Expr::Ident(s) => s.clone(),
                                 Expr::String(s) => s.clone(),
-                                _ => return Err(runtime_err("on: left side must be a column name".into())),
+                                _ => {
+                                    return Err(runtime_err(
+                                        "on: left side must be a column name".into(),
+                                    ));
+                                }
                             };
                             let right_col = match right.as_ref() {
                                 Expr::Ident(s) => s.clone(),
                                 Expr::String(s) => s.clone(),
-                                _ => return Err(runtime_err("on: right side must be a column name".into())),
+                                _ => {
+                                    return Err(runtime_err(
+                                        "on: right side must be a column name".into(),
+                                    ));
+                                }
                             };
                             on_col_names.push((left_col, right_col));
                         }
-                        _ => return Err(runtime_err("on: must be an equality expression (col1 == col2)".into())),
+                        _ => {
+                            return Err(runtime_err(
+                                "on: must be an equality expression (col1 == col2)".into(),
+                            ));
+                        }
                     }
                 }
                 Expr::NamedArg { name, value } if name == "kind" => {
@@ -5836,7 +7061,9 @@ impl Interpreter {
             }
             None => 10,
         };
-        let limited = df.limit(0, Some(n)).map_err(|e| runtime_err(format!("{e}")))?;
+        let limited = df
+            .limit(0, Some(n))
+            .map_err(|e| runtime_err(format!("{e}")))?;
         Ok(Value::Table(TlTable { df: limited }))
     }
 }
@@ -5855,7 +7082,7 @@ fn tl_type_to_arrow(ty: &TypeExpr) -> ArrowDataType {
             _ => ArrowDataType::Utf8, // fallback
         },
         TypeExpr::Optional(inner) => tl_type_to_arrow(inner), // nullable is always true in Arrow
-        _ => ArrowDataType::Utf8, // fallback for complex types
+        _ => ArrowDataType::Utf8,                             // fallback for complex types
     }
 }
 
@@ -5946,12 +7173,12 @@ fn json_to_value(v: &serde_json::Value) -> Value {
             }
         }
         serde_json::Value::String(s) => Value::String(s.clone()),
-        serde_json::Value::Array(arr) => {
-            Value::List(arr.iter().map(json_to_value).collect())
-        }
-        serde_json::Value::Object(obj) => {
-            Value::Map(obj.iter().map(|(k, v)| (k.clone(), json_to_value(v))).collect())
-        }
+        serde_json::Value::Array(arr) => Value::List(arr.iter().map(json_to_value).collect()),
+        serde_json::Value::Object(obj) => Value::Map(
+            obj.iter()
+                .map(|(k, v)| (k.clone(), json_to_value(v)))
+                .collect(),
+        ),
     }
 }
 
@@ -5976,11 +7203,10 @@ fn value_to_json(v: &Value) -> serde_json::Value {
         Value::Int(n) => serde_json::json!(*n),
         Value::Float(n) => serde_json::json!(*n),
         Value::String(s) => serde_json::Value::String(s.clone()),
-        Value::List(items) => {
-            serde_json::Value::Array(items.iter().map(value_to_json).collect())
-        }
+        Value::List(items) => serde_json::Value::Array(items.iter().map(value_to_json).collect()),
         Value::Map(pairs) => {
-            let obj: serde_json::Map<String, serde_json::Value> = pairs.iter()
+            let obj: serde_json::Map<String, serde_json::Value> = pairs
+                .iter()
                 .map(|(k, v)| (k.clone(), value_to_json(v)))
                 .collect();
             serde_json::Value::Object(obj)
@@ -6000,7 +7226,12 @@ impl Interpreter {
                     match item {
                         Value::Int(n) => result.push(*n as f64),
                         Value::Float(f) => result.push(*f),
-                        _ => return Err(runtime_err(format!("Expected number in list, got {}", item.type_name()))),
+                        _ => {
+                            return Err(runtime_err(format!(
+                                "Expected number in list, got {}",
+                                item.type_name()
+                            )));
+                        }
                     }
                 }
                 Ok(result)
@@ -6016,12 +7247,20 @@ impl Interpreter {
                 for item in items {
                     match item {
                         Value::Int(n) => result.push(*n as usize),
-                        _ => return Err(runtime_err(format!("Expected int in shape, got {}", item.type_name()))),
+                        _ => {
+                            return Err(runtime_err(format!(
+                                "Expected int in shape, got {}",
+                                item.type_name()
+                            )));
+                        }
                     }
                 }
                 Ok(result)
             }
-            _ => Err(runtime_err(format!("Expected list for shape, got {}", v.type_name()))),
+            _ => Err(runtime_err(format!(
+                "Expected list for shape, got {}",
+                v.type_name()
+            ))),
         }
     }
 
@@ -6031,24 +7270,31 @@ impl Interpreter {
                 let data = self.value_to_f64_list(&args[0])?;
                 if args.len() > 1 {
                     let shape = self.value_to_usize_list(&args[1])?;
-                    let t = tl_ai::TlTensor::from_vec(data, &shape)
-                        .map_err(|e| runtime_err(e))?;
+                    let t = tl_ai::TlTensor::from_vec(data, &shape).map_err(runtime_err)?;
                     Ok(Value::Tensor(t))
                 } else {
                     Ok(Value::Tensor(tl_ai::TlTensor::from_list(data)))
                 }
             }
-            _ => Err(runtime_err("tensor() expects a list of numbers".to_string())),
+            _ => Err(runtime_err(
+                "tensor() expects a list of numbers".to_string(),
+            )),
         }
     }
 
     fn builtin_tensor_zeros(&mut self, args: &[Value]) -> Result<Value, TlError> {
-        let shape = self.value_to_usize_list(args.first().ok_or_else(|| runtime_err("tensor_zeros() expects a shape".to_string()))?)?;
+        let shape = self.value_to_usize_list(
+            args.first()
+                .ok_or_else(|| runtime_err("tensor_zeros() expects a shape".to_string()))?,
+        )?;
         Ok(Value::Tensor(tl_ai::TlTensor::zeros(&shape)))
     }
 
     fn builtin_tensor_ones(&mut self, args: &[Value]) -> Result<Value, TlError> {
-        let shape = self.value_to_usize_list(args.first().ok_or_else(|| runtime_err("tensor_ones() expects a shape".to_string()))?)?;
+        let shape = self.value_to_usize_list(
+            args.first()
+                .ok_or_else(|| runtime_err("tensor_ones() expects a shape".to_string()))?,
+        )?;
         Ok(Value::Tensor(tl_ai::TlTensor::ones(&shape)))
     }
 
@@ -6056,7 +7302,9 @@ impl Interpreter {
         match args.first() {
             Some(Value::Tensor(t)) => {
                 let shape = t.shape();
-                Ok(Value::List(shape.into_iter().map(|s| Value::Int(s as i64)).collect()))
+                Ok(Value::List(
+                    shape.into_iter().map(|s| Value::Int(s as i64)).collect(),
+                ))
             }
             _ => Err(runtime_err("tensor_shape() expects a tensor".to_string())),
         }
@@ -6064,25 +7312,31 @@ impl Interpreter {
 
     fn builtin_tensor_reshape(&mut self, args: &[Value]) -> Result<Value, TlError> {
         if args.len() != 2 {
-            return Err(runtime_err("tensor_reshape() expects (tensor, shape)".to_string()));
+            return Err(runtime_err(
+                "tensor_reshape() expects (tensor, shape)".to_string(),
+            ));
         }
         match &args[0] {
             Value::Tensor(t) => {
                 let shape = self.value_to_usize_list(&args[1])?;
-                let reshaped = t.reshape(&shape).map_err(|e| runtime_err(e))?;
+                let reshaped = t.reshape(&shape).map_err(runtime_err)?;
                 Ok(Value::Tensor(reshaped))
             }
-            _ => Err(runtime_err("tensor_reshape() expects a tensor as first argument".to_string())),
+            _ => Err(runtime_err(
+                "tensor_reshape() expects a tensor as first argument".to_string(),
+            )),
         }
     }
 
     fn builtin_tensor_transpose(&mut self, args: &[Value]) -> Result<Value, TlError> {
         match args.first() {
             Some(Value::Tensor(t)) => {
-                let transposed = t.transpose().map_err(|e| runtime_err(e))?;
+                let transposed = t.transpose().map_err(runtime_err)?;
                 Ok(Value::Tensor(transposed))
             }
-            _ => Err(runtime_err("tensor_transpose() expects a tensor".to_string())),
+            _ => Err(runtime_err(
+                "tensor_transpose() expects a tensor".to_string(),
+            )),
         }
     }
 
@@ -6106,7 +7360,7 @@ impl Interpreter {
         }
         match (&args[0], &args[1]) {
             (Value::Tensor(a), Value::Tensor(b)) => {
-                let result = a.dot(b).map_err(|e| runtime_err(e))?;
+                let result = a.dot(b).map_err(runtime_err)?;
                 Ok(Value::Tensor(result))
             }
             _ => Err(runtime_err("tensor_dot() expects two tensors".to_string())),
@@ -6119,7 +7373,7 @@ impl Interpreter {
         }
         match (&args[0], &args[1]) {
             (Value::Model(m), Value::Tensor(t)) => {
-                let result = tl_ai::predict(m, t).map_err(|e| runtime_err(e))?;
+                let result = tl_ai::predict(m, t).map_err(runtime_err)?;
                 Ok(Value::Tensor(result))
             }
             _ => Err(runtime_err("predict() expects (model, tensor)".to_string())),
@@ -6132,7 +7386,7 @@ impl Interpreter {
         }
         match (&args[0], &args[1]) {
             (Value::Tensor(a), Value::Tensor(b)) => {
-                let sim = tl_ai::similarity(a, b).map_err(|e| runtime_err(e))?;
+                let sim = tl_ai::similarity(a, b).map_err(runtime_err)?;
                 Ok(Value::Float(sim))
             }
             _ => Err(runtime_err("similarity() expects two tensors".to_string())),
@@ -6142,21 +7396,28 @@ impl Interpreter {
     fn builtin_ai_complete(&mut self, args: &[Value]) -> Result<Value, TlError> {
         let prompt = match args.first() {
             Some(Value::String(s)) => s.clone(),
-            _ => return Err(runtime_err("ai_complete() expects a string prompt".to_string())),
+            _ => {
+                return Err(runtime_err(
+                    "ai_complete() expects a string prompt".to_string(),
+                ));
+            }
         };
         let model = args.get(1).and_then(|v| match v {
             Value::String(s) => Some(s.as_str()),
             _ => None,
         });
-        let result = tl_ai::ai_complete(&prompt, model, None, None)
-            .map_err(|e| runtime_err(e))?;
+        let result = tl_ai::ai_complete(&prompt, model, None, None).map_err(runtime_err)?;
         Ok(Value::String(result))
     }
 
     fn builtin_ai_chat(&mut self, args: &[Value]) -> Result<Value, TlError> {
         let model = match args.first() {
             Some(Value::String(s)) => s.clone(),
-            _ => return Err(runtime_err("ai_chat() expects (model, system?, messages)".to_string())),
+            _ => {
+                return Err(runtime_err(
+                    "ai_chat() expects (model, system?, messages)".to_string(),
+                ));
+            }
         };
         let system = args.get(1).and_then(|v| match v {
             Value::String(s) => Some(s.as_str()),
@@ -6167,58 +7428,66 @@ impl Interpreter {
             Some(Value::List(msgs)) => {
                 let mut result = Vec::new();
                 for msg in msgs {
-                    if let Value::List(pair) = msg {
-                        if pair.len() == 2 {
-                            if let (Value::String(role), Value::String(content)) = (&pair[0], &pair[1]) {
-                                result.push((role.clone(), content.clone()));
-                            }
-                        }
+                    if let Value::List(pair) = msg
+                        && pair.len() == 2
+                        && let (Value::String(role), Value::String(content)) = (&pair[0], &pair[1])
+                    {
+                        result.push((role.clone(), content.clone()));
                     }
                 }
                 result
             }
             _ => Vec::new(),
         };
-        let result = tl_ai::ai_chat(&model, system, &messages)
-            .map_err(|e| runtime_err(e))?;
+        let result = tl_ai::ai_chat(&model, system, &messages).map_err(runtime_err)?;
         Ok(Value::String(result))
     }
 
     fn builtin_model_save(&mut self, args: &[Value]) -> Result<Value, TlError> {
         if args.len() != 2 {
-            return Err(runtime_err("model_save() expects (model, path)".to_string()));
+            return Err(runtime_err(
+                "model_save() expects (model, path)".to_string(),
+            ));
         }
         match (&args[0], &args[1]) {
             (Value::Model(m), Value::String(path)) => {
-                m.save(std::path::Path::new(path)).map_err(|e| runtime_err(e))?;
+                m.save(std::path::Path::new(path)).map_err(runtime_err)?;
                 Ok(Value::None)
             }
-            _ => Err(runtime_err("model_save() expects (model, string_path)".to_string())),
+            _ => Err(runtime_err(
+                "model_save() expects (model, string_path)".to_string(),
+            )),
         }
     }
 
     fn builtin_model_load(&mut self, args: &[Value]) -> Result<Value, TlError> {
         match args.first() {
             Some(Value::String(path)) => {
-                let model = tl_ai::TlModel::load(std::path::Path::new(path))
-                    .map_err(|e| runtime_err(e))?;
+                let model =
+                    tl_ai::TlModel::load(std::path::Path::new(path)).map_err(runtime_err)?;
                 Ok(Value::Model(model))
             }
-            _ => Err(runtime_err("model_load() expects a path string".to_string())),
+            _ => Err(runtime_err(
+                "model_load() expects a path string".to_string(),
+            )),
         }
     }
 
     fn builtin_model_register(&mut self, args: &[Value]) -> Result<Value, TlError> {
         if args.len() != 2 {
-            return Err(runtime_err("model_register() expects (name, model)".to_string()));
+            return Err(runtime_err(
+                "model_register() expects (name, model)".to_string(),
+            ));
         }
         match (&args[0], &args[1]) {
             (Value::String(name), Value::Model(m)) => {
                 let registry = tl_ai::ModelRegistry::default_location();
-                registry.register(name, m).map_err(|e| runtime_err(e))?;
+                registry.register(name, m).map_err(runtime_err)?;
                 Ok(Value::None)
             }
-            _ => Err(runtime_err("model_register() expects (string, model)".to_string())),
+            _ => Err(runtime_err(
+                "model_register() expects (string, model)".to_string(),
+            )),
         }
     }
 
@@ -6232,10 +7501,12 @@ impl Interpreter {
         match args.first() {
             Some(Value::String(name)) => {
                 let registry = tl_ai::ModelRegistry::default_location();
-                let model = registry.get(name).map_err(|e| runtime_err(e))?;
+                let model = registry.get(name).map_err(runtime_err)?;
                 Ok(Value::Model(model))
             }
-            _ => Err(runtime_err("model_get() expects a model name string".to_string())),
+            _ => Err(runtime_err(
+                "model_get() expects a model name string".to_string(),
+            )),
         }
     }
 
@@ -6264,12 +7535,19 @@ impl Interpreter {
                 };
                 Ok(GenSignal::Return(val))
             }
-            StmtKind::If { condition, then_body, else_ifs, else_body } => {
+            StmtKind::If {
+                condition,
+                then_body,
+                else_ifs,
+                else_body,
+            } => {
                 let cond = self.eval_expr_gen(condition, yield_tx, resume_rx)?;
                 if cond.is_truthy() {
                     for s in then_body {
                         let sig = self.exec_stmt_gen(s, yield_tx, resume_rx)?;
-                        if !matches!(sig, GenSignal::None) { return Ok(sig); }
+                        if !matches!(sig, GenSignal::None) {
+                            return Ok(sig);
+                        }
                     }
                 } else {
                     let mut handled = false;
@@ -6278,17 +7556,19 @@ impl Interpreter {
                         if ecv.is_truthy() {
                             for s in eb {
                                 let sig = self.exec_stmt_gen(s, yield_tx, resume_rx)?;
-                                if !matches!(sig, GenSignal::None) { return Ok(sig); }
+                                if !matches!(sig, GenSignal::None) {
+                                    return Ok(sig);
+                                }
                             }
                             handled = true;
                             break;
                         }
                     }
-                    if !handled {
-                        if let Some(eb) = else_body {
-                            for s in eb {
-                                let sig = self.exec_stmt_gen(s, yield_tx, resume_rx)?;
-                                if !matches!(sig, GenSignal::None) { return Ok(sig); }
+                    if !handled && let Some(eb) = else_body {
+                        for s in eb {
+                            let sig = self.exec_stmt_gen(s, yield_tx, resume_rx)?;
+                            if !matches!(sig, GenSignal::None) {
+                                return Ok(sig);
                             }
                         }
                     }
@@ -6298,13 +7578,18 @@ impl Interpreter {
             StmtKind::While { condition, body } => {
                 loop {
                     let cond = self.eval_expr_gen(condition, yield_tx, resume_rx)?;
-                    if !cond.is_truthy() { break; }
+                    if !cond.is_truthy() {
+                        break;
+                    }
                     self.env.push_scope();
                     let mut brk = false;
                     for s in body {
                         let sig = self.exec_stmt_gen(s, yield_tx, resume_rx)?;
                         match sig {
-                            GenSignal::Break => { brk = true; break; }
+                            GenSignal::Break => {
+                                brk = true;
+                                break;
+                            }
                             GenSignal::Continue => break,
                             GenSignal::Return(v) => {
                                 self.env.pop_scope();
@@ -6318,16 +7603,18 @@ impl Interpreter {
                         }
                     }
                     self.env.pop_scope();
-                    if brk { break; }
+                    if brk {
+                        break;
+                    }
                 }
                 Ok(GenSignal::None)
             }
-            StmtKind::For { name, iter, body }
-            | StmtKind::ParallelFor { name, iter, body } => {
+            StmtKind::For { name, iter, body } | StmtKind::ParallelFor { name, iter, body } => {
                 let iter_val = self.eval_expr_gen(iter, yield_tx, resume_rx)?;
                 let items = match iter_val {
                     Value::List(items) => items,
-                    Value::Map(pairs) => pairs.into_iter()
+                    Value::Map(pairs) => pairs
+                        .into_iter()
                         .map(|(k, v)| Value::List(vec![Value::String(k), v]))
                         .collect(),
                     Value::Generator(g) => {
@@ -6335,12 +7622,19 @@ impl Interpreter {
                         let mut results = Vec::new();
                         loop {
                             let val = self.interpreter_next(&g)?;
-                            if matches!(val, Value::None) { break; }
+                            if matches!(val, Value::None) {
+                                break;
+                            }
                             results.push(val);
                         }
                         results
                     }
-                    _ => return Err(runtime_err(format!("Cannot iterate over {}", iter_val.type_name()))),
+                    _ => {
+                        return Err(runtime_err(format!(
+                            "Cannot iterate over {}",
+                            iter_val.type_name()
+                        )));
+                    }
                 };
                 for item in items {
                     self.env.push_scope();
@@ -6349,7 +7643,10 @@ impl Interpreter {
                     for s in body {
                         let sig = self.exec_stmt_gen(s, yield_tx, resume_rx)?;
                         match sig {
-                            GenSignal::Break => { brk = true; break; }
+                            GenSignal::Break => {
+                                brk = true;
+                                break;
+                            }
                             GenSignal::Continue => break,
                             GenSignal::Return(v) => {
                                 self.env.pop_scope();
@@ -6363,7 +7660,9 @@ impl Interpreter {
                         }
                     }
                     self.env.pop_scope();
-                    if brk { break; }
+                    if brk {
+                        break;
+                    }
                 }
                 Ok(GenSignal::None)
             }
@@ -6373,7 +7672,13 @@ impl Interpreter {
                 let val = self.eval_expr_gen(expr, yield_tx, resume_rx)?;
                 Ok(GenSignal::Throw(val))
             }
-            StmtKind::FnDecl { name, params, body, is_generator, .. } => {
+            StmtKind::FnDecl {
+                name,
+                params,
+                body,
+                is_generator,
+                ..
+            } => {
                 let func = Value::Function {
                     name: name.clone(),
                     params: params.clone(),
@@ -6412,10 +7717,12 @@ impl Interpreter {
                     None => Value::None,
                 };
                 // Send the yielded value to the consumer
-                yield_tx.send(Ok(val.clone()))
+                yield_tx
+                    .send(Ok(val.clone()))
                     .map_err(|_| runtime_err("Generator consumer disconnected".to_string()))?;
                 // Wait for resume signal
-                resume_rx.recv()
+                resume_rx
+                    .recv()
                     .map_err(|_| runtime_err("Generator consumer disconnected".to_string()))?;
                 Ok(val)
             }
@@ -6434,7 +7741,8 @@ impl Interpreter {
                         self.eval_expr(&Expr::Assign {
                             target: target.clone(),
                             value: Box::new(Expr::None),
-                        }).ok();
+                        })
+                        .ok();
                         // Actually just set the value
                         Ok(val)
                     }
@@ -6445,7 +7753,12 @@ impl Interpreter {
         }
     }
 
-    fn exec_train(&mut self, name: &str, algorithm: &str, config: &[(String, Expr)]) -> Result<Signal, TlError> {
+    fn exec_train(
+        &mut self,
+        name: &str,
+        algorithm: &str,
+        config: &[(String, Expr)],
+    ) -> Result<Signal, TlError> {
         // Extract config values
         let mut features_val = None;
         let mut target_val = None;
@@ -6478,8 +7791,7 @@ impl Interpreter {
         // When data is a Table, extract features and target from it
         if let Some(Value::Table(ref tbl)) = features_val {
             let engine = tl_data::DataEngine::new();
-            let batches = engine.collect(tbl.df.clone())
-                .map_err(|e| runtime_err(e))?;
+            let batches = engine.collect(tbl.df.clone()).map_err(runtime_err)?;
             if batches.is_empty() {
                 return Err(runtime_err("train: empty dataset".to_string()));
             }
@@ -6501,7 +7813,8 @@ impl Interpreter {
             // Extract feature columns
             let mut col_data: Vec<Vec<f64>> = Vec::new();
             for col_name in &feature_names {
-                let col_idx = schema.index_of(col_name)
+                let col_idx = schema
+                    .index_of(col_name)
                     .map_err(|_| runtime_err(format!("Column not found: {col_name}")))?;
                 let arr = batch.column(col_idx);
                 let mut vals = Vec::with_capacity(n_rows);
@@ -6516,11 +7829,12 @@ impl Interpreter {
                     row_major.push(col[row]);
                 }
             }
-            let features_tensor = tl_ai::TlTensor::from_vec(row_major, &[n_rows, n_features])
-                .map_err(|e| runtime_err(e))?;
+            let features_tensor =
+                tl_ai::TlTensor::from_vec(row_major, &[n_rows, n_features]).map_err(runtime_err)?;
 
             // Extract target column
-            let target_idx = schema.index_of(&target_name)
+            let target_idx = schema
+                .index_of(&target_name)
                 .map_err(|_| runtime_err(format!("Target column not found: {target_name}")))?;
             let target_arr = batch.column(target_idx);
             let mut target_data = Vec::with_capacity(n_rows);
@@ -6537,15 +7851,20 @@ impl Interpreter {
                 hyperparams: std::collections::HashMap::new(),
             };
 
-            let model = tl_ai::train(algorithm, &train_config)
-                .map_err(|e| runtime_err(e))?;
+            let model = tl_ai::train(algorithm, &train_config).map_err(runtime_err)?;
 
             if let Some(meta) = model.metadata() {
-                let metrics_str: Vec<String> = meta.metrics.iter()
+                let metrics_str: Vec<String> = meta
+                    .metrics
+                    .iter()
                     .map(|(k, v)| format!("{k}={v:.4}"))
                     .collect();
                 if !metrics_str.is_empty() {
-                    let msg = format!("Trained model '{}' ({algorithm}): {}", name, metrics_str.join(", "));
+                    let msg = format!(
+                        "Trained model '{}' ({algorithm}): {}",
+                        name,
+                        metrics_str.join(", ")
+                    );
                     println!("{msg}");
                     self.output.push(msg);
                 }
@@ -6572,7 +7891,11 @@ impl Interpreter {
                                 match v {
                                     Value::Int(n) => all_data.push(*n as f64),
                                     Value::Float(f) => all_data.push(*f),
-                                    _ => return Err(runtime_err("Training data must be numeric".to_string())),
+                                    _ => {
+                                        return Err(runtime_err(
+                                            "Training data must be numeric".to_string(),
+                                        ));
+                                    }
                                 }
                             }
                         }
@@ -6585,8 +7908,7 @@ impl Interpreter {
                     n_cols = 1;
                 }
                 let n_rows = all_data.len() / n_cols;
-                tl_ai::TlTensor::from_vec(all_data, &[n_rows, n_cols])
-                    .map_err(|e| runtime_err(e))?
+                tl_ai::TlTensor::from_vec(all_data, &[n_rows, n_cols]).map_err(runtime_err)?
             }
             _ => return Err(runtime_err("train requires 'data' config key".to_string())),
         };
@@ -6594,17 +7916,26 @@ impl Interpreter {
         let target_tensor = match target_val {
             Some(Value::Tensor(t)) => t,
             Some(Value::List(items)) => {
-                let data: Result<Vec<f64>, _> = items.iter().map(|v| match v {
-                    Value::Int(n) => Ok(*n as f64),
-                    Value::Float(f) => Ok(*f),
-                    _ => Err(runtime_err("Target values must be numeric".to_string())),
-                }).collect();
+                let data: Result<Vec<f64>, _> = items
+                    .iter()
+                    .map(|v| match v {
+                        Value::Int(n) => Ok(*n as f64),
+                        Value::Float(f) => Ok(*f),
+                        _ => Err(runtime_err("Target values must be numeric".to_string())),
+                    })
+                    .collect();
                 tl_ai::TlTensor::from_list(data?)
             }
             Some(Value::String(_)) => {
-                return Err(runtime_err("String target column requires table data. Pass data as a table.".to_string()));
+                return Err(runtime_err(
+                    "String target column requires table data. Pass data as a table.".to_string(),
+                ));
             }
-            _ => return Err(runtime_err("train requires 'target' config key with numeric data".to_string())),
+            _ => {
+                return Err(runtime_err(
+                    "train requires 'target' config key with numeric data".to_string(),
+                ));
+            }
         };
 
         if feature_names.is_empty() {
@@ -6622,16 +7953,21 @@ impl Interpreter {
             hyperparams: std::collections::HashMap::new(),
         };
 
-        let model = tl_ai::train(algorithm, &train_config)
-            .map_err(|e| runtime_err(e))?;
+        let model = tl_ai::train(algorithm, &train_config).map_err(runtime_err)?;
 
         // Print training metrics
         if let Some(meta) = model.metadata() {
-            let metrics_str: Vec<String> = meta.metrics.iter()
+            let metrics_str: Vec<String> = meta
+                .metrics
+                .iter()
                 .map(|(k, v)| format!("{k}={v:.4}"))
                 .collect();
             if !metrics_str.is_empty() {
-                let msg = format!("Trained model '{}' ({algorithm}): {}", name, metrics_str.join(", "));
+                let msg = format!(
+                    "Trained model '{}' ({algorithm}): {}",
+                    name,
+                    metrics_str.join(", ")
+                );
                 println!("{msg}");
                 self.output.push(msg);
             }
@@ -6641,8 +7977,13 @@ impl Interpreter {
         Ok(Signal::None)
     }
 
-    fn extract_f64_col(col: &Arc<dyn tl_data::datafusion::arrow::array::Array>, out: &mut Vec<f64>) -> Result<(), TlError> {
-        use tl_data::datafusion::arrow::array::{Float64Array, Int64Array, Float32Array, Int32Array, Array};
+    fn extract_f64_col(
+        col: &Arc<dyn tl_data::datafusion::arrow::array::Array>,
+        out: &mut Vec<f64>,
+    ) -> Result<(), TlError> {
+        use tl_data::datafusion::arrow::array::{
+            Array, Float32Array, Float64Array, Int32Array, Int64Array,
+        };
         let len = col.len();
         if let Some(arr) = col.as_any().downcast_ref::<Float64Array>() {
             for i in 0..len {
@@ -6650,18 +7991,32 @@ impl Interpreter {
             }
         } else if let Some(arr) = col.as_any().downcast_ref::<Int64Array>() {
             for i in 0..len {
-                out.push(if arr.is_null(i) { 0.0 } else { arr.value(i) as f64 });
+                out.push(if arr.is_null(i) {
+                    0.0
+                } else {
+                    arr.value(i) as f64
+                });
             }
         } else if let Some(arr) = col.as_any().downcast_ref::<Float32Array>() {
             for i in 0..len {
-                out.push(if arr.is_null(i) { 0.0 } else { arr.value(i) as f64 });
+                out.push(if arr.is_null(i) {
+                    0.0
+                } else {
+                    arr.value(i) as f64
+                });
             }
         } else if let Some(arr) = col.as_any().downcast_ref::<Int32Array>() {
             for i in 0..len {
-                out.push(if arr.is_null(i) { 0.0 } else { arr.value(i) as f64 });
+                out.push(if arr.is_null(i) {
+                    0.0
+                } else {
+                    arr.value(i) as f64
+                });
             }
         } else {
-            return Err(runtime_err("Column must be numeric (int32, int64, float32, float64)".to_string()));
+            return Err(runtime_err(
+                "Column must be numeric (int32, int64, float32, float64)".to_string(),
+            ));
         }
         Ok(())
     }
@@ -6670,6 +8025,7 @@ impl Interpreter {
 // ── Streaming & Pipeline execution ──────────────────────────
 
 impl Interpreter {
+    #[allow(clippy::too_many_arguments)]
     fn exec_pipeline(
         &mut self,
         name: &str,
@@ -6789,7 +8145,8 @@ impl Interpreter {
             if let Some(failure_block) = on_failure {
                 self.exec_block(failure_block)?;
             }
-            self.output.push(format!("Pipeline '{}': failed — {}", name, last_error));
+            self.output
+                .push(format!("Pipeline '{}': failed — {}", name, last_error));
         }
 
         // Store pipeline def in env
@@ -6816,7 +8173,10 @@ impl Interpreter {
             tl_ast::WindowSpec::Sliding(win, slide) => {
                 let wms = tl_stream::parse_duration(win).unwrap_or(0);
                 let sms = tl_stream::parse_duration(slide).unwrap_or(0);
-                tl_stream::window::WindowType::Sliding { window_ms: wms, slide_ms: sms }
+                tl_stream::window::WindowType::Sliding {
+                    window_ms: wms,
+                    slide_ms: sms,
+                }
             }
             tl_ast::WindowSpec::Session(gap) => {
                 let ms = tl_stream::parse_duration(gap).unwrap_or(0);
@@ -6894,13 +8254,16 @@ impl Interpreter {
     #[cfg(feature = "python")]
     fn interp_py_import(&mut self, args: &[Value]) -> Result<Value, TlError> {
         use pyo3::prelude::*;
-        if args.is_empty() { return Err(runtime_err_s("py_import() expects a module name")); }
+        if args.is_empty() {
+            return Err(runtime_err_s("py_import() expects a module name"));
+        }
         let name = match &args[0] {
             Value::String(s) => s.clone(),
             _ => return Err(runtime_err_s("py_import() expects a string module name")),
         };
         pyo3::Python::with_gil(|py| {
-            let module = py.import(&*name)
+            let module = py
+                .import(&*name)
                 .map_err(|e| runtime_err(format!("py_import('{name}'): {e}")))?;
             Ok(Value::PyObject(Arc::new(InterpPyObjectWrapper {
                 inner: module.into_any().unbind(),
@@ -6911,13 +8274,16 @@ impl Interpreter {
     #[cfg(feature = "python")]
     fn interp_py_eval(&mut self, args: &[Value]) -> Result<Value, TlError> {
         use pyo3::prelude::*;
-        if args.is_empty() { return Err(runtime_err_s("py_eval() expects a code string")); }
+        if args.is_empty() {
+            return Err(runtime_err_s("py_eval() expects a code string"));
+        }
         let code = match &args[0] {
             Value::String(s) => s.clone(),
             _ => return Err(runtime_err_s("py_eval() expects a string")),
         };
         pyo3::Python::with_gil(|py| {
-            let result = py.eval(&std::ffi::CString::new(code.as_str()).unwrap(), None, None)
+            let result = py
+                .eval(&std::ffi::CString::new(code.as_str()).unwrap(), None, None)
                 .map_err(|e| runtime_err(format!("py_eval(): {e}")))?;
             interp_py_to_value(py, &result)
                 .map_err(|e| runtime_err(format!("py_eval() conversion: {e}")))
@@ -6927,20 +8293,29 @@ impl Interpreter {
     #[cfg(feature = "python")]
     fn interp_py_call(&mut self, args: &[Value]) -> Result<Value, TlError> {
         use pyo3::prelude::*;
-        if args.is_empty() { return Err(runtime_err_s("py_call() expects a callable and arguments")); }
+        if args.is_empty() {
+            return Err(runtime_err_s("py_call() expects a callable and arguments"));
+        }
         let callable = match &args[0] {
             Value::PyObject(w) => w.clone(),
-            _ => return Err(runtime_err_s("py_call() first argument must be a Python object")),
+            _ => {
+                return Err(runtime_err_s(
+                    "py_call() first argument must be a Python object",
+                ));
+            }
         };
         let call_args = &args[1..];
         pyo3::Python::with_gil(|py| {
-            let py_args: Vec<pyo3::Py<pyo3::PyAny>> = call_args.iter()
+            let py_args: Vec<pyo3::Py<pyo3::PyAny>> = call_args
+                .iter()
                 .map(|a| interp_value_to_py(py, a))
                 .collect::<Result<_, _>>()
                 .map_err(|e| runtime_err(format!("py_call() arg conversion: {e}")))?;
             let tuple = pyo3::types::PyTuple::new(py, &py_args)
                 .map_err(|e| runtime_err(format!("py_call() tuple: {e}")))?;
-            let result = callable.inner.call1(py, tuple)
+            let result = callable
+                .inner
+                .call1(py, tuple)
                 .map_err(|e| runtime_err(format!("py_call(): {e}")))?;
             interp_py_to_value(py, result.bind(py))
                 .map_err(|e| runtime_err(format!("py_call() result conversion: {e}")))
@@ -6950,18 +8325,29 @@ impl Interpreter {
     #[cfg(feature = "python")]
     fn interp_py_getattr(&mut self, args: &[Value]) -> Result<Value, TlError> {
         use pyo3::prelude::*;
-        if args.len() < 2 { return Err(runtime_err_s("py_getattr() expects (object, name)")); }
+        if args.len() < 2 {
+            return Err(runtime_err_s("py_getattr() expects (object, name)"));
+        }
         let obj = match &args[0] {
             Value::PyObject(w) => w.clone(),
-            _ => return Err(runtime_err_s("py_getattr() first argument must be a Python object")),
+            _ => {
+                return Err(runtime_err_s(
+                    "py_getattr() first argument must be a Python object",
+                ));
+            }
         };
         let attr_name = match &args[1] {
             Value::String(s) => s.clone(),
-            _ => return Err(runtime_err_s("py_getattr() second argument must be a string")),
+            _ => {
+                return Err(runtime_err_s(
+                    "py_getattr() second argument must be a string",
+                ));
+            }
         };
         pyo3::Python::with_gil(|py| {
             let bound = obj.inner.bind(py);
-            let attr = bound.getattr(attr_name.as_str())
+            let attr = bound
+                .getattr(attr_name.as_str())
                 .map_err(|e| runtime_err(format!("py_getattr('{attr_name}'): {e}")))?;
             interp_py_to_value(py, &attr)
                 .map_err(|e| runtime_err(format!("py_getattr() conversion: {e}")))
@@ -6971,19 +8357,31 @@ impl Interpreter {
     #[cfg(feature = "python")]
     fn interp_py_setattr(&mut self, args: &[Value]) -> Result<Value, TlError> {
         use pyo3::prelude::*;
-        if args.len() < 3 { return Err(runtime_err_s("py_setattr() expects (object, name, value)")); }
+        if args.len() < 3 {
+            return Err(runtime_err_s("py_setattr() expects (object, name, value)"));
+        }
         let obj = match &args[0] {
             Value::PyObject(w) => w.clone(),
-            _ => return Err(runtime_err_s("py_setattr() first argument must be a Python object")),
+            _ => {
+                return Err(runtime_err_s(
+                    "py_setattr() first argument must be a Python object",
+                ));
+            }
         };
         let attr_name = match &args[1] {
             Value::String(s) => s.clone(),
-            _ => return Err(runtime_err_s("py_setattr() second argument must be a string")),
+            _ => {
+                return Err(runtime_err_s(
+                    "py_setattr() second argument must be a string",
+                ));
+            }
         };
         pyo3::Python::with_gil(|py| {
             let py_val = interp_value_to_py(py, &args[2])
                 .map_err(|e| runtime_err(format!("py_setattr() conversion: {e}")))?;
-            obj.inner.bind(py).setattr(attr_name.as_str(), py_val)
+            obj.inner
+                .bind(py)
+                .setattr(attr_name.as_str(), py_val)
                 .map_err(|e| runtime_err(format!("py_setattr('{attr_name}'): {e}")))?;
             Ok(Value::None)
         })
@@ -6992,15 +8390,14 @@ impl Interpreter {
     #[cfg(feature = "python")]
     fn interp_py_to_tl(&mut self, args: &[Value]) -> Result<Value, TlError> {
         use pyo3::prelude::*;
-        if args.is_empty() { return Err(runtime_err_s("py_to_tl() expects a Python object")); }
+        if args.is_empty() {
+            return Err(runtime_err_s("py_to_tl() expects a Python object"));
+        }
         match &args[0] {
-            Value::PyObject(w) => {
-                pyo3::Python::with_gil(|py| {
-                    let bound = w.inner.bind(py);
-                    interp_py_to_value(py, &bound)
-                        .map_err(|e| runtime_err(format!("py_to_tl(): {e}")))
-                })
-            }
+            Value::PyObject(w) => pyo3::Python::with_gil(|py| {
+                let bound = w.inner.bind(py);
+                interp_py_to_value(py, &bound).map_err(|e| runtime_err(format!("py_to_tl(): {e}")))
+            }),
             other => Ok(other.clone()),
         }
     }
@@ -7020,7 +8417,8 @@ fn interp_value_to_py(py: pyo3::Python<'_>, val: &Value) -> pyo3::PyResult<pyo3:
         Value::Bool(b) => Ok((*b).into_pyobject(py)?.to_owned().into_any().unbind()),
         Value::None => Ok(py.None()),
         Value::List(items) => {
-            let py_items: Vec<pyo3::Py<pyo3::PyAny>> = items.iter()
+            let py_items: Vec<pyo3::Py<pyo3::PyAny>> = items
+                .iter()
                 .map(|item| interp_value_to_py(py, item))
                 .collect::<pyo3::PyResult<_>>()?;
             Ok(PyList::new(py, &py_items)?.into_any().unbind())
@@ -7034,20 +8432,25 @@ fn interp_value_to_py(py: pyo3::Python<'_>, val: &Value) -> pyo3::PyResult<pyo3:
             Ok(dict.into_any().unbind())
         }
         Value::Set(items) => {
-            let py_items: Vec<pyo3::Py<pyo3::PyAny>> = items.iter()
+            let py_items: Vec<pyo3::Py<pyo3::PyAny>> = items
+                .iter()
                 .map(|item| interp_value_to_py(py, item))
                 .collect::<pyo3::PyResult<_>>()?;
             Ok(PySet::new(py, &py_items)?.into_any().unbind())
         }
         Value::PyObject(w) => Ok(w.inner.clone_ref(py)),
         _ => Err(pyo3::exceptions::PyTypeError::new_err(format!(
-            "Cannot convert TL {} to Python", val.type_name()
+            "Cannot convert TL {} to Python",
+            val.type_name()
         ))),
     }
 }
 
 #[cfg(feature = "python")]
-fn interp_py_to_value(py: pyo3::Python<'_>, obj: &pyo3::Bound<'_, pyo3::PyAny>) -> pyo3::PyResult<Value> {
+fn interp_py_to_value(
+    py: pyo3::Python<'_>,
+    obj: &pyo3::Bound<'_, pyo3::PyAny>,
+) -> pyo3::PyResult<Value> {
     use pyo3::prelude::*;
     use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PySet, PyString};
 
@@ -7068,7 +8471,8 @@ fn interp_py_to_value(py: pyo3::Python<'_>, obj: &pyo3::Bound<'_, pyo3::PyAny>) 
     }
     if obj.is_instance_of::<PyList>() {
         let list = obj.downcast::<PyList>()?;
-        let items: Vec<Value> = list.iter()
+        let items: Vec<Value> = list
+            .iter()
             .map(|item| interp_py_to_value(py, &item))
             .collect::<pyo3::PyResult<_>>()?;
         return Ok(Value::List(items));
@@ -7119,15 +8523,18 @@ fn interp_py_call_method(
     use pyo3::prelude::*;
     pyo3::Python::with_gil(|py| {
         let bound = wrapper.inner.bind(py);
-        let py_args: Vec<pyo3::Py<pyo3::PyAny>> = args.iter()
+        let py_args: Vec<pyo3::Py<pyo3::PyAny>> = args
+            .iter()
             .map(|a| interp_value_to_py(py, a))
             .collect::<Result<_, _>>()
             .map_err(|e| runtime_err(format!("Python arg conversion: {e}")))?;
         let tuple = pyo3::types::PyTuple::new(py, &py_args)
             .map_err(|e| runtime_err(format!("Python tuple: {e}")))?;
-        let attr = bound.getattr(method)
+        let attr = bound
+            .getattr(method)
             .map_err(|e| runtime_err(format!("Python: no attribute '{method}': {e}")))?;
-        let result = attr.call1(tuple)
+        let result = attr
+            .call1(tuple)
             .map_err(|e| runtime_err(format!("Python method '{method}': {e}")))?;
         interp_py_to_value(py, &result)
             .map_err(|e| runtime_err(format!("Python result conversion: {e}")))
@@ -7200,7 +8607,8 @@ mod tests {
 
     #[test]
     fn test_if_else() {
-        let output = run_output("let x = 10\nif x > 5 { print(\"big\") } else { print(\"small\") }");
+        let output =
+            run_output("let x = 10\nif x > 5 { print(\"big\") } else { print(\"small\") }");
         assert_eq!(output, vec!["big"]);
     }
 
@@ -7225,7 +8633,8 @@ mod tests {
 
     #[test]
     fn test_match_int() {
-        let output = run_output("let x = 2\nprint(match x { 1 => \"one\", 2 => \"two\", _ => \"other\" })");
+        let output =
+            run_output("let x = 2\nprint(match x { 1 => \"one\", 2 => \"two\", _ => \"other\" })");
         assert_eq!(output, vec!["two"]);
     }
 
@@ -7237,7 +8646,8 @@ mod tests {
 
     #[test]
     fn test_match_string() {
-        let output = run_output("let s = \"hi\"\nprint(match s { \"hello\" => 1, \"hi\" => 2, _ => 0 })");
+        let output =
+            run_output("let s = \"hi\"\nprint(match s { \"hello\" => 1, \"hi\" => 2, _ => 0 })");
         assert_eq!(output, vec!["2"]);
     }
 
@@ -7255,21 +8665,23 @@ mod tests {
 
     #[test]
     fn test_for_loop() {
-        let output = run_output(
-            "let sum = 0\nfor i in range(5) { sum = sum + i }\nprint(sum)",
-        );
+        let output = run_output("let sum = 0\nfor i in range(5) { sum = sum + i }\nprint(sum)");
         assert_eq!(output, vec!["10"]);
     }
 
     #[test]
     fn test_map_builtin() {
-        let output = run_output("let nums = [1, 2, 3]\nlet doubled = map(nums, (x) => x * 2)\nprint(doubled)");
+        let output = run_output(
+            "let nums = [1, 2, 3]\nlet doubled = map(nums, (x) => x * 2)\nprint(doubled)",
+        );
         assert_eq!(output, vec!["[2, 4, 6]"]);
     }
 
     #[test]
     fn test_filter_builtin() {
-        let output = run_output("let nums = [1, 2, 3, 4, 5]\nlet evens = filter(nums, (x) => x % 2 == 0)\nprint(evens)");
+        let output = run_output(
+            "let nums = [1, 2, 3, 4, 5]\nlet evens = filter(nums, (x) => x % 2 == 0)\nprint(evens)",
+        );
         assert_eq!(output, vec!["[2, 4]"]);
     }
 
@@ -7287,7 +8699,9 @@ mod tests {
 
     #[test]
     fn test_reduce_builtin() {
-        let output = run_output("let product = reduce([1, 2, 3, 4], 1, (acc, x) => acc * x)\nprint(product)");
+        let output = run_output(
+            "let product = reduce([1, 2, 3, 4], 1, (acc, x) => acc * x)\nprint(product)",
+        );
         assert_eq!(output, vec!["24"]);
     }
 
@@ -7309,11 +8723,13 @@ mod tests {
 
     #[test]
     fn test_enum_creation() {
-        let output = run_output(
-            "enum Color { Red, Green, Blue }\nlet c = Color::Red\nprint(c)",
-        );
+        let output = run_output("enum Color { Red, Green, Blue }\nlet c = Color::Red\nprint(c)");
         assert!(output.len() == 1);
-        assert!(output[0].contains("Color::Red"), "expected output to contain 'Color::Red', got: {}", output[0]);
+        assert!(
+            output[0].contains("Color::Red"),
+            "expected output to contain 'Color::Red', got: {}",
+            output[0]
+        );
     }
 
     #[test]
@@ -7322,7 +8738,11 @@ mod tests {
             "enum Shape { Circle(float64), Rect(float64, float64) }\nlet s = Shape::Circle(5.0)\nprint(s)",
         );
         assert!(output.len() == 1);
-        assert!(output[0].contains("Circle"), "expected output to contain 'Circle', got: {}", output[0]);
+        assert!(
+            output[0].contains("Circle"),
+            "expected output to contain 'Circle', got: {}",
+            output[0]
+        );
     }
 
     #[test]
@@ -7343,17 +8763,13 @@ mod tests {
 
     #[test]
     fn test_try_catch() {
-        let output = run_output(
-            "try {\n    throw \"oops\"\n} catch e {\n    print(e)\n}",
-        );
+        let output = run_output("try {\n    throw \"oops\"\n} catch e {\n    print(e)\n}");
         assert_eq!(output, vec!["oops"]);
     }
 
     #[test]
     fn test_try_catch_runtime_error() {
-        let output = run_output(
-            "try {\n    let x = 1 / 0\n} catch e {\n    print(\"caught\")\n}",
-        );
+        let output = run_output("try {\n    let x = 1 / 0\n} catch e {\n    print(\"caught\")\n}");
         assert_eq!(output, vec!["caught"]);
     }
 
@@ -7367,16 +8783,18 @@ mod tests {
 
     #[test]
     fn test_math_builtins() {
-        let output = run_output(
-            "print(sqrt(16.0))\nprint(floor(3.7))\nprint(ceil(3.2))\nprint(abs(-5))",
-        );
+        let output =
+            run_output("print(sqrt(16.0))\nprint(floor(3.7))\nprint(ceil(3.2))\nprint(abs(-5))");
         assert_eq!(output, vec!["4.0", "3.0", "4.0", "5"]);
     }
 
     #[test]
     fn test_assert_pass() {
         let result = run("assert(true)\nassert_eq(1 + 1, 2)");
-        assert!(result.is_ok(), "assert(true) and assert_eq(1+1, 2) should not error");
+        assert!(
+            result.is_ok(),
+            "assert(true) and assert_eq(1+1, 2) should not error"
+        );
     }
 
     #[test]
@@ -7387,9 +8805,7 @@ mod tests {
 
     #[test]
     fn test_join_builtin() {
-        let output = run_output(
-            "print(join(\", \", [\"a\", \"b\", \"c\"]))",
-        );
+        let output = run_output("print(join(\", \", [\"a\", \"b\", \"c\"]))");
         assert_eq!(output, vec!["a, b, c"]);
     }
 
@@ -7406,106 +8822,130 @@ mod tests {
     #[test]
     fn test_json_parse_object() {
         // Build JSON from map_from + json_stringify to avoid string escaping issues
-        let output = run_output(r#"let m = map_from("a", 1, "b", "hello")
+        let output = run_output(
+            r#"let m = map_from("a", 1, "b", "hello")
 let s = json_stringify(m)
 let m2 = json_parse(s)
 print(m2["a"])
-print(m2["b"])"#);
+print(m2["b"])"#,
+        );
         assert_eq!(output, vec!["1", "hello"]);
     }
 
     #[test]
     fn test_json_parse_array() {
-        let output = run_output(r#"let arr = json_parse("[1, 2, 3]")
-print(len(arr))"#);
+        let output = run_output(
+            r#"let arr = json_parse("[1, 2, 3]")
+print(len(arr))"#,
+        );
         assert_eq!(output, vec!["3"]);
     }
 
     #[test]
     fn test_json_stringify() {
-        let output = run_output(r#"let m = map_from("x", 1, "y", 2)
+        let output = run_output(
+            r#"let m = map_from("x", 1, "y", 2)
 let s = json_stringify(m)
-print(s)"#);
+print(s)"#,
+        );
         assert_eq!(output, vec![r#"{"x":1,"y":2}"#]);
     }
 
     #[test]
     fn test_json_roundtrip() {
-        let output = run_output(r#"let m = map_from("name", "test", "val", 42)
+        let output = run_output(
+            r#"let m = map_from("name", "test", "val", 42)
 let s = json_stringify(m)
 let m2 = json_parse(s)
 print(m2["name"])
-print(m2["val"])"#);
+print(m2["val"])"#,
+        );
         assert_eq!(output, vec!["test", "42"]);
     }
 
     #[test]
     fn test_map_from() {
-        let output = run_output(r#"let m = map_from("a", 1, "b", 2)
+        let output = run_output(
+            r#"let m = map_from("a", 1, "b", 2)
 print(m["a"])
-print(m["b"])"#);
+print(m["b"])"#,
+        );
         assert_eq!(output, vec!["1", "2"]);
     }
 
     #[test]
     fn test_map_member_access() {
-        let output = run_output(r#"let m = map_from("name", "alice")
-print(m.name)"#);
+        let output = run_output(
+            r#"let m = map_from("name", "alice")
+print(m.name)"#,
+        );
         assert_eq!(output, vec!["alice"]);
     }
 
     #[test]
     fn test_map_index_set() {
-        let output = run_output(r#"let m = map_from("a", 1)
+        let output = run_output(
+            r#"let m = map_from("a", 1)
 m["b"] = 2
-print(m["b"])"#);
+print(m["b"])"#,
+        );
         assert_eq!(output, vec!["2"]);
     }
 
     #[test]
     fn test_map_methods() {
-        let output = run_output(r#"let m = map_from("a", 1, "b", 2, "c", 3)
+        let output = run_output(
+            r#"let m = map_from("a", 1, "b", 2, "c", 3)
 print(m.len())
 print(m.keys())
 print(m.contains_key("b"))
 print(m.contains_key("x"))
 let m2 = m.remove("b")
-print(m2.len())"#);
+print(m2.len())"#,
+        );
         assert_eq!(output, vec!["3", "[a, b, c]", "true", "false", "2"]);
     }
 
     #[test]
     fn test_map_iteration() {
-        let output = run_output(r#"let m = map_from("x", 10, "y", 20)
+        let output = run_output(
+            r#"let m = map_from("x", 10, "y", 20)
 for kv in m {
     print(kv[0])
-}"#);
+}"#,
+        );
         assert_eq!(output, vec!["x", "y"]);
     }
 
     #[test]
     fn test_map_len_type_of() {
-        let output = run_output(r#"let m = map_from("a", 1)
+        let output = run_output(
+            r#"let m = map_from("a", 1)
 print(len(m))
-print(type_of(m))"#);
+print(type_of(m))"#,
+        );
         assert_eq!(output, vec!["1", "map"]);
     }
 
     #[test]
     fn test_file_read_write() {
-        let output = run_output(r#"write_file("/tmp/tl_test_phase6.txt", "hello world")
+        let output = run_output(
+            r#"write_file("/tmp/tl_test_phase6.txt", "hello world")
 let content = read_file("/tmp/tl_test_phase6.txt")
 print(content)
-print(file_exists("/tmp/tl_test_phase6.txt"))"#);
+print(file_exists("/tmp/tl_test_phase6.txt"))"#,
+        );
         assert_eq!(output, vec!["hello world", "true"]);
     }
 
     #[test]
     fn test_file_append() {
-        let output = run_output(r#"write_file("/tmp/tl_test_append.txt", "line1")
+        let output = run_output(
+            r#"write_file("/tmp/tl_test_append.txt", "line1")
 append_file("/tmp/tl_test_append.txt", "line2")
 let content = read_file("/tmp/tl_test_append.txt")
-print(content)"#);
+print(content)"#,
+        );
         assert_eq!(output, vec!["line1line2"]);
     }
 
@@ -7521,46 +8961,58 @@ print(content)"#);
         std::fs::create_dir_all("/tmp/tl_listdir_test").ok();
         std::fs::write("/tmp/tl_listdir_test/a.txt", "a").ok();
         std::fs::write("/tmp/tl_listdir_test/b.txt", "b").ok();
-        let output = run_output(r#"let files = list_dir("/tmp/tl_listdir_test")
-print(len(files) >= 2)"#);
+        let output = run_output(
+            r#"let files = list_dir("/tmp/tl_listdir_test")
+print(len(files) >= 2)"#,
+        );
         assert_eq!(output, vec!["true"]);
     }
 
     #[test]
     fn test_env_get_set() {
-        let output = run_output(r#"env_set("TL_TEST_VAR", "hello123")
+        let output = run_output(
+            r#"env_set("TL_TEST_VAR", "hello123")
 let v = env_get("TL_TEST_VAR")
-print(v)"#);
+print(v)"#,
+        );
         assert_eq!(output, vec!["hello123"]);
     }
 
     #[test]
     fn test_env_get_missing() {
-        let output = run_output(r#"let v = env_get("TL_NONEXISTENT_VAR_XYZ")
-print(v)"#);
+        let output = run_output(
+            r#"let v = env_get("TL_NONEXISTENT_VAR_XYZ")
+print(v)"#,
+        );
         assert_eq!(output, vec!["none"]);
     }
 
     #[test]
     fn test_regex_match() {
-        let output = run_output(r#"print(regex_match("\\d+", "abc123"))
-print(regex_match("^\\d+$", "abc123"))"#);
+        let output = run_output(
+            r#"print(regex_match("\\d+", "abc123"))
+print(regex_match("^\\d+$", "abc123"))"#,
+        );
         assert_eq!(output, vec!["true", "false"]);
     }
 
     #[test]
     fn test_regex_find() {
-        let output = run_output(r#"let matches = regex_find("\\d+", "abc123def456")
+        let output = run_output(
+            r#"let matches = regex_find("\\d+", "abc123def456")
 print(len(matches))
 print(matches[0])
-print(matches[1])"#);
+print(matches[1])"#,
+        );
         assert_eq!(output, vec!["2", "123", "456"]);
     }
 
     #[test]
     fn test_regex_replace() {
-        let output = run_output(r#"let result = regex_replace("\\d+", "abc123def456", "X")
-print(result)"#);
+        let output = run_output(
+            r#"let result = regex_replace("\\d+", "abc123def456", "X")
+print(result)"#,
+        );
         assert_eq!(output, vec!["abcXdefX"]);
     }
 
@@ -7579,16 +9031,20 @@ print(result)"#);
 
     #[test]
     fn test_date_parse() {
-        let output = run_output(r#"let ts = date_parse("2024-01-01 00:00:00", "%Y-%m-%d %H:%M:%S")
-print(ts)"#);
+        let output = run_output(
+            r#"let ts = date_parse("2024-01-01 00:00:00", "%Y-%m-%d %H:%M:%S")
+print(ts)"#,
+        );
         assert_eq!(output, vec!["1704067200000"]);
     }
 
     #[test]
     fn test_string_chars() {
-        let output = run_output(r#"let chars = "hello".chars()
+        let output = run_output(
+            r#"let chars = "hello".chars()
 print(len(chars))
-print(chars[0])"#);
+print(chars[0])"#,
+        );
         assert_eq!(output, vec!["5", "h"]);
     }
 
@@ -7600,8 +9056,10 @@ print(chars[0])"#);
 
     #[test]
     fn test_string_index_of() {
-        let output = run_output(r#"print("hello world".index_of("world"))
-print("hello".index_of("xyz"))"#);
+        let output = run_output(
+            r#"print("hello world".index_of("world"))
+print("hello".index_of("xyz"))"#,
+        );
         assert_eq!(output, vec!["6", "-1"]);
     }
 
@@ -7613,8 +9071,10 @@ print("hello".index_of("xyz"))"#);
 
     #[test]
     fn test_string_pad() {
-        let output = run_output(r#"print("42".pad_left(5, "0"))
-print("hi".pad_right(5, "."))"#);
+        let output = run_output(
+            r#"print("42".pad_left(5, "0"))
+print("hi".pad_right(5, "."))"#,
+        );
         assert_eq!(output, vec!["00042", "hi..."]);
     }
 
@@ -7632,15 +9092,19 @@ print("hi".pad_right(5, "."))"#);
 
     #[test]
     fn test_list_contains() {
-        let output = run_output(r#"print([1, 2, 3].contains(2))
-print([1, 2, 3].contains(5))"#);
+        let output = run_output(
+            r#"print([1, 2, 3].contains(2))
+print([1, 2, 3].contains(5))"#,
+        );
         assert_eq!(output, vec!["true", "false"]);
     }
 
     #[test]
     fn test_list_index_of() {
-        let output = run_output(r#"print([10, 20, 30].index_of(20))
-print([10, 20, 30].index_of(99))"#);
+        let output = run_output(
+            r#"print([10, 20, 30].index_of(20))
+print([10, 20, 30].index_of(99))"#,
+        );
         assert_eq!(output, vec!["1", "-1"]);
     }
 
@@ -7652,33 +9116,41 @@ print([10, 20, 30].index_of(99))"#);
 
     #[test]
     fn test_list_flat_map() {
-        let output = run_output(r#"let result = [1, 2, 3].flat_map((x) => [x, x * 10])
-print(result)"#);
+        let output = run_output(
+            r#"let result = [1, 2, 3].flat_map((x) => [x, x * 10])
+print(result)"#,
+        );
         assert_eq!(output, vec!["[1, 10, 2, 20, 3, 30]"]);
     }
 
     #[test]
     fn test_zip() {
-        let output = run_output(r#"let pairs = zip([1, 2, 3], ["a", "b", "c"])
+        let output = run_output(
+            r#"let pairs = zip([1, 2, 3], ["a", "b", "c"])
 print(pairs[0])
-print(pairs[1])"#);
+print(pairs[1])"#,
+        );
         assert_eq!(output, vec!["[1, a]", "[2, b]"]);
     }
 
     #[test]
     fn test_enumerate() {
-        let output = run_output(r#"let items = enumerate(["a", "b", "c"])
+        let output = run_output(
+            r#"let items = enumerate(["a", "b", "c"])
 print(items[0])
-print(items[2])"#);
+print(items[2])"#,
+        );
         assert_eq!(output, vec!["[0, a]", "[2, c]"]);
     }
 
     #[test]
     fn test_bool_builtin() {
-        let output = run_output(r#"print(bool(1))
+        let output = run_output(
+            r#"print(bool(1))
 print(bool(0))
 print(bool(""))
-print(bool("hello"))"#);
+print(bool("hello"))"#,
+        );
         assert_eq!(output, vec!["true", "false", "false", "true"]);
     }
 
@@ -7690,52 +9162,64 @@ print(bool("hello"))"#);
 
     #[test]
     fn test_int_bool() {
-        let output = run_output(r#"print(int(true))
-print(int(false))"#);
+        let output = run_output(
+            r#"print(int(true))
+print(int(false))"#,
+        );
         assert_eq!(output, vec!["1", "0"]);
     }
 
     #[test]
     fn test_float_bool() {
-        let output = run_output(r#"print(float(true))
-print(float(false))"#);
+        let output = run_output(
+            r#"print(float(true))
+print(float(false))"#,
+        );
         assert_eq!(output, vec!["1.0", "0.0"]);
     }
 
     #[test]
     fn test_integration_json_file_roundtrip() {
-        let output = run_output(r#"let data = map_from("name", "test", "count", 42)
+        let output = run_output(
+            r#"let data = map_from("name", "test", "count", 42)
 let json_str = json_stringify(data)
 write_file("/tmp/tl_json_roundtrip.json", json_str)
 let content = read_file("/tmp/tl_json_roundtrip.json")
 let parsed = json_parse(content)
 print(parsed["name"])
-print(parsed["count"])"#);
+print(parsed["count"])"#,
+        );
         assert_eq!(output, vec!["test", "42"]);
     }
 
     #[test]
     fn test_integration_regex_on_file() {
-        let output = run_output(r#"write_file("/tmp/tl_regex_test.txt", "Error: code 404\nInfo: ok\nError: code 500")
+        let output = run_output(
+            r#"write_file("/tmp/tl_regex_test.txt", "Error: code 404\nInfo: ok\nError: code 500")
 let content = read_file("/tmp/tl_regex_test.txt")
 let errors = regex_find("Error: code \\d+", content)
-print(len(errors))"#);
+print(len(errors))"#,
+        );
         assert_eq!(output, vec!["2"]);
     }
 
     #[test]
     fn test_integration_list_transform() {
-        let output = run_output(r#"let data = [5, 3, 8, 1, 9, 2]
+        let output = run_output(
+            r#"let data = [5, 3, 8, 1, 9, 2]
 let result = data.sort().slice(0, 3)
-print(result)"#);
+print(result)"#,
+        );
         assert_eq!(output, vec!["[1, 2, 3]"]);
     }
 
     #[test]
     fn test_integration_map_values() {
-        let output = run_output(r#"let m = map_from("a", 1, "b", 2, "c", 3)
+        let output = run_output(
+            r#"let m = map_from("a", 1, "b", 2, "c", 3)
 let vals = m.values()
-print(sum(vals))"#);
+print(sum(vals))"#,
+        );
         assert_eq!(output, vec!["6"]);
     }
 
@@ -7743,26 +9227,32 @@ print(sum(vals))"#);
 
     #[test]
     fn test_interp_spawn_await_basic() {
-        let output = run_output(r#"fn worker() { 42 }
+        let output = run_output(
+            r#"fn worker() { 42 }
 let t = spawn(worker)
 let result = await t
-print(result)"#);
+print(result)"#,
+        );
         assert_eq!(output, vec!["42"]);
     }
 
     #[test]
     fn test_interp_spawn_closure_with_capture() {
-        let output = run_output(r#"let x = 10
+        let output = run_output(
+            r#"let x = 10
 fn f() { x + 5 }
 let t = spawn(f)
-print(await t)"#);
+print(await t)"#,
+        );
         assert_eq!(output, vec!["15"]);
     }
 
     #[test]
     fn test_interp_sleep() {
-        let output = run_output(r#"sleep(10)
-print("done")"#);
+        let output = run_output(
+            r#"sleep(10)
+print("done")"#,
+        );
         assert_eq!(output, vec!["done"]);
     }
 
@@ -7774,47 +9264,56 @@ print("done")"#);
 
     #[test]
     fn test_interp_channel_basic() {
-        let output = run_output(r#"let ch = channel()
+        let output = run_output(
+            r#"let ch = channel()
 send(ch, 42)
 let val = recv(ch)
-print(val)"#);
+print(val)"#,
+        );
         assert_eq!(output, vec!["42"]);
     }
 
     #[test]
     fn test_interp_channel_between_tasks() {
-        let output = run_output(r#"let ch = channel()
+        let output = run_output(
+            r#"let ch = channel()
 fn producer() { send(ch, 100) }
 let t = spawn(producer)
 let val = recv(ch)
 await t
-print(val)"#);
+print(val)"#,
+        );
         assert_eq!(output, vec!["100"]);
     }
 
     #[test]
     fn test_interp_try_recv_empty() {
-        let output = run_output(r#"let ch = channel()
+        let output = run_output(
+            r#"let ch = channel()
 let val = try_recv(ch)
-print(val)"#);
+print(val)"#,
+        );
         assert_eq!(output, vec!["none"]);
     }
 
     #[test]
     fn test_interp_channel_multiple_values() {
-        let output = run_output(r#"let ch = channel()
+        let output = run_output(
+            r#"let ch = channel()
 send(ch, 1)
 send(ch, 2)
 send(ch, 3)
 print(recv(ch))
 print(recv(ch))
-print(recv(ch))"#);
+print(recv(ch))"#,
+        );
         assert_eq!(output, vec!["1", "2", "3"]);
     }
 
     #[test]
     fn test_interp_channel_producer_consumer() {
-        let output = run_output(r#"let ch = channel()
+        let output = run_output(
+            r#"let ch = channel()
 fn producer() {
     send(ch, 10)
     send(ch, 20)
@@ -7825,51 +9324,61 @@ let a = recv(ch)
 let b = recv(ch)
 let c = recv(ch)
 await t
-print(a + b + c)"#);
+print(a + b + c)"#,
+        );
         assert_eq!(output, vec!["60"]);
     }
 
     #[test]
     fn test_interp_await_all() {
-        let output = run_output(r#"fn w1() { 10 }
+        let output = run_output(
+            r#"fn w1() { 10 }
 fn w2() { 20 }
 fn w3() { 30 }
 let t1 = spawn(w1)
 let t2 = spawn(w2)
 let t3 = spawn(w3)
 let results = await_all([t1, t2, t3])
-print(sum(results))"#);
+print(sum(results))"#,
+        );
         assert_eq!(output, vec!["60"]);
     }
 
     #[test]
     fn test_interp_pmap_basic() {
-        let output = run_output(r#"fn double(x) { x * 2 }
+        let output = run_output(
+            r#"fn double(x) { x * 2 }
 let results = pmap([1, 2, 3], double)
-print(results)"#);
+print(results)"#,
+        );
         assert_eq!(output, vec!["[2, 4, 6]"]);
     }
 
     #[test]
     fn test_interp_pmap_order() {
-        let output = run_output(r#"fn inc(x) { x + 1 }
+        let output = run_output(
+            r#"fn inc(x) { x + 1 }
 let results = pmap([10, 20, 30], inc)
-print(results)"#);
+print(results)"#,
+        );
         assert_eq!(output, vec!["[11, 21, 31]"]);
     }
 
     #[test]
     fn test_interp_timeout_success() {
-        let output = run_output(r#"fn worker() { 42 }
+        let output = run_output(
+            r#"fn worker() { 42 }
 let t = spawn(worker)
 let result = timeout(t, 5000)
-print(result)"#);
+print(result)"#,
+        );
         assert_eq!(output, vec!["42"]);
     }
 
     #[test]
     fn test_interp_timeout_failure() {
-        let output = run_output(r#"fn slow() { sleep(10000) }
+        let output = run_output(
+            r#"fn slow() { sleep(10000) }
 let t = spawn(slow)
 let result = "ok"
 try {
@@ -7877,13 +9386,15 @@ try {
 } catch e {
     result = e
 }
-print(result)"#);
+print(result)"#,
+        );
         assert_eq!(output, vec!["Task timed out"]);
     }
 
     #[test]
     fn test_interp_spawn_error_propagation() {
-        let output = run_output(r#"fn bad() { throw "bad thing" }
+        let output = run_output(
+            r#"fn bad() { throw "bad thing" }
 let result = "ok"
 try {
     let t = spawn(bad)
@@ -7891,13 +9402,15 @@ try {
 } catch e {
     result = e
 }
-print(result)"#);
+print(result)"#,
+        );
         assert_eq!(output, vec!["bad thing"]);
     }
 
     #[test]
     fn test_interp_spawn_multiple_collect() {
-        let output = run_output(r#"fn w1() { 1 }
+        let output = run_output(
+            r#"fn w1() { 1 }
 fn w2() { 2 }
 fn w3() { 3 }
 let t1 = spawn(w1)
@@ -7906,24 +9419,28 @@ let t3 = spawn(w3)
 let a = await t1
 let b = await t2
 let c = await t3
-print(a + b + c)"#);
+print(a + b + c)"#,
+        );
         assert_eq!(output, vec!["6"]);
     }
 
     #[test]
     fn test_interp_type_of_task_channel() {
-        let output = run_output(r#"fn worker() { 1 }
+        let output = run_output(
+            r#"fn worker() { 1 }
 let t = spawn(worker)
 let ch = channel()
 print(type_of(t))
 print(type_of(ch))
-await t"#);
+await t"#,
+        );
         assert_eq!(output, vec!["task", "channel"]);
     }
 
     #[test]
     fn test_interp_producer_consumer_pipeline() {
-        let output = run_output(r#"let ch = channel()
+        let output = run_output(
+            r#"let ch = channel()
 fn producer() {
     let mut i = 0
     while i < 5 {
@@ -7939,7 +9456,8 @@ while count < 5 {
     count = count + 1
 }
 await t
-print(total)"#);
+print(total)"#,
+        );
         assert_eq!(output, vec!["100"]);
     }
 
@@ -7947,7 +9465,8 @@ print(total)"#);
 
     #[test]
     fn test_interp_basic_generator() {
-        let output = run_output(r#"fn gen() {
+        let output = run_output(
+            r#"fn gen() {
     yield 1
     yield 2
     yield 3
@@ -7956,36 +9475,42 @@ let g = gen()
 print(next(g))
 print(next(g))
 print(next(g))
-print(next(g))"#);
+print(next(g))"#,
+        );
         assert_eq!(output, vec!["1", "2", "3", "none"]);
     }
 
     #[test]
     fn test_interp_generator_exhaustion() {
-        let output = run_output(r#"fn gen() { yield 42 }
+        let output = run_output(
+            r#"fn gen() { yield 42 }
 let g = gen()
 print(next(g))
 print(next(g))
-print(next(g))"#);
+print(next(g))"#,
+        );
         assert_eq!(output, vec!["42", "none", "none"]);
     }
 
     #[test]
     fn test_interp_generator_with_loop() {
-        let output = run_output(r#"fn counter() {
+        let output = run_output(
+            r#"fn counter() {
     let mut i = 0
     while i < 5 {
         yield i
         i = i + 1
     }
 }
-print(gen_collect(counter()))"#);
+print(gen_collect(counter()))"#,
+        );
         assert_eq!(output, vec!["[0, 1, 2, 3, 4]"]);
     }
 
     #[test]
     fn test_interp_generator_with_args() {
-        let output = run_output(r#"fn range_gen(start, end) {
+        let output = run_output(
+            r#"fn range_gen(start, end) {
     let mut i = start
     while i < end {
         yield i
@@ -7997,36 +9522,42 @@ print(next(g))
 print(next(g))
 print(next(g))
 print(next(g))
-print(next(g))"#);
+print(next(g))"#,
+        );
         assert_eq!(output, vec!["3", "4", "5", "6", "none"]);
     }
 
     #[test]
     fn test_interp_generator_yield_none() {
-        let output = run_output(r#"fn gen() {
+        let output = run_output(
+            r#"fn gen() {
     yield
     yield 5
 }
 let g = gen()
 print(next(g))
 print(next(g))
-print(next(g))"#);
+print(next(g))"#,
+        );
         assert_eq!(output, vec!["none", "5", "none"]);
     }
 
     #[test]
     fn test_interp_is_generator() {
-        let output = run_output(r#"fn gen() { yield 1 }
+        let output = run_output(
+            r#"fn gen() { yield 1 }
 let g = gen()
 print(is_generator(g))
 print(is_generator(42))
-print(is_generator(none))"#);
+print(is_generator(none))"#,
+        );
         assert_eq!(output, vec!["true", "false", "false"]);
     }
 
     #[test]
     fn test_interp_multiple_generators() {
-        let output = run_output(r#"fn gen() {
+        let output = run_output(
+            r#"fn gen() {
     yield 1
     yield 2
 }
@@ -8035,13 +9566,15 @@ let g2 = gen()
 print(next(g1))
 print(next(g2))
 print(next(g1))
-print(next(g2))"#);
+print(next(g2))"#,
+        );
         assert_eq!(output, vec!["1", "1", "2", "2"]);
     }
 
     #[test]
     fn test_interp_for_over_generator() {
-        let output = run_output(r#"fn gen() {
+        let output = run_output(
+            r#"fn gen() {
     yield 10
     yield 20
     yield 30
@@ -8050,89 +9583,109 @@ let mut sum = 0
 for x in gen() {
     sum = sum + x
 }
-print(sum)"#);
+print(sum)"#,
+        );
         assert_eq!(output, vec!["60"]);
     }
 
     #[test]
     fn test_interp_iter_builtin() {
-        let output = run_output(r#"let g = iter([10, 20, 30])
+        let output = run_output(
+            r#"let g = iter([10, 20, 30])
 print(next(g))
 print(next(g))
 print(next(g))
-print(next(g))"#);
+print(next(g))"#,
+        );
         assert_eq!(output, vec!["10", "20", "30", "none"]);
     }
 
     #[test]
     fn test_interp_take_builtin() {
-        let output = run_output(r#"fn naturals() {
+        let output = run_output(
+            r#"fn naturals() {
     let mut n = 0
     while true {
         yield n
         n = n + 1
     }
 }
-print(gen_collect(take(naturals(), 5)))"#);
+print(gen_collect(take(naturals(), 5)))"#,
+        );
         assert_eq!(output, vec!["[0, 1, 2, 3, 4]"]);
     }
 
     #[test]
     fn test_interp_skip_builtin() {
-        let output = run_output(r#"let g = skip(iter([1, 2, 3, 4, 5]), 3)
-print(gen_collect(g))"#);
+        let output = run_output(
+            r#"let g = skip(iter([1, 2, 3, 4, 5]), 3)
+print(gen_collect(g))"#,
+        );
         assert_eq!(output, vec!["[4, 5]"]);
     }
 
     #[test]
     fn test_interp_gen_collect() {
-        let output = run_output(r#"fn gen() {
+        let output = run_output(
+            r#"fn gen() {
     yield 1
     yield 2
     yield 3
 }
-print(gen_collect(gen()))"#);
+print(gen_collect(gen()))"#,
+        );
         assert_eq!(output, vec!["[1, 2, 3]"]);
     }
 
     #[test]
     fn test_interp_gen_map() {
-        let output = run_output(r#"let g = gen_map(iter([1, 2, 3]), (x) => x * 10)
-print(gen_collect(g))"#);
+        let output = run_output(
+            r#"let g = gen_map(iter([1, 2, 3]), (x) => x * 10)
+print(gen_collect(g))"#,
+        );
         assert_eq!(output, vec!["[10, 20, 30]"]);
     }
 
     #[test]
     fn test_interp_gen_filter() {
-        let output = run_output(r#"let g = gen_filter(iter([1, 2, 3, 4, 5, 6]), (x) => x % 2 == 0)
-print(gen_collect(g))"#);
+        let output = run_output(
+            r#"let g = gen_filter(iter([1, 2, 3, 4, 5, 6]), (x) => x % 2 == 0)
+print(gen_collect(g))"#,
+        );
         assert_eq!(output, vec!["[2, 4, 6]"]);
     }
 
     #[test]
     fn test_interp_chain() {
-        let output = run_output(r#"let g = chain(iter([1, 2]), iter([3, 4]))
-print(gen_collect(g))"#);
+        let output = run_output(
+            r#"let g = chain(iter([1, 2]), iter([3, 4]))
+print(gen_collect(g))"#,
+        );
         assert_eq!(output, vec!["[1, 2, 3, 4]"]);
     }
 
     #[test]
     fn test_interp_gen_zip() {
-        let output = run_output(r#"let g = gen_zip(iter([1, 2, 3]), iter([10, 20]))
-print(gen_collect(g))"#);
+        let output = run_output(
+            r#"let g = gen_zip(iter([1, 2, 3]), iter([10, 20]))
+print(gen_collect(g))"#,
+        );
         assert_eq!(output, vec!["[[1, 10], [2, 20]]"]);
     }
 
     #[test]
     fn test_interp_gen_enumerate() {
-        let output = run_output(r#"let g = gen_enumerate(iter([10, 20, 30]))
-print(gen_collect(g))"#);
+        let output = run_output(
+            r#"let g = gen_enumerate(iter([10, 20, 30]))
+print(gen_collect(g))"#,
+        );
         assert_eq!(output, vec!["[[0, 10], [1, 20], [2, 30]]"]);
     }
 
     #[test]
     fn test_interp_combinator_chaining() {
-        let output = run_output(r#"fn naturals() {
+        let output = run_output(
+            r#"fn naturals() {
     let mut n = 0
     while true {
         yield n
@@ -8140,13 +9693,15 @@ print(gen_collect(g))"#);
     }
 }
 let result = gen_collect(gen_map(gen_filter(take(naturals(), 10), (x) => x % 2 == 0), (x) => x * x))
-print(result)"#);
+print(result)"#,
+        );
         assert_eq!(output, vec!["[0, 4, 16, 36, 64]"]);
     }
 
     #[test]
     fn test_interp_for_over_take() {
-        let output = run_output(r#"fn naturals() {
+        let output = run_output(
+            r#"fn naturals() {
     let mut n = 0
     while true {
         yield n
@@ -8157,13 +9712,15 @@ let mut sum = 0
 for x in take(naturals(), 5) {
     sum = sum + x
 }
-print(sum)"#);
+print(sum)"#,
+        );
         assert_eq!(output, vec!["10"]);
     }
 
     #[test]
     fn test_interp_fibonacci_generator() {
-        let output = run_output(r#"fn fib() {
+        let output = run_output(
+            r#"fn fib() {
     let mut a = 0
     let mut b = 1
     while true {
@@ -8173,13 +9730,15 @@ print(sum)"#);
         b = tmp
     }
 }
-print(gen_collect(take(fib(), 8)))"#);
+print(gen_collect(take(fib(), 8)))"#,
+        );
         assert_eq!(output, vec!["[0, 1, 1, 2, 3, 5, 8, 13]"]);
     }
 
     #[test]
     fn test_interp_generator_method_syntax() {
-        let output = run_output(r#"fn gen() {
+        let output = run_output(
+            r#"fn gen() {
     yield 1
     yield 2
     yield 3
@@ -8187,7 +9746,8 @@ print(gen_collect(take(fib(), 8)))"#);
 let g = gen()
 print(g.next())
 print(g.next())
-print(g.collect())"#);
+print(g.collect())"#,
+        );
         assert_eq!(output, vec!["1", "2", "[3]"]);
     }
 
@@ -8224,38 +9784,46 @@ print(g.collect())"#);
 
     #[test]
     fn test_interp_try_on_ok() {
-        let output = run_output(r#"fn get_val() { Ok(42) }
+        let output = run_output(
+            r#"fn get_val() { Ok(42) }
 fn process() { let v = get_val()? + 1
 Ok(v) }
-print(process())"#);
+print(process())"#,
+        );
         assert_eq!(output, vec!["Result::Ok(43)"]);
     }
 
     #[test]
     fn test_interp_try_on_err_propagates() {
-        let output = run_output(r#"fn failing() { Err("oops") }
+        let output = run_output(
+            r#"fn failing() { Err("oops") }
 fn process() { let v = failing()?
 Ok(v) }
-print(process())"#);
+print(process())"#,
+        );
         assert_eq!(output, vec!["Result::Err(oops)"]);
     }
 
     #[test]
     fn test_interp_try_on_none_propagates() {
-        let output = run_output(r#"fn get_none() { none }
+        let output = run_output(
+            r#"fn get_none() { none }
 fn process() { let v = get_none()?
 42 }
-print(process())"#);
+print(process())"#,
+        );
         assert_eq!(output, vec!["none"]);
     }
 
     #[test]
     fn test_interp_result_match() {
-        let output = run_output(r#"let r = Ok(42)
+        let output = run_output(
+            r#"let r = Ok(42)
 match r {
     Result::Ok(v) => print(v),
     Result::Err(e) => print(e)
-}"#);
+}"#,
+        );
         assert_eq!(output, vec!["42"]);
     }
 
@@ -8263,128 +9831,156 @@ match r {
 
     #[test]
     fn test_interp_set_from_dedup() {
-        let output = run_output(r#"let s = set_from([1, 2, 3, 2, 1])
+        let output = run_output(
+            r#"let s = set_from([1, 2, 3, 2, 1])
 print(len(s))
-print(type_of(s))"#);
+print(type_of(s))"#,
+        );
         assert_eq!(output, vec!["3", "set"]);
     }
 
     #[test]
     fn test_interp_set_add() {
-        let output = run_output(r#"let s = set_from([1, 2])
+        let output = run_output(
+            r#"let s = set_from([1, 2])
 let s2 = set_add(s, 3)
 let s3 = set_add(s2, 2)
 print(len(s2))
-print(len(s3))"#);
+print(len(s3))"#,
+        );
         assert_eq!(output, vec!["3", "3"]);
     }
 
     #[test]
     fn test_interp_set_remove() {
-        let output = run_output(r#"let s = set_from([1, 2, 3])
+        let output = run_output(
+            r#"let s = set_from([1, 2, 3])
 let s2 = set_remove(s, 2)
 print(len(s2))
-print(set_contains(s2, 2))"#);
+print(set_contains(s2, 2))"#,
+        );
         assert_eq!(output, vec!["2", "false"]);
     }
 
     #[test]
     fn test_interp_set_contains() {
-        let output = run_output(r#"let s = set_from([1, 2, 3])
+        let output = run_output(
+            r#"let s = set_from([1, 2, 3])
 print(set_contains(s, 2))
-print(set_contains(s, 5))"#);
+print(set_contains(s, 5))"#,
+        );
         assert_eq!(output, vec!["true", "false"]);
     }
 
     #[test]
     fn test_interp_set_union() {
-        let output = run_output(r#"let a = set_from([1, 2, 3])
+        let output = run_output(
+            r#"let a = set_from([1, 2, 3])
 let b = set_from([3, 4, 5])
 let c = set_union(a, b)
-print(len(c))"#);
+print(len(c))"#,
+        );
         assert_eq!(output, vec!["5"]);
     }
 
     #[test]
     fn test_interp_set_intersection() {
-        let output = run_output(r#"let a = set_from([1, 2, 3])
+        let output = run_output(
+            r#"let a = set_from([1, 2, 3])
 let b = set_from([2, 3, 4])
 let c = set_intersection(a, b)
-print(len(c))"#);
+print(len(c))"#,
+        );
         assert_eq!(output, vec!["2"]);
     }
 
     #[test]
     fn test_interp_set_difference() {
-        let output = run_output(r#"let a = set_from([1, 2, 3])
+        let output = run_output(
+            r#"let a = set_from([1, 2, 3])
 let b = set_from([2, 3, 4])
 let c = set_difference(a, b)
-print(len(c))"#);
+print(len(c))"#,
+        );
         assert_eq!(output, vec!["1"]);
     }
 
     #[test]
     fn test_interp_set_for_loop() {
-        let output = run_output(r#"let s = set_from([10, 20, 30])
+        let output = run_output(
+            r#"let s = set_from([10, 20, 30])
 let total = 0
 for item in s {
     total = total + item
 }
-print(total)"#);
+print(total)"#,
+        );
         assert_eq!(output, vec!["60"]);
     }
 
     #[test]
     fn test_interp_set_to_list() {
-        let output = run_output(r#"let s = set_from([3, 1, 2])
+        let output = run_output(
+            r#"let s = set_from([3, 1, 2])
 let lst = s.to_list()
 print(type_of(lst))
-print(len(lst))"#);
+print(len(lst))"#,
+        );
         assert_eq!(output, vec!["list", "3"]);
     }
 
     #[test]
     fn test_interp_set_method_contains() {
-        let output = run_output(r#"let s = set_from([1, 2, 3])
+        let output = run_output(
+            r#"let s = set_from([1, 2, 3])
 print(s.contains(2))
-print(s.contains(5))"#);
+print(s.contains(5))"#,
+        );
         assert_eq!(output, vec!["true", "false"]);
     }
 
     #[test]
     fn test_interp_set_method_add_remove() {
-        let output = run_output(r#"let s = set_from([1, 2])
+        let output = run_output(
+            r#"let s = set_from([1, 2])
 let s2 = s.add(3)
 print(s2.len())
 let s3 = s2.remove(1)
-print(s3.len())"#);
+print(s3.len())"#,
+        );
         assert_eq!(output, vec!["3", "2"]);
     }
 
     #[test]
     fn test_interp_set_method_union_intersection_difference() {
-        let output = run_output(r#"let a = set_from([1, 2, 3])
+        let output = run_output(
+            r#"let a = set_from([1, 2, 3])
 let b = set_from([2, 3, 4])
 print(a.union(b).len())
 print(a.intersection(b).len())
-print(a.difference(b).len())"#);
+print(a.difference(b).len())"#,
+        );
         assert_eq!(output, vec!["4", "2", "1"]);
     }
 
     #[test]
     fn test_interp_set_empty() {
-        let output = run_output(r#"let s = set_from([])
+        let output = run_output(
+            r#"let s = set_from([])
 print(len(s))
 let s2 = s.add(1)
-print(len(s2))"#);
+print(len(s2))"#,
+        );
         assert_eq!(output, vec!["0", "1"]);
     }
 
     #[test]
     fn test_interp_set_string_values() {
-        let output = run_output(r#"let s = set_from(["a", "b", "a", "c"])
+        let output = run_output(
+            r#"let s = set_from(["a", "b", "a", "c"])
 print(len(s))
-print(s.contains("b"))"#);
+print(s.contains("b"))"#,
+        );
         assert_eq!(output, vec!["3", "true"]);
     }
 
@@ -8409,7 +10005,11 @@ print(s.contains("b"))"#);
     #[test]
     fn test_interp_use_wildcard() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("helpers.tl"), "fn greet() { \"hello\" }\nfn farewell() { \"bye\" }").unwrap();
+        std::fs::write(
+            dir.path().join("helpers.tl"),
+            "fn greet() { \"hello\" }\nfn farewell() { \"bye\" }",
+        )
+        .unwrap();
 
         let main_path = dir.path().join("main.tl");
         let main_src = "use helpers.*\nprint(greet())\nprint(farewell())";
@@ -8459,7 +10059,11 @@ print(s.contains("b"))"#);
     fn test_interp_use_nested_path() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("data")).unwrap();
-        std::fs::write(dir.path().join("data/transforms.tl"), "fn clean(x) { x + 1 }").unwrap();
+        std::fs::write(
+            dir.path().join("data/transforms.tl"),
+            "fn clean(x) { x + 1 }",
+        )
+        .unwrap();
 
         let main_path = dir.path().join("main.tl");
         let main_src = "use data.transforms\nprint(clean(41))";
@@ -8517,7 +10121,10 @@ print(s.contains("b"))"#);
         let lib_path = dir.path().join("lib.tl");
         std::fs::write(&lib_path, "fn imported_fn() { 123 }").unwrap();
 
-        let main_src = format!("import \"{}\"\nprint(imported_fn())", lib_path.to_string_lossy());
+        let main_src = format!(
+            "import \"{}\"\nprint(imported_fn())",
+            lib_path.to_string_lossy()
+        );
         let program = tl_parser::parse(&main_src).unwrap();
         let mut interp = Interpreter::new();
         interp.execute(&program).unwrap();
@@ -8527,7 +10134,11 @@ print(s.contains("b"))"#);
     #[test]
     fn test_interp_use_group() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("lib.tl"), "fn foo() { 1 }\nfn bar() { 2 }\nfn baz() { 3 }").unwrap();
+        std::fs::write(
+            dir.path().join("lib.tl"),
+            "fn foo() { 1 }\nfn bar() { 2 }\nfn baz() { 3 }",
+        )
+        .unwrap();
 
         let main_path = dir.path().join("main.tl");
         let main_src = "use lib.{foo, bar}\nprint(foo())\nprint(bar())";
@@ -8556,7 +10167,9 @@ print(s.contains("b"))"#);
 
     #[test]
     fn test_interp_generic_struct() {
-        let output = run_output("struct Pair<A, B> { first: A, second: B }\nlet p = Pair { first: 1, second: \"hi\" }\nprint(p.first)\nprint(p.second)");
+        let output = run_output(
+            "struct Pair<A, B> { first: A, second: B }\nlet p = Pair { first: 1, second: \"hi\" }\nprint(p.first)\nprint(p.second)",
+        );
         assert_eq!(output, vec!["1", "hi"]);
     }
 
@@ -8569,7 +10182,7 @@ print(s.contains("b"))"#);
     #[test]
     fn test_interp_trait_impl_methods() {
         let output = run_output(
-            "struct Point { x: int, y: int }\nimpl Display for Point { fn show(self) -> string { \"point\" } }\nlet p = Point { x: 1, y: 2 }\nprint(p.show())"
+            "struct Point { x: int, y: int }\nimpl Display for Point { fn show(self) -> string { \"point\" } }\nlet p = Point { x: 1, y: 2 }\nprint(p.show())",
         );
         assert_eq!(output, vec!["point"]);
     }
@@ -8577,20 +10190,23 @@ print(s.contains("b"))"#);
     #[test]
     fn test_interp_generic_enum() {
         // Generic enum declaration works — type params are erased at runtime
-        let output = run_output("enum MyOpt<T> { Some(T), Nothing }\nlet x = MyOpt::Some(42)\nlet y = MyOpt::Nothing\nprint(type_of(x))\nprint(type_of(y))");
+        let output = run_output(
+            "enum MyOpt<T> { Some(T), Nothing }\nlet x = MyOpt::Some(42)\nlet y = MyOpt::Nothing\nprint(type_of(x))\nprint(type_of(y))",
+        );
         assert_eq!(output, vec!["enum", "enum"]);
     }
 
     #[test]
     fn test_interp_where_clause_runtime() {
-        let output = run_output("fn compare<T>(x: T) where T: Comparable { x }\nprint(compare(10))");
+        let output =
+            run_output("fn compare<T>(x: T) where T: Comparable { x }\nprint(compare(10))");
         assert_eq!(output, vec!["10"]);
     }
 
     #[test]
     fn test_interp_trait_impl_self_method() {
         let output = run_output(
-            "struct Counter { value: int }\nimpl Incrementable for Counter { fn inc(self) { self.value + 1 } }\nlet c = Counter { value: 5 }\nprint(c.inc())"
+            "struct Counter { value: int }\nimpl Incrementable for Counter { fn inc(self) { self.value + 1 } }\nlet c = Counter { value: 5 }\nprint(c.inc())",
         );
         assert_eq!(output, vec!["6"]);
     }
@@ -8599,14 +10215,16 @@ print(s.contains("b"))"#);
 
     #[test]
     fn test_interp_generic_fn_with_type_inference() {
-        let output = run_output("fn first<T>(xs: list<T>) -> T { xs[0] }\nprint(first([1, 2, 3]))\nprint(first([\"a\", \"b\"]))");
+        let output = run_output(
+            "fn first<T>(xs: list<T>) -> T { xs[0] }\nprint(first([1, 2, 3]))\nprint(first([\"a\", \"b\"]))",
+        );
         assert_eq!(output, vec!["1", "a"]);
     }
 
     #[test]
     fn test_interp_generic_struct_with_methods() {
         let output = run_output(
-            "struct Box<T> { val: T }\nimpl Box { fn get(self) { self.val } }\nlet b = Box { val: 42 }\nprint(b.get())"
+            "struct Box<T> { val: T }\nimpl Box { fn get(self) { self.val } }\nlet b = Box { val: 42 }\nprint(b.get())",
         );
         assert_eq!(output, vec!["42"]);
     }
@@ -8614,20 +10232,24 @@ print(s.contains("b"))"#);
     #[test]
     fn test_interp_trait_def_impl_call() {
         let output = run_output(
-            "trait Greetable { fn greet(self) -> string }\nstruct Person { name: string }\nimpl Greetable for Person { fn greet(self) -> string { self.name } }\nlet p = Person { name: \"Alice\" }\nprint(p.greet())"
+            "trait Greetable { fn greet(self) -> string }\nstruct Person { name: string }\nimpl Greetable for Person { fn greet(self) -> string { self.name } }\nlet p = Person { name: \"Alice\" }\nprint(p.greet())",
         );
         assert_eq!(output, vec!["Alice"]);
     }
 
     #[test]
     fn test_interp_multiple_generic_params() {
-        let output = run_output("fn pair<A, B>(a: A, b: B) { [a, b] }\nlet p = pair(1, \"two\")\nprint(len(p))");
+        let output = run_output(
+            "fn pair<A, B>(a: A, b: B) { [a, b] }\nlet p = pair(1, \"two\")\nprint(len(p))",
+        );
         assert_eq!(output, vec!["2"]);
     }
 
     #[test]
     fn test_interp_backward_compat_non_generic() {
-        let output = run_output("fn add(a, b) { a + b }\nstruct Point { x: int, y: int }\nimpl Point { fn sum(self) { self.x + self.y } }\nlet p = Point { x: 3, y: 4 }\nprint(add(1, 2))\nprint(p.sum())");
+        let output = run_output(
+            "fn add(a, b) { a + b }\nstruct Point { x: int, y: int }\nimpl Point { fn sum(self) { self.x + self.y } }\nlet p = Point { x: 3, y: 4 }\nprint(add(1, 2))\nprint(p.sum())",
+        );
         assert_eq!(output, vec!["3", "7"]);
     }
 
@@ -8638,8 +10260,16 @@ print(s.contains("b"))"#);
         let tmp = tempfile::tempdir().unwrap();
         let pkg_dir = tmp.path().join("mylib");
         std::fs::create_dir_all(pkg_dir.join("src")).unwrap();
-        std::fs::write(pkg_dir.join("src/lib.tl"), "pub fn greet() { print(\"hello from pkg\") }").unwrap();
-        std::fs::write(pkg_dir.join("tl.toml"), "[project]\nname = \"mylib\"\nversion = \"1.0.0\"\n").unwrap();
+        std::fs::write(
+            pkg_dir.join("src/lib.tl"),
+            "pub fn greet() { print(\"hello from pkg\") }",
+        )
+        .unwrap();
+        std::fs::write(
+            pkg_dir.join("tl.toml"),
+            "[project]\nname = \"mylib\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
 
         let main_file = tmp.path().join("main.tl");
         std::fs::write(&main_file, "use mylib\ngreet()").unwrap();
@@ -8661,7 +10291,11 @@ print(s.contains("b"))"#);
         let pkg_dir = tmp.path().join("utils");
         std::fs::create_dir_all(pkg_dir.join("src")).unwrap();
         std::fs::write(pkg_dir.join("src/math.tl"), "pub fn triple(x) { x * 3 }").unwrap();
-        std::fs::write(pkg_dir.join("tl.toml"), "[project]\nname = \"utils\"\nversion = \"1.0.0\"\n").unwrap();
+        std::fs::write(
+            pkg_dir.join("tl.toml"),
+            "[project]\nname = \"utils\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
 
         let main_file = tmp.path().join("main.tl");
         std::fs::write(&main_file, "use utils.math\nprint(triple(10))").unwrap();
@@ -8683,7 +10317,11 @@ print(s.contains("b"))"#);
         let pkg_dir = tmp.path().join("my-lib");
         std::fs::create_dir_all(pkg_dir.join("src")).unwrap();
         std::fs::write(pkg_dir.join("src/lib.tl"), "pub fn val() { print(77) }").unwrap();
-        std::fs::write(pkg_dir.join("tl.toml"), "[project]\nname = \"my-lib\"\nversion = \"1.0.0\"\n").unwrap();
+        std::fs::write(
+            pkg_dir.join("tl.toml"),
+            "[project]\nname = \"my-lib\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
 
         let main_file = tmp.path().join("main.tl");
         std::fs::write(&main_file, "use my_lib\nval()").unwrap();
@@ -8709,19 +10347,25 @@ print(s.contains("b"))"#);
 
     #[test]
     fn test_interp_match_guard() {
-        let output = run_output("let x = 5\nprint(match x { n if n > 0 => \"pos\", n if n < 0 => \"neg\", _ => \"zero\" })");
+        let output = run_output(
+            "let x = 5\nprint(match x { n if n > 0 => \"pos\", n if n < 0 => \"neg\", _ => \"zero\" })",
+        );
         assert_eq!(output, vec!["pos"]);
     }
 
     #[test]
     fn test_interp_match_guard_negative() {
-        let output = run_output("let x = -3\nprint(match x { n if n > 0 => \"pos\", n if n < 0 => \"neg\", _ => \"zero\" })");
+        let output = run_output(
+            "let x = -3\nprint(match x { n if n > 0 => \"pos\", n if n < 0 => \"neg\", _ => \"zero\" })",
+        );
         assert_eq!(output, vec!["neg"]);
     }
 
     #[test]
     fn test_interp_match_guard_zero() {
-        let output = run_output("let x = 0\nprint(match x { n if n > 0 => \"pos\", n if n < 0 => \"neg\", _ => \"zero\" })");
+        let output = run_output(
+            "let x = 0\nprint(match x { n if n > 0 => \"pos\", n if n < 0 => \"neg\", _ => \"zero\" })",
+        );
         assert_eq!(output, vec!["zero"]);
     }
 
@@ -8749,13 +10393,15 @@ print(match s { Shape::Circle(r) => r * r, Shape::Rect(w, h) => w * h, _ => 0 })
 
     #[test]
     fn test_interp_match_or_pattern() {
-        let output = run_output("let x = 2\nprint(match x { 1 or 2 or 3 => \"small\", _ => \"big\" })");
+        let output =
+            run_output("let x = 2\nprint(match x { 1 or 2 or 3 => \"small\", _ => \"big\" })");
         assert_eq!(output, vec!["small"]);
     }
 
     #[test]
     fn test_interp_match_or_pattern_no_match() {
-        let output = run_output("let x = 10\nprint(match x { 1 or 2 or 3 => \"small\", _ => \"big\" })");
+        let output =
+            run_output("let x = 10\nprint(match x { 1 or 2 or 3 => \"small\", _ => \"big\" })");
         assert_eq!(output, vec!["big"]);
     }
 
@@ -8808,7 +10454,8 @@ print(match lst { [] => "empty", _ => "nonempty" })
 
     #[test]
     fn test_interp_let_destructure_list_rest() {
-        let output = run_output("let [head, ...tail] = [1, 2, 3, 4]\nprint(head)\nprint(len(tail))");
+        let output =
+            run_output("let [head, ...tail] = [1, 2, 3, 4]\nprint(head)\nprint(len(tail))");
         assert_eq!(output, vec!["1", "3"]);
     }
 
@@ -8837,13 +10484,16 @@ print(match r { Result::Ok(v) if v > 100 => "big", Result::Ok(v) => v, Result::E
 
     #[test]
     fn test_interp_match_negative_literal() {
-        let output = run_output("let x = -5\nprint(match x { -5 => \"neg five\", _ => \"other\" })");
+        let output =
+            run_output("let x = -5\nprint(match x { -5 => \"neg five\", _ => \"other\" })");
         assert_eq!(output, vec!["neg five"]);
     }
 
     #[test]
     fn test_interp_case_with_pattern() {
-        let output = run_output("let x = 15\nprint(case { x > 10 => \"big\", x > 0 => \"small\", _ => \"other\" })");
+        let output = run_output(
+            "let x = 15\nprint(case { x > 10 => \"big\", x > 0 => \"small\", _ => \"other\" })",
+        );
         assert_eq!(output, vec!["big"]);
     }
 
@@ -8851,31 +10501,40 @@ print(match r { Result::Ok(v) if v > 100 => "big", Result::Ok(v) => v, Result::E
 
     #[test]
     fn test_interp_block_body_closure() {
-        let output = run_output("let f = (x: int64) -> int64 { let y = x * 2\n y + 1 }\nprint(f(5))");
+        let output =
+            run_output("let f = (x: int64) -> int64 { let y = x * 2\n y + 1 }\nprint(f(5))");
         assert_eq!(output, vec!["11"]);
     }
 
     #[test]
     fn test_interp_block_body_closure_captured_var() {
-        let output = run_output("let offset = 10\nlet f = (x) -> int64 { let y = x + offset\n y }\nprint(f(5))");
+        let output = run_output(
+            "let offset = 10\nlet f = (x) -> int64 { let y = x + offset\n y }\nprint(f(5))",
+        );
         assert_eq!(output, vec!["15"]);
     }
 
     #[test]
     fn test_interp_block_body_closure_as_hof_arg() {
-        let output = run_output("let nums = [1, 2, 3]\nlet result = map(nums, (x) -> int64 { let doubled = x * 2\n doubled + 1 })\nprint(result)");
+        let output = run_output(
+            "let nums = [1, 2, 3]\nlet result = map(nums, (x) -> int64 { let doubled = x * 2\n doubled + 1 })\nprint(result)",
+        );
         assert_eq!(output, vec!["[3, 5, 7]"]);
     }
 
     #[test]
     fn test_interp_type_alias_noop() {
-        let output = run_output("type Mapper = fn(int64) -> int64\nlet f: Mapper = (x) => x * 2\nprint(f(5))");
+        let output = run_output(
+            "type Mapper = fn(int64) -> int64\nlet f: Mapper = (x) => x * 2\nprint(f(5))",
+        );
         assert_eq!(output, vec!["10"]);
     }
 
     #[test]
     fn test_interp_type_alias_in_function_sig() {
-        let output = run_output("type Mapper = fn(int64) -> int64\nfn apply(f: Mapper, x: int64) -> int64 { f(x) }\nprint(apply((x) => x + 10, 5))");
+        let output = run_output(
+            "type Mapper = fn(int64) -> int64\nfn apply(f: Mapper, x: int64) -> int64 { f(x) }\nprint(apply((x) => x + 10, 5))",
+        );
         assert_eq!(output, vec!["15"]);
     }
 
@@ -8893,7 +10552,9 @@ print(match r { Result::Ok(v) if v > 100 => "big", Result::Ok(v) => v, Result::E
 
     #[test]
     fn test_interp_closure_as_return_value() {
-        let output = run_output("fn make_adder(n) { (x) => x + n }\nlet add5 = make_adder(5)\nprint(add5(3))");
+        let output = run_output(
+            "fn make_adder(n) { (x) => x + n }\nlet add5 = make_adder(5)\nprint(add5(3))",
+        );
         assert_eq!(output, vec!["8"]);
     }
 
@@ -8911,19 +10572,24 @@ print(match r { Result::Ok(v) if v > 100 => "big", Result::Ok(v) => v, Result::E
 
     #[test]
     fn test_interp_recursive_closure() {
-        let output = run_output("fn fact(n) { if n <= 1 { 1 } else { n * fact(n - 1) } }\nprint(fact(5))");
+        let output =
+            run_output("fn fact(n) { if n <= 1 { 1 } else { n * fact(n - 1) } }\nprint(fact(5))");
         assert_eq!(output, vec!["120"]);
     }
 
     #[test]
     fn test_interp_block_body_closure_with_return() {
-        let output = run_output("let classify = (x) -> string { if x > 0 { return \"positive\" }\n \"non-positive\" }\nprint(classify(5))\nprint(classify(-1))");
+        let output = run_output(
+            "let classify = (x) -> string { if x > 0 { return \"positive\" }\n \"non-positive\" }\nprint(classify(5))\nprint(classify(-1))",
+        );
         assert_eq!(output, vec!["positive", "non-positive"]);
     }
 
     #[test]
     fn test_interp_shorthand_in_filter() {
-        let output = run_output("let nums = [1, 2, 3, 4, 5, 6]\nlet evens = filter(nums, x => x % 2 == 0)\nprint(evens)");
+        let output = run_output(
+            "let nums = [1, 2, 3, 4, 5, 6]\nlet evens = filter(nums, x => x % 2 == 0)\nprint(evens)",
+        );
         assert_eq!(output, vec!["[2, 4, 6]"]);
     }
 
@@ -8938,7 +10604,8 @@ print(match r { Result::Ok(v) if v > 100 => "big", Result::Ok(v) => v, Result::E
     #[test]
     fn test_interp_versioned_schema_registration() {
         // Parse and execute a versioned schema definition
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 /// User schema
 /// @version 1
 schema User {
@@ -8946,13 +10613,15 @@ schema User {
     name: string
 }
 print(schema_latest("User"))
-"#);
+"#,
+        );
         assert_eq!(output, vec!["1"]);
     }
 
     #[test]
     fn test_interp_schema_v1_v2_migration() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 /// @version 1
 schema User {
     id: int64
@@ -8966,46 +10635,54 @@ schema UserV2 {
 }
 schema_register("User", 2, map_from("id", "int64", "name", "string", "email", "string"))
 print(schema_latest("User"))
-"#);
+"#,
+        );
         assert_eq!(output, vec!["2"]);
     }
 
     #[test]
     fn test_interp_schema_latest() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 schema_register("Order", 1, map_from("id", "int64"))
 schema_register("Order", 2, map_from("id", "int64", "total", "float64"))
 schema_register("Order", 3, map_from("id", "int64", "total", "float64", "status", "string"))
 print(schema_latest("Order"))
-"#);
+"#,
+        );
         assert_eq!(output, vec!["3"]);
     }
 
     #[test]
     fn test_interp_schema_history() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 schema_register("Event", 1, map_from("id", "int64"))
 schema_register("Event", 2, map_from("id", "int64", "name", "string"))
 print(schema_history("Event"))
-"#);
+"#,
+        );
         assert_eq!(output, vec!["[1, 2]"]);
     }
 
     #[test]
     fn test_interp_schema_check_backward_compat() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 schema_register("T", 1, map_from("id", "int64"))
 schema_register("T", 2, map_from("id", "int64", "name", "string"))
 let issues = schema_check("T", 1, 2, "backward")
 print(len(issues))
-"#);
+"#,
+        );
         // Adding a column is backward compatible
         assert_eq!(output, vec!["0"]);
     }
 
     #[test]
     fn test_interp_migrate_add_column() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 /// @version 1
 schema Product {
     id: int64
@@ -9017,13 +10694,15 @@ migrate Product from 1 to 2 {
 print(schema_latest("Product"))
 let fields = schema_fields("Product", 2)
 print(len(fields))
-"#);
+"#,
+        );
         assert_eq!(output, vec!["2", "3"]);
     }
 
     #[test]
     fn test_interp_migrate_rename_column() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 /// @version 1
 schema Item {
     id: int64
@@ -9034,44 +10713,63 @@ migrate Item from 1 to 2 {
 }
 let fields = schema_fields("Item", 2)
 print(fields)
-"#);
+"#,
+        );
         let output_str = &output[0];
-        assert!(output_str.contains("name"), "Expected 'name' in fields, got: {}", output_str);
-        assert!(!output_str.contains("item_name"), "Unexpected 'item_name' in fields, got: {}", output_str);
+        assert!(
+            output_str.contains("name"),
+            "Expected 'name' in fields, got: {}",
+            output_str
+        );
+        assert!(
+            !output_str.contains("item_name"),
+            "Unexpected 'item_name' in fields, got: {}",
+            output_str
+        );
     }
 
     #[test]
     fn test_interp_schema_diff() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 schema_register("D", 1, map_from("id", "int64", "name", "string"))
 schema_register("D", 2, map_from("id", "int64", "name", "string", "email", "string"))
 let d = schema_diff("D", 1, 2)
 print(len(d))
 print(d)
-"#);
+"#,
+        );
         assert_eq!(output[0], "1");
-        assert!(output[1].contains("added"), "Expected 'added' in diff, got: {}", output[1]);
+        assert!(
+            output[1].contains("added"),
+            "Expected 'added' in diff, got: {}",
+            output[1]
+        );
     }
 
     #[test]
     fn test_interp_schema_versions() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 schema_register("V", 1, map_from("a", "int64"))
 schema_register("V", 3, map_from("a", "int64", "b", "string"))
 schema_register("V", 2, map_from("a", "int64", "c", "float64"))
 print(schema_versions("V"))
-"#);
+"#,
+        );
         // Should be sorted
         assert_eq!(output, vec!["[1, 2, 3]"]);
     }
 
     #[test]
     fn test_interp_schema_fields() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 schema_register("F", 1, map_from("id", "int64", "name", "string"))
 let f = schema_fields("F", 1)
 print(len(f))
-"#);
+"#,
+        );
         assert_eq!(output, vec!["2"]);
     }
 
@@ -9079,72 +10777,86 @@ print(len(f))
 
     #[test]
     fn test_interp_decimal_literal() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 let x = 3.14d
 print(x)
-"#);
+"#,
+        );
         assert_eq!(output, vec!["3.14"]);
     }
 
     #[test]
     fn test_interp_decimal_arithmetic() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 let a = 10.50d
 let b = 3.25d
 print(a + b)
 print(a - b)
 print(a * b)
-"#);
+"#,
+        );
         assert_eq!(output, vec!["13.75", "7.25", "34.1250"]);
     }
 
     #[test]
     fn test_interp_decimal_int_mixed() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 let d = 5.5d
 let i = 2
 print(d + i)
-"#);
+"#,
+        );
         assert_eq!(output, vec!["7.5"]);
     }
 
     #[test]
     fn test_interp_decimal_comparison() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 let a = 1.0d
 let b = 2.0d
 print(a < b)
 print(a == a)
-"#);
+"#,
+        );
         assert_eq!(output, vec!["true", "true"]);
     }
 
     #[test]
     fn test_interp_decimal_negation() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 let x = 5.0d
 print(-x)
-"#);
+"#,
+        );
         assert_eq!(output, vec!["-5.0"]);
     }
 
     #[test]
     fn test_interp_decimal_builtin() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 let x = decimal("99.99")
 print(x)
 let y = decimal(42)
 print(y)
-"#);
+"#,
+        );
         assert_eq!(output, vec!["99.99", "42"]);
     }
 
     #[test]
     fn test_interp_decimal_type_of() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 let x = 1.0d
 print(type_of(x))
-"#);
+"#,
+        );
         assert_eq!(output, vec!["decimal"]);
     }
 
@@ -9152,84 +10864,102 @@ print(type_of(x))
 
     #[test]
     fn test_interp_secret_set_get() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 secret_set("api_key", "abc123")
 let s = secret_get("api_key")
 print(s)
-"#);
+"#,
+        );
         // Secret display is redacted
         assert_eq!(output, vec!["***"]);
     }
 
     #[test]
     fn test_interp_secret_list_delete() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 secret_set("k1", "v1")
 secret_set("k2", "v2")
 print(len(secret_list()))
 secret_delete("k1")
 print(len(secret_list()))
-"#);
+"#,
+        );
         assert_eq!(output, vec!["2", "1"]);
     }
 
     #[test]
     fn test_interp_mask_email() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 print(mask_email("alice@example.com"))
-"#);
+"#,
+        );
         assert_eq!(output, vec!["a***@example.com"]);
     }
 
     #[test]
     fn test_interp_mask_phone() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 print(mask_phone("555-123-4567"))
-"#);
+"#,
+        );
         assert_eq!(output, vec!["***-***-4567"]);
     }
 
     #[test]
     fn test_interp_mask_cc() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 print(mask_cc("4111111111111111"))
-"#);
+"#,
+        );
         assert_eq!(output, vec!["****-****-****-1111"]);
     }
 
     #[test]
     fn test_interp_redact() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 print(redact("sensitive", "full"))
 print(redact("secret", "partial"))
-"#);
+"#,
+        );
         assert_eq!(output, vec!["***", "s***t"]);
     }
 
     #[test]
     fn test_interp_hash_sha256() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 let h = hash("hello", "sha256")
 print(len(h))
-"#);
+"#,
+        );
         assert_eq!(output, vec!["64"]);
     }
 
     #[test]
     fn test_interp_hash_md5() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 let h = hash("hello", "md5")
 print(len(h))
-"#);
+"#,
+        );
         assert_eq!(output, vec!["32"]);
     }
 
     #[test]
     fn test_interp_check_permission() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 print(check_permission("network"))
 print(check_permission("file_write"))
-"#);
+"#,
+        );
         // Without sandbox, everything allowed
         assert_eq!(output, vec!["true", "true"]);
     }
@@ -9240,7 +10970,10 @@ print(check_permission("file_write"))
     #[test]
     fn test_interp_async_builtins_require_feature() {
         let err = run_err(r#"let t = async_read_file("test.txt")"#);
-        assert!(err.contains("async"), "Expected async feature error, got: {err}");
+        assert!(
+            err.contains("async"),
+            "Expected async feature error, got: {err}"
+        );
     }
 
     #[cfg(feature = "async-runtime")]
@@ -9263,81 +10996,95 @@ print(content)"#
     #[cfg(feature = "async-runtime")]
     #[test]
     fn test_interp_async_sleep() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 let t = async_sleep(10)
 let r = await(t)
 print(r)
-"#);
+"#,
+        );
         assert_eq!(output, vec!["none"]);
     }
 
     #[cfg(feature = "async-runtime")]
     #[test]
     fn test_interp_select() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 let fast = async_sleep(10)
 let slow = async_sleep(5000)
 let winner = select(fast, slow)
 let r = await(winner)
 print(r)
-"#);
+"#,
+        );
         assert_eq!(output, vec!["none"]);
     }
 
     #[cfg(feature = "async-runtime")]
     #[test]
     fn test_interp_race_all() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 let t1 = async_sleep(10)
 let t2 = async_sleep(5000)
 let winner = race_all([t1, t2])
 let r = await(winner)
 print(r)
-"#);
+"#,
+        );
         assert_eq!(output, vec!["none"]);
     }
 
     #[cfg(feature = "async-runtime")]
     #[test]
     fn test_interp_async_map() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 let t = async_map([1, 2, 3], (x) => x * 10)
 let result = await(t)
 print(result)
-"#);
+"#,
+        );
         assert_eq!(output, vec!["[10, 20, 30]"]);
     }
 
     #[cfg(feature = "async-runtime")]
     #[test]
     fn test_interp_async_filter() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 let t = async_filter([1, 2, 3, 4, 5], (x) => x > 3)
 let result = await(t)
 print(result)
-"#);
+"#,
+        );
         assert_eq!(output, vec!["[4, 5]"]);
     }
 
     #[cfg(feature = "async-runtime")]
     #[test]
     fn test_interp_async_map_empty() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 let t = async_map([], (x) => x)
 let result = await(t)
 print(result)
-"#);
+"#,
+        );
         assert_eq!(output, vec!["[]"]);
     }
 
     #[cfg(feature = "async-runtime")]
     #[test]
     fn test_interp_async_filter_none_match() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 let t = async_filter([1, 2, 3], (x) => x > 100)
 let result = await(t)
 print(result)
-"#);
+"#,
+        );
         assert_eq!(output, vec!["[]"]);
     }
 
@@ -9345,20 +11092,23 @@ print(result)
 
     #[test]
     fn test_interp_closure_returned_from_function() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 fn make_adder(n) {
     return (x) => x + n
 }
 let add5 = make_adder(5)
 print(add5(3))
 print(add5(10))
-"#);
+"#,
+        );
         assert_eq!(output, vec!["8", "15"]);
     }
 
     #[test]
     fn test_interp_closure_factory_multiple_calls() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 fn make_adder(n) {
     return (x) => x + n
 }
@@ -9367,13 +11117,15 @@ let add10 = make_adder(10)
 print(add2(5))
 print(add10(5))
 print(add2(1))
-"#);
+"#,
+        );
         assert_eq!(output, vec!["7", "15", "3"]);
     }
 
     #[test]
     fn test_interp_closure_returned_in_list() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 fn make_ops(n) {
     let add = (x) => x + n
     let mul = (x) => x * n
@@ -9382,13 +11134,15 @@ fn make_ops(n) {
 let ops = make_ops(3)
 print(ops[0](10))
 print(ops[1](10))
-"#);
+"#,
+        );
         assert_eq!(output, vec!["13", "30"]);
     }
 
     #[test]
     fn test_interp_nested_closure_return() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 fn outer(a) {
     fn inner(b) {
         return (x) => x + a + b
@@ -9397,13 +11151,15 @@ fn outer(a) {
 }
 let f = outer(5)
 print(f(1))
-"#);
+"#,
+        );
         assert_eq!(output, vec!["16"]);
     }
 
     #[test]
     fn test_interp_multiple_closures_same_local() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 fn make_pair(n) {
     let inc = (x) => x + n
     let dec = (x) => x - n
@@ -9412,13 +11168,15 @@ fn make_pair(n) {
 let pair = make_pair(7)
 print(pair[0](10))
 print(pair[1](10))
-"#);
+"#,
+        );
         assert_eq!(output, vec!["17", "3"]);
     }
 
     #[test]
     fn test_interp_closure_captures_multiple_locals() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 fn make_greeter(greeting, name) {
     let sep = " "
     return () => greeting + sep + name
@@ -9427,7 +11185,8 @@ let hi = make_greeter("Hello", "World")
 let bye = make_greeter("Goodbye", "Alice")
 print(hi())
 print(bye())
-"#);
+"#,
+        );
         assert_eq!(output, vec!["Hello World", "Goodbye Alice"]);
     }
 
@@ -9435,63 +11194,74 @@ print(bye())
 
     #[test]
     fn test_interp_data_error_construct_and_throw() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 try {
     throw DataError::ParseError("bad format", "file.csv")
 } catch e {
     print(match e { DataError::ParseError(msg, _) => msg, _ => "no match" })
     print(match e { DataError::ParseError(_, src) => src, _ => "no match" })
 }
-"#);
+"#,
+        );
         assert_eq!(output, vec!["bad format", "file.csv"]);
     }
 
     #[test]
     fn test_interp_network_error_construct() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 let err = NetworkError::ConnectionError("refused", "localhost")
 print(match err { NetworkError::ConnectionError(msg, _) => msg, _ => "no match" })
 print(match err { NetworkError::ConnectionError(_, host) => host, _ => "no match" })
-"#);
+"#,
+        );
         assert_eq!(output, vec!["refused", "localhost"]);
     }
 
     #[test]
     fn test_interp_connector_error_construct() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 let err = ConnectorError::QueryError("syntax error", "mysql")
 print(match err { ConnectorError::QueryError(msg, _) => msg, _ => "no match" })
 print(match err { ConnectorError::QueryError(_, conn) => conn, _ => "no match" })
-"#);
+"#,
+        );
         assert_eq!(output, vec!["syntax error", "mysql"]);
     }
 
     #[test]
     fn test_interp_is_error_builtin() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 let e1 = DataError::NotFound("users")
 let e2 = NetworkError::TimeoutError("slow")
 let e3 = 42
 print(is_error(e1))
 print(is_error(e2))
 print(is_error(e3))
-"#);
+"#,
+        );
         assert_eq!(output, vec!["true", "true", "false"]);
     }
 
     #[test]
     fn test_interp_error_type_builtin() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 let e = ConnectorError::AuthError("bad key", "redis")
 print(error_type(e))
 print(error_type("not an error"))
-"#);
+"#,
+        );
         assert_eq!(output, vec!["ConnectorError", "none"]);
     }
 
     #[test]
     fn test_interp_throw_catch_preserves_enum() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 try {
     throw DataError::SchemaError("mismatch", "int", "string")
 } catch e {
@@ -9499,7 +11269,8 @@ try {
     print(match e { DataError::SchemaError(_, exp, _) => exp, _ => "no match" })
     print(match e { DataError::SchemaError(_, _, found) => found, _ => "no match" })
 }
-"#);
+"#,
+        );
         assert_eq!(output, vec!["mismatch", "int", "string"]);
     }
 
@@ -9507,90 +11278,106 @@ try {
 
     #[test]
     fn test_interp_pipe_moves_value() {
-        let err = run_err(r#"
+        let err = run_err(
+            r#"
 fn identity(v) { v }
 let x = [1, 2, 3]
 x |> identity()
 print(x)
-"#);
+"#,
+        );
         assert!(err.contains("moved"), "Error should mention 'moved': {err}");
     }
 
     #[test]
     fn test_interp_clone_before_pipe() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 fn identity(v) { v }
 let x = [1, 2, 3]
 x.clone() |> identity()
 print(x)
-"#);
+"#,
+        );
         assert_eq!(output, vec!["[1, 2, 3]"]);
     }
 
     #[test]
     fn test_interp_clone_list_deep() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 let original = [1, 2, 3]
 let copy = original.clone()
 copy[0] = 99
 print(original)
 print(copy)
-"#);
+"#,
+        );
         assert_eq!(output, vec!["[1, 2, 3]", "[99, 2, 3]"]);
     }
 
     #[test]
     fn test_interp_ref_creates_reference() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 let x = 42
 let r = &x
 print(r)
-"#);
+"#,
+        );
         assert_eq!(output, vec!["42"]);
     }
 
     #[test]
     fn test_interp_parallel_for_basic() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 let items = [10, 20, 30]
 parallel for item in items {
     print(item)
 }
-"#);
+"#,
+        );
         assert_eq!(output, vec!["10", "20", "30"]);
     }
 
     #[test]
     fn test_interp_reassign_after_move() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 fn f(x) { x }
 let x = 1
 x |> f()
 let x = 2
 print(x)
-"#);
+"#,
+        );
         assert_eq!(output, vec!["2"]);
     }
 
     #[test]
     fn test_interp_clone_map() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 let m = map_from("a", 1, "b", 2)
 let m2 = m.clone()
 print(m)
 print(m2)
-"#);
+"#,
+        );
         assert_eq!(output, vec!["{a: 1, b: 2}", "{a: 1, b: 2}"]);
     }
 
     #[test]
     fn test_interp_pipe_chain() {
-        let output = run_output(r#"
+        let output = run_output(
+            r#"
 fn double(x) { x * 2 }
 fn add_one(x) { x + 1 }
 let result = 5 |> double() |> add_one()
 print(result)
-"#);
+"#,
+        );
         assert_eq!(output, vec!["11"]);
     }
 }

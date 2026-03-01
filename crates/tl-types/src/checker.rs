@@ -33,15 +33,10 @@ impl std::fmt::Display for TypeError {
 }
 
 /// Configuration for the type checker.
+#[derive(Default)]
 pub struct CheckerConfig {
     /// If true, require type annotations on function parameters.
     pub strict: bool,
-}
-
-impl Default for CheckerConfig {
-    fn default() -> Self {
-        CheckerConfig { strict: false }
-    }
 }
 
 /// Result of type checking a program.
@@ -118,7 +113,8 @@ pub fn is_snake_case(s: &str) -> bool {
     if s.is_empty() || s.starts_with('_') {
         return true; // _-prefixed names are always ok
     }
-    s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    s.chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
 /// Check if a name follows PascalCase convention.
@@ -211,7 +207,7 @@ impl<'a> TypeChecker<'a> {
                     .map(|v| {
                         (
                             v.name.clone(),
-                            v.fields.iter().map(|f| convert_type_expr(f)).collect(),
+                            v.fields.iter().map(convert_type_expr).collect(),
                         )
                     })
                     .collect();
@@ -223,10 +219,21 @@ impl<'a> TypeChecker<'a> {
                 let method_sigs: Vec<(String, Vec<Type>, Type)> = methods
                     .iter()
                     .map(|m| {
-                        let param_types: Vec<Type> = m.params.iter()
-                            .map(|p| p.type_ann.as_ref().map(|t| convert_type_expr(t)).unwrap_or(Type::Any))
+                        let param_types: Vec<Type> = m
+                            .params
+                            .iter()
+                            .map(|p| {
+                                p.type_ann
+                                    .as_ref()
+                                    .map(convert_type_expr)
+                                    .unwrap_or(Type::Any)
+                            })
                             .collect();
-                        let ret = m.return_type.as_ref().map(|t| convert_type_expr(t)).unwrap_or(Type::Any);
+                        let ret = m
+                            .return_type
+                            .as_ref()
+                            .map(convert_type_expr)
+                            .unwrap_or(Type::Any);
                         (m.name.clone(), param_types, ret)
                     })
                     .collect();
@@ -343,15 +350,17 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.mark_used_in_expr(right);
             }
-            Expr::Closure { body, .. } => {
-                match body {
-                    tl_ast::ClosureBody::Expr(e) => self.mark_used_in_expr(e),
-                    tl_ast::ClosureBody::Block { stmts, expr } => {
-                        for s in stmts { self.mark_used_in_stmt(s); }
-                        if let Some(e) = expr { self.mark_used_in_expr(e); }
+            Expr::Closure { body, .. } => match body {
+                tl_ast::ClosureBody::Expr(e) => self.mark_used_in_expr(e),
+                tl_ast::ClosureBody::Block { stmts, expr } => {
+                    for s in stmts {
+                        self.mark_used_in_stmt(s);
+                    }
+                    if let Some(e) = expr {
+                        self.mark_used_in_expr(e);
                     }
                 }
-            }
+            },
             Expr::NullCoalesce { expr, default } => {
                 self.mark_used_in_expr(expr);
                 self.mark_used_in_expr(default);
@@ -370,7 +379,9 @@ impl<'a> TypeChecker<'a> {
                     self.mark_used_in_expr(v);
                 }
             }
-            Expr::EnumVariant { enum_name, args, .. } => {
+            Expr::EnumVariant {
+                enum_name, args, ..
+            } => {
                 self.used_vars.insert(enum_name.clone());
                 for a in args {
                     self.mark_used_in_expr(a);
@@ -460,7 +471,9 @@ impl<'a> TypeChecker<'a> {
             StmtKind::Expr(e) | StmtKind::Throw(e) | StmtKind::Return(Some(e)) => {
                 self.mark_used_in_expr(e);
             }
-            StmtKind::Let { value, .. } | StmtKind::LetDestructure { value, .. } => self.mark_used_in_expr(value),
+            StmtKind::Let { value, .. } | StmtKind::LetDestructure { value, .. } => {
+                self.mark_used_in_expr(value)
+            }
             _ => {}
         }
     }
@@ -477,7 +490,11 @@ impl<'a> TypeChecker<'a> {
                 self.mark_used_in_expr(value);
 
                 // Check struct init if the value is a struct init expression
-                if let Expr::StructInit { name: sname, fields } = value {
+                if let Expr::StructInit {
+                    name: sname,
+                    fields,
+                } = value
+                {
                     self.check_struct_init(sname, fields, stmt.span);
                 }
 
@@ -519,16 +536,14 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 // Lint: shadowing warning — check if variable already exists in outer scope
-                if !name.starts_with('_') {
-                    if self.defined_vars.iter().any(|(n, _, _)| n == name) {
-                        self.warnings.push(TypeError {
-                            message: format!("Variable `{name}` shadows a previous definition"),
-                            span: stmt.span,
-                            expected: None,
-                            found: None,
-                            hint: Some("Consider using a different name".to_string()),
-                        });
-                    }
+                if !name.starts_with('_') && self.defined_vars.iter().any(|(n, _, _)| n == name) {
+                    self.warnings.push(TypeError {
+                        message: format!("Variable `{name}` shadows a previous definition"),
+                        span: stmt.span,
+                        expected: None,
+                        found: None,
+                        hint: Some("Consider using a different name".to_string()),
+                    });
                 }
 
                 // Track defined variable for unused-var checking
@@ -568,7 +583,10 @@ impl<'a> TypeChecker<'a> {
                         span: stmt.span,
                         expected: None,
                         found: None,
-                        hint: Some("Consider adding an implementation or removing the function".to_string()),
+                        hint: Some(
+                            "Consider adding an implementation or removing the function"
+                                .to_string(),
+                        ),
                     });
                 }
 
@@ -599,11 +617,17 @@ impl<'a> TypeChecker<'a> {
                     // Verify the bound references a declared type param
                     if !type_params.contains(&bound.type_param) {
                         self.errors.push(TypeError {
-                            message: format!("Trait bound on undeclared type parameter `{}`", bound.type_param),
+                            message: format!(
+                                "Trait bound on undeclared type parameter `{}`",
+                                bound.type_param
+                            ),
                             span: stmt.span,
                             expected: None,
                             found: None,
-                            hint: Some(format!("Declare it in the type parameter list: `fn {}<{}, ...>(...)`", name, bound.type_param)),
+                            hint: Some(format!(
+                                "Declare it in the type parameter list: `fn {}<{}, ...>(...)`",
+                                name, bound.type_param
+                            )),
                         });
                     }
                 }
@@ -618,7 +642,8 @@ impl<'a> TypeChecker<'a> {
                         .unwrap_or(Type::Any);
                     self.env.define(p.name.clone(), ty);
                     // Track param as defined (for unused checking)
-                    self.defined_vars.push((p.name.clone(), stmt.span, fn_depth));
+                    self.defined_vars
+                        .push((p.name.clone(), stmt.span, fn_depth));
 
                     // In strict mode, require type annotations on params
                     if self.config.strict && p.type_ann.is_none() {
@@ -643,10 +668,10 @@ impl<'a> TypeChecker<'a> {
 
                 // Track async state (Phase 24)
                 let prev_async = self.in_async_fn;
-                if let StmtKind::FnDecl { is_async, .. } = &stmt.kind {
-                    if *is_async {
-                        self.in_async_fn = true;
-                    }
+                if let StmtKind::FnDecl { is_async, .. } = &stmt.kind
+                    && *is_async
+                {
+                    self.in_async_fn = true;
                 }
 
                 // Check body with unreachable code detection
@@ -729,8 +754,7 @@ impl<'a> TypeChecker<'a> {
                 self.env.pop_scope();
             }
 
-            StmtKind::For { name, iter, body }
-            | StmtKind::ParallelFor { name, iter, body } => {
+            StmtKind::For { name, iter, body } | StmtKind::ParallelFor { name, iter, body } => {
                 self.mark_used_in_expr(iter);
                 let iter_ty = infer_expr(iter, &self.env);
                 let elem_ty = match &iter_ty {
@@ -742,7 +766,9 @@ impl<'a> TypeChecker<'a> {
                     Type::Any => Type::Any,
                     _ => {
                         self.warnings.push(TypeError {
-                            message: format!("For-loop iterating over non-iterable type `{iter_ty}`"),
+                            message: format!(
+                                "For-loop iterating over non-iterable type `{iter_ty}`"
+                            ),
                             span: stmt.span,
                             expected: Some("list, set, generator, map, or string".to_string()),
                             found: Some(iter_ty.to_string()),
@@ -871,7 +897,12 @@ impl<'a> TypeChecker<'a> {
             | StmtKind::ModDecl { .. }
             | StmtKind::Migrate { .. } => {}
 
-            StmtKind::TraitDef { name, type_params: _, methods, .. } => {
+            StmtKind::TraitDef {
+                name,
+                type_params: _,
+                methods,
+                ..
+            } => {
                 // Lint: trait naming convention — should be PascalCase
                 if !is_pascal_case(name) {
                     self.warnings.push(TypeError {
@@ -887,10 +918,21 @@ impl<'a> TypeChecker<'a> {
                 let method_sigs: Vec<(String, Vec<Type>, Type)> = methods
                     .iter()
                     .map(|m| {
-                        let param_types: Vec<Type> = m.params.iter()
-                            .map(|p| p.type_ann.as_ref().map(|t| convert_type_expr(t)).unwrap_or(Type::Any))
+                        let param_types: Vec<Type> = m
+                            .params
+                            .iter()
+                            .map(|p| {
+                                p.type_ann
+                                    .as_ref()
+                                    .map(convert_type_expr)
+                                    .unwrap_or(Type::Any)
+                            })
                             .collect();
-                        let ret = m.return_type.as_ref().map(|t| convert_type_expr(t)).unwrap_or(Type::Any);
+                        let ret = m
+                            .return_type
+                            .as_ref()
+                            .map(convert_type_expr)
+                            .unwrap_or(Type::Any);
                         (m.name.clone(), param_types, ret)
                     })
                     .collect();
@@ -904,17 +946,25 @@ impl<'a> TypeChecker<'a> {
                 );
             }
 
-            StmtKind::TraitImpl { trait_name, type_name, methods, .. } => {
+            StmtKind::TraitImpl {
+                trait_name,
+                type_name,
+                methods,
+                ..
+            } => {
                 // Validate the trait exists
                 if let Some(trait_info) = self.env.lookup_trait(trait_name).cloned() {
                     // Check all required methods are provided
-                    let provided: Vec<String> = methods.iter().filter_map(|m| {
-                        if let StmtKind::FnDecl { name, .. } = &m.kind {
-                            Some(name.clone())
-                        } else {
-                            None
-                        }
-                    }).collect();
+                    let provided: Vec<String> = methods
+                        .iter()
+                        .filter_map(|m| {
+                            if let StmtKind::FnDecl { name, .. } = &m.kind {
+                                Some(name.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
 
                     for (required_method, _, _) in &trait_info.methods {
                         if !provided.contains(required_method) {
@@ -931,11 +981,8 @@ impl<'a> TypeChecker<'a> {
                     }
 
                     // Register the trait impl
-                    self.env.register_trait_impl(
-                        trait_name.clone(),
-                        type_name.clone(),
-                        provided,
-                    );
+                    self.env
+                        .register_trait_impl(trait_name.clone(), type_name.clone(), provided);
                 } else {
                     self.errors.push(TypeError {
                         message: format!("Unknown trait `{trait_name}`"),
@@ -952,9 +999,15 @@ impl<'a> TypeChecker<'a> {
                 }
             }
 
-            StmtKind::TypeAlias { name, type_params, value, .. } => {
+            StmtKind::TypeAlias {
+                name,
+                type_params,
+                value,
+                ..
+            } => {
                 // Register the type alias in the type environment
-                self.env.register_type_alias(name.clone(), type_params.clone(), value.clone());
+                self.env
+                    .register_type_alias(name.clone(), type_params.clone(), value.clone());
             }
         }
     }
@@ -984,7 +1037,8 @@ impl<'a> TypeChecker<'a> {
 
             // Check field types match
             for (field_name, field_value) in fields {
-                if let Some((_, expected_ty)) = declared_fields.iter().find(|(f, _)| f == field_name)
+                if let Some((_, expected_ty)) =
+                    declared_fields.iter().find(|(f, _)| f == field_name)
                 {
                     let inferred = infer_expr(field_value, &self.env);
                     if !is_compatible(expected_ty, &inferred) {
@@ -1022,7 +1076,13 @@ impl<'a> TypeChecker<'a> {
     /// Check match expressions for exhaustiveness warnings.
     /// Check that a closure's return type annotation matches its body type.
     fn check_closure_return_type(&mut self, expr: &Expr, span: Span) {
-        if let Expr::Closure { return_type: Some(rt), body, params, .. } = expr {
+        if let Expr::Closure {
+            return_type: Some(rt),
+            body,
+            params,
+            ..
+        } = expr
+        {
             let declared = convert_type_expr(rt);
             let body_type = match body {
                 tl_ast::ClosureBody::Expr(e) => infer_expr(e, &self.env),
@@ -1035,7 +1095,10 @@ impl<'a> TypeChecker<'a> {
                     span,
                     expected: Some(declared.to_string()),
                     found: Some(body_type.to_string()),
-                    hint: Some("The declared return type does not match the body expression type".to_string()),
+                    hint: Some(
+                        "The declared return type does not match the body expression type"
+                            .to_string(),
+                    ),
                 });
             }
             // Warn on unused closure parameters (except _-prefixed)
@@ -1045,7 +1108,9 @@ impl<'a> TypeChecker<'a> {
                         tl_ast::ClosureBody::Expr(e) => self.expr_references_name(e, &p.name),
                         tl_ast::ClosureBody::Block { stmts, expr } => {
                             stmts.iter().any(|s| self.stmt_references_name(s, &p.name))
-                                || expr.as_ref().map_or(false, |e| self.expr_references_name(e, &p.name))
+                                || expr
+                                    .as_ref()
+                                    .is_some_and(|e| self.expr_references_name(e, &p.name))
                         }
                     };
                     if !is_used {
@@ -1066,22 +1131,48 @@ impl<'a> TypeChecker<'a> {
     fn expr_references_name(&self, expr: &Expr, name: &str) -> bool {
         match expr {
             Expr::Ident(n) => n == name,
-            Expr::BinOp { left, right, .. } => self.expr_references_name(left, name) || self.expr_references_name(right, name),
+            Expr::BinOp { left, right, .. } => {
+                self.expr_references_name(left, name) || self.expr_references_name(right, name)
+            }
             Expr::UnaryOp { expr: e, .. } => self.expr_references_name(e, name),
-            Expr::Call { function, args } => self.expr_references_name(function, name) || args.iter().any(|a| self.expr_references_name(a, name)),
-            Expr::Pipe { left, right } => self.expr_references_name(left, name) || self.expr_references_name(right, name),
+            Expr::Call { function, args } => {
+                self.expr_references_name(function, name)
+                    || args.iter().any(|a| self.expr_references_name(a, name))
+            }
+            Expr::Pipe { left, right } => {
+                self.expr_references_name(left, name) || self.expr_references_name(right, name)
+            }
             Expr::Member { object, .. } => self.expr_references_name(object, name),
-            Expr::Index { object, index } => self.expr_references_name(object, name) || self.expr_references_name(index, name),
+            Expr::Index { object, index } => {
+                self.expr_references_name(object, name) || self.expr_references_name(index, name)
+            }
             Expr::List(items) => items.iter().any(|i| self.expr_references_name(i, name)),
-            Expr::Map(pairs) => pairs.iter().any(|(k, v)| self.expr_references_name(k, name) || self.expr_references_name(v, name)),
-            Expr::Block { stmts, expr } => stmts.iter().any(|s| self.stmt_references_name(s, name)) || expr.as_ref().map_or(false, |e| self.expr_references_name(e, name)),
-            Expr::Assign { target, value } => self.expr_references_name(target, name) || self.expr_references_name(value, name),
-            Expr::NullCoalesce { expr: e, default } => self.expr_references_name(e, name) || self.expr_references_name(default, name),
-            Expr::Range { start, end } => self.expr_references_name(start, name) || self.expr_references_name(end, name),
+            Expr::Map(pairs) => pairs.iter().any(|(k, v)| {
+                self.expr_references_name(k, name) || self.expr_references_name(v, name)
+            }),
+            Expr::Block { stmts, expr } => {
+                stmts.iter().any(|s| self.stmt_references_name(s, name))
+                    || expr
+                        .as_ref()
+                        .is_some_and(|e| self.expr_references_name(e, name))
+            }
+            Expr::Assign { target, value } => {
+                self.expr_references_name(target, name) || self.expr_references_name(value, name)
+            }
+            Expr::NullCoalesce { expr: e, default } => {
+                self.expr_references_name(e, name) || self.expr_references_name(default, name)
+            }
+            Expr::Range { start, end } => {
+                self.expr_references_name(start, name) || self.expr_references_name(end, name)
+            }
             Expr::Await(e) | Expr::Try(e) => self.expr_references_name(e, name),
             Expr::NamedArg { value, .. } => self.expr_references_name(value, name),
-            Expr::StructInit { fields, .. } => fields.iter().any(|(_, e)| self.expr_references_name(e, name)),
-            Expr::EnumVariant { args, .. } => args.iter().any(|a| self.expr_references_name(a, name)),
+            Expr::StructInit { fields, .. } => fields
+                .iter()
+                .any(|(_, e)| self.expr_references_name(e, name)),
+            Expr::EnumVariant { args, .. } => {
+                args.iter().any(|a| self.expr_references_name(a, name))
+            }
             _ => false,
         }
     }
@@ -1089,16 +1180,36 @@ impl<'a> TypeChecker<'a> {
     /// Check if a statement references a name.
     fn stmt_references_name(&self, stmt: &Stmt, name: &str) -> bool {
         match &stmt.kind {
-            StmtKind::Expr(e) | StmtKind::Return(Some(e)) | StmtKind::Throw(e) => self.expr_references_name(e, name),
-            StmtKind::Let { value, .. } | StmtKind::LetDestructure { value, .. } => self.expr_references_name(value, name),
-            StmtKind::If { condition, then_body, else_ifs, else_body } => {
+            StmtKind::Expr(e) | StmtKind::Return(Some(e)) | StmtKind::Throw(e) => {
+                self.expr_references_name(e, name)
+            }
+            StmtKind::Let { value, .. } | StmtKind::LetDestructure { value, .. } => {
+                self.expr_references_name(value, name)
+            }
+            StmtKind::If {
+                condition,
+                then_body,
+                else_ifs,
+                else_body,
+            } => {
                 self.expr_references_name(condition, name)
                     || then_body.iter().any(|s| self.stmt_references_name(s, name))
-                    || else_ifs.iter().any(|(c, b)| self.expr_references_name(c, name) || b.iter().any(|s| self.stmt_references_name(s, name)))
-                    || else_body.as_ref().map_or(false, |b| b.iter().any(|s| self.stmt_references_name(s, name)))
+                    || else_ifs.iter().any(|(c, b)| {
+                        self.expr_references_name(c, name)
+                            || b.iter().any(|s| self.stmt_references_name(s, name))
+                    })
+                    || else_body
+                        .as_ref()
+                        .is_some_and(|b| b.iter().any(|s| self.stmt_references_name(s, name)))
             }
-            StmtKind::While { condition, body } => self.expr_references_name(condition, name) || body.iter().any(|s| self.stmt_references_name(s, name)),
-            StmtKind::For { iter, body, .. } => self.expr_references_name(iter, name) || body.iter().any(|s| self.stmt_references_name(s, name)),
+            StmtKind::While { condition, body } => {
+                self.expr_references_name(condition, name)
+                    || body.iter().any(|s| self.stmt_references_name(s, name))
+            }
+            StmtKind::For { iter, body, .. } => {
+                self.expr_references_name(iter, name)
+                    || body.iter().any(|s| self.stmt_references_name(s, name))
+            }
             _ => false,
         }
     }
@@ -1164,10 +1275,10 @@ pub fn check_match_exhaustiveness(
 
     match subject_type {
         Type::Result(_, _) => {
-            if !arm_patterns.iter().any(|p| *p == "Ok") {
+            if !arm_patterns.contains(&"Ok") {
                 missing.push("Ok".to_string());
             }
-            if !arm_patterns.iter().any(|p| *p == "Err") {
+            if !arm_patterns.contains(&"Err") {
                 missing.push("Err".to_string());
             }
         }
@@ -1179,10 +1290,7 @@ pub fn check_match_exhaustiveness(
         Type::Enum(name) => {
             if let Some(variants) = env.lookup_enum(name) {
                 for (variant_name, _) in variants {
-                    if !arm_patterns
-                        .iter()
-                        .any(|p| p == variant_name || *p == "_")
-                    {
+                    if !arm_patterns.iter().any(|p| p == variant_name || *p == "_") {
                         missing.push(variant_name.clone());
                     }
                 }
@@ -1302,7 +1410,11 @@ mod tests {
     fn test_strict_mode_requires_param_types() {
         let result = parse_and_check_strict("fn f(a, b) { return a + b }");
         assert!(result.has_errors());
-        assert!(result.errors[0].message.contains("requires a type annotation"));
+        assert!(
+            result.errors[0]
+                .message
+                .contains("requires a type annotation")
+        );
     }
 
     #[test]
@@ -1378,7 +1490,7 @@ mod tests {
     #[test]
     fn test_trait_impl_validates_methods() {
         let result = parse_and_check(
-            "trait Display { fn show(self) -> string }\nimpl Display for Point { fn show(self) -> string { \"point\" } }"
+            "trait Display { fn show(self) -> string }\nimpl Display for Point { fn show(self) -> string { \"point\" } }",
         );
         assert!(!result.has_errors(), "errors: {:?}", result.errors);
     }
@@ -1386,7 +1498,7 @@ mod tests {
     #[test]
     fn test_trait_impl_missing_method() {
         let result = parse_and_check(
-            "trait Display { fn show(self) -> string }\nimpl Display for Point { fn other(self) { 1 } }"
+            "trait Display { fn show(self) -> string }\nimpl Display for Point { fn other(self) { 1 } }",
         );
         assert!(result.has_errors());
         assert!(result.errors[0].message.contains("Missing method"));
@@ -1394,9 +1506,7 @@ mod tests {
 
     #[test]
     fn test_unknown_trait_in_impl() {
-        let result = parse_and_check(
-            "impl FooTrait for Point { fn bar(self) { 1 } }"
-        );
+        let result = parse_and_check("impl FooTrait for Point { fn bar(self) { 1 } }");
         assert!(result.has_errors());
         assert!(result.errors[0].message.contains("Unknown trait"));
     }
@@ -1430,7 +1540,11 @@ mod tests {
     fn test_undeclared_type_param_in_bound() {
         let result = parse_and_check("fn foo<T>(x: T) where U: Comparable { x }");
         assert!(result.has_errors());
-        assert!(result.errors[0].message.contains("undeclared type parameter"));
+        assert!(
+            result.errors[0]
+                .message
+                .contains("undeclared type parameter")
+        );
     }
 
     #[test]
@@ -1492,7 +1606,11 @@ mod tests {
             "struct Point { x: int, y: int }\nlet p = Point { x: 1, y: \"hello\" }\nprint(p)",
         );
         assert!(result.has_errors());
-        assert!(result.errors[0].message.contains("Type mismatch for field `y`"));
+        assert!(
+            result.errors[0]
+                .message
+                .contains("Type mismatch for field `y`")
+        );
     }
 
     #[test]
@@ -1573,7 +1691,8 @@ mod tests {
 
     #[test]
     fn test_unreachable_code_after_break() {
-        let result = parse_and_check("fn f() {\n  while true {\n    break\n    print(\"x\")\n  }\n}");
+        let result =
+            parse_and_check("fn f() {\n  while true {\n    break\n    print(\"x\")\n  }\n}");
         let unreachable: Vec<_> = result
             .warnings
             .iter()
@@ -1632,43 +1751,87 @@ mod tests {
     #[test]
     fn test_snake_case_function_no_warning() {
         let result = parse_and_check("fn my_func() { 1 }");
-        let naming: Vec<_> = result.warnings.iter().filter(|w| w.message.contains("snake_case")).collect();
-        assert!(naming.is_empty(), "snake_case function should not produce naming warning");
+        let naming: Vec<_> = result
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("snake_case"))
+            .collect();
+        assert!(
+            naming.is_empty(),
+            "snake_case function should not produce naming warning"
+        );
     }
 
     #[test]
     fn test_camel_case_function_warning() {
         let result = parse_and_check("fn myFunc() { 1 }");
-        let naming: Vec<_> = result.warnings.iter().filter(|w| w.message.contains("snake_case")).collect();
-        assert!(!naming.is_empty(), "camelCase function should produce naming warning");
+        let naming: Vec<_> = result
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("snake_case"))
+            .collect();
+        assert!(
+            !naming.is_empty(),
+            "camelCase function should produce naming warning"
+        );
     }
 
     #[test]
     fn test_pascal_case_struct_no_warning() {
         let result = parse_and_check("struct MyStruct { x: int }");
-        let naming: Vec<_> = result.warnings.iter().filter(|w| w.message.contains("PascalCase")).collect();
-        assert!(naming.is_empty(), "PascalCase struct should not produce naming warning");
+        let naming: Vec<_> = result
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("PascalCase"))
+            .collect();
+        assert!(
+            naming.is_empty(),
+            "PascalCase struct should not produce naming warning"
+        );
     }
 
     #[test]
     fn test_lowercase_struct_warning() {
         let result = parse_and_check("struct my_struct { x: int }");
-        let naming: Vec<_> = result.warnings.iter().filter(|w| w.message.contains("PascalCase")).collect();
-        assert!(!naming.is_empty(), "lowercase struct should produce naming warning");
+        let naming: Vec<_> = result
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("PascalCase"))
+            .collect();
+        assert!(
+            !naming.is_empty(),
+            "lowercase struct should produce naming warning"
+        );
     }
 
     #[test]
     fn test_variable_shadowing_warning() {
         let result = parse_and_check("let x = 1\nlet x = 2\nprint(x)");
-        let shadow: Vec<_> = result.warnings.iter().filter(|w| w.message.contains("shadows")).collect();
-        assert!(!shadow.is_empty(), "Shadowed variable should produce warning: {:?}", result.warnings);
+        let shadow: Vec<_> = result
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("shadows"))
+            .collect();
+        assert!(
+            !shadow.is_empty(),
+            "Shadowed variable should produce warning: {:?}",
+            result.warnings
+        );
     }
 
     #[test]
     fn test_underscore_shadow_no_warning() {
         let result = parse_and_check("let _x = 1\nlet _x = 2");
-        let shadow: Vec<_> = result.warnings.iter().filter(|w| w.message.contains("shadows")).collect();
-        assert!(shadow.is_empty(), "_-prefixed shadow should not warn: {:?}", result.warnings);
+        let shadow: Vec<_> = result
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("shadows"))
+            .collect();
+        assert!(
+            shadow.is_empty(),
+            "_-prefixed shadow should not warn: {:?}",
+            result.warnings
+        );
     }
 
     // ── Phase 17: Pattern Matching ──
@@ -1678,8 +1841,20 @@ mod tests {
         let env = TypeEnv::new();
         let ty = Type::Result(Box::new(Type::Int), Box::new(Type::String));
         let arms = vec![
-            MatchArm { pattern: Pattern::Enum { type_name: "Result".into(), variant: "Ok".into(), args: vec![Pattern::Binding("v".into())] }, guard: None, body: Expr::Ident("v".into()) },
-            MatchArm { pattern: Pattern::Wildcard, guard: None, body: Expr::None },
+            MatchArm {
+                pattern: Pattern::Enum {
+                    type_name: "Result".into(),
+                    variant: "Ok".into(),
+                    args: vec![Pattern::Binding("v".into())],
+                },
+                guard: None,
+                body: Expr::Ident("v".into()),
+            },
+            MatchArm {
+                pattern: Pattern::Wildcard,
+                guard: None,
+                body: Expr::None,
+            },
         ];
         let missing = check_match_exhaustiveness_patterns(&ty, &arms, &env);
         assert!(missing.is_empty(), "Wildcard should make match exhaustive");
@@ -1688,15 +1863,34 @@ mod tests {
     #[test]
     fn test_match_exhaustiveness_patterns_missing_variant() {
         let mut env = TypeEnv::new();
-        env.define_enum("Color".into(), vec![
-            ("Red".into(), vec![]),
-            ("Green".into(), vec![]),
-            ("Blue".into(), vec![]),
-        ]);
+        env.define_enum(
+            "Color".into(),
+            vec![
+                ("Red".into(), vec![]),
+                ("Green".into(), vec![]),
+                ("Blue".into(), vec![]),
+            ],
+        );
         let ty = Type::Enum("Color".into());
         let arms = vec![
-            MatchArm { pattern: Pattern::Enum { type_name: "Color".into(), variant: "Red".into(), args: vec![] }, guard: None, body: Expr::Int(1) },
-            MatchArm { pattern: Pattern::Enum { type_name: "Color".into(), variant: "Green".into(), args: vec![] }, guard: None, body: Expr::Int(2) },
+            MatchArm {
+                pattern: Pattern::Enum {
+                    type_name: "Color".into(),
+                    variant: "Red".into(),
+                    args: vec![],
+                },
+                guard: None,
+                body: Expr::Int(1),
+            },
+            MatchArm {
+                pattern: Pattern::Enum {
+                    type_name: "Color".into(),
+                    variant: "Green".into(),
+                    args: vec![],
+                },
+                guard: None,
+                body: Expr::Int(2),
+            },
         ];
         let missing = check_match_exhaustiveness_patterns(&ty, &arms, &env);
         assert_eq!(missing, vec!["Blue"]);
@@ -1705,16 +1899,43 @@ mod tests {
     #[test]
     fn test_match_exhaustiveness_patterns_all_variants() {
         let mut env = TypeEnv::new();
-        env.define_enum("Color".into(), vec![
-            ("Red".into(), vec![]),
-            ("Green".into(), vec![]),
-            ("Blue".into(), vec![]),
-        ]);
+        env.define_enum(
+            "Color".into(),
+            vec![
+                ("Red".into(), vec![]),
+                ("Green".into(), vec![]),
+                ("Blue".into(), vec![]),
+            ],
+        );
         let ty = Type::Enum("Color".into());
         let arms = vec![
-            MatchArm { pattern: Pattern::Enum { type_name: "Color".into(), variant: "Red".into(), args: vec![] }, guard: None, body: Expr::Int(1) },
-            MatchArm { pattern: Pattern::Enum { type_name: "Color".into(), variant: "Green".into(), args: vec![] }, guard: None, body: Expr::Int(2) },
-            MatchArm { pattern: Pattern::Enum { type_name: "Color".into(), variant: "Blue".into(), args: vec![] }, guard: None, body: Expr::Int(3) },
+            MatchArm {
+                pattern: Pattern::Enum {
+                    type_name: "Color".into(),
+                    variant: "Red".into(),
+                    args: vec![],
+                },
+                guard: None,
+                body: Expr::Int(1),
+            },
+            MatchArm {
+                pattern: Pattern::Enum {
+                    type_name: "Color".into(),
+                    variant: "Green".into(),
+                    args: vec![],
+                },
+                guard: None,
+                body: Expr::Int(2),
+            },
+            MatchArm {
+                pattern: Pattern::Enum {
+                    type_name: "Color".into(),
+                    variant: "Blue".into(),
+                    args: vec![],
+                },
+                guard: None,
+                body: Expr::Int(3),
+            },
         ];
         let missing = check_match_exhaustiveness_patterns(&ty, &arms, &env);
         assert!(missing.is_empty());
@@ -1724,9 +1945,11 @@ mod tests {
     fn test_match_exhaustiveness_binding_is_catchall() {
         let env = TypeEnv::new();
         let ty = Type::Result(Box::new(Type::Int), Box::new(Type::String));
-        let arms = vec![
-            MatchArm { pattern: Pattern::Binding("x".into()), guard: None, body: Expr::Ident("x".into()) },
-        ];
+        let arms = vec![MatchArm {
+            pattern: Pattern::Binding("x".into()),
+            guard: None,
+            body: Expr::Ident("x".into()),
+        }];
         let missing = check_match_exhaustiveness_patterns(&ty, &arms, &env);
         assert!(missing.is_empty(), "Binding pattern should be a catch-all");
     }
@@ -1734,22 +1957,49 @@ mod tests {
     #[test]
     fn test_match_exhaustiveness_or_pattern() {
         let mut env = TypeEnv::new();
-        env.define_enum("Dir".into(), vec![
-            ("North".into(), vec![]),
-            ("South".into(), vec![]),
-            ("East".into(), vec![]),
-            ("West".into(), vec![]),
-        ]);
+        env.define_enum(
+            "Dir".into(),
+            vec![
+                ("North".into(), vec![]),
+                ("South".into(), vec![]),
+                ("East".into(), vec![]),
+                ("West".into(), vec![]),
+            ],
+        );
         let ty = Type::Enum("Dir".into());
         let arms = vec![
-            MatchArm { pattern: Pattern::Or(vec![
-                Pattern::Enum { type_name: "Dir".into(), variant: "North".into(), args: vec![] },
-                Pattern::Enum { type_name: "Dir".into(), variant: "South".into(), args: vec![] },
-            ]), guard: None, body: Expr::String("vertical".into()) },
-            MatchArm { pattern: Pattern::Or(vec![
-                Pattern::Enum { type_name: "Dir".into(), variant: "East".into(), args: vec![] },
-                Pattern::Enum { type_name: "Dir".into(), variant: "West".into(), args: vec![] },
-            ]), guard: None, body: Expr::String("horizontal".into()) },
+            MatchArm {
+                pattern: Pattern::Or(vec![
+                    Pattern::Enum {
+                        type_name: "Dir".into(),
+                        variant: "North".into(),
+                        args: vec![],
+                    },
+                    Pattern::Enum {
+                        type_name: "Dir".into(),
+                        variant: "South".into(),
+                        args: vec![],
+                    },
+                ]),
+                guard: None,
+                body: Expr::String("vertical".into()),
+            },
+            MatchArm {
+                pattern: Pattern::Or(vec![
+                    Pattern::Enum {
+                        type_name: "Dir".into(),
+                        variant: "East".into(),
+                        args: vec![],
+                    },
+                    Pattern::Enum {
+                        type_name: "Dir".into(),
+                        variant: "West".into(),
+                        args: vec![],
+                    },
+                ]),
+                guard: None,
+                body: Expr::String("horizontal".into()),
+            },
         ];
         let missing = check_match_exhaustiveness_patterns(&ty, &arms, &env);
         assert!(missing.is_empty(), "OR patterns should cover all variants");
@@ -1781,8 +2031,15 @@ mod tests {
         let program = tl_parser::parse(src).unwrap();
         let config = CheckerConfig::default();
         let result = check_program(&program, &config);
-        let has_unused_warning = result.warnings.iter().any(|w| w.message.contains("Unused closure parameter"));
-        assert!(has_unused_warning, "Expected unused closure parameter warning, got: {:?}", result.warnings);
+        let has_unused_warning = result
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("Unused closure parameter"));
+        assert!(
+            has_unused_warning,
+            "Expected unused closure parameter warning, got: {:?}",
+            result.warnings
+        );
     }
 
     #[test]
@@ -1792,8 +2049,15 @@ mod tests {
         let program = tl_parser::parse(src).unwrap();
         let config = CheckerConfig::default();
         let result = check_program(&program, &config);
-        let has_mismatch = result.warnings.iter().any(|w| w.message.contains("return type mismatch"));
-        assert!(has_mismatch, "Expected return type mismatch warning, got: {:?}", result.warnings);
+        let has_mismatch = result
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("return type mismatch"));
+        assert!(
+            has_mismatch,
+            "Expected return type mismatch warning, got: {:?}",
+            result.warnings
+        );
     }
 
     // ── Phase 22-24 Checker Tests ──────────────────────────────────
@@ -1804,7 +2068,11 @@ mod tests {
         let program = tl_parser::parse(src).unwrap();
         let config = CheckerConfig::default();
         let result = check_program(&program, &config);
-        assert!(!result.has_errors(), "Decimal type annotation should be valid: {:?}", result.errors);
+        assert!(
+            !result.has_errors(),
+            "Decimal type annotation should be valid: {:?}",
+            result.errors
+        );
     }
 
     #[test]
@@ -1813,7 +2081,11 @@ mod tests {
         let program = tl_parser::parse(src).unwrap();
         let config = CheckerConfig::default();
         let result = check_program(&program, &config);
-        assert!(!result.has_errors(), "async fn should type-check without errors: {:?}", result.errors);
+        assert!(
+            !result.has_errors(),
+            "async fn should type-check without errors: {:?}",
+            result.errors
+        );
     }
 
     #[test]
@@ -1827,8 +2099,15 @@ fn _sync_fn() {
         let program = tl_parser::parse(src).unwrap();
         let config = CheckerConfig::default();
         let result = check_program(&program, &config);
-        let has_await_warn = result.warnings.iter().any(|w| w.message.contains("await") && w.message.contains("async"));
-        assert!(has_await_warn, "Expected await-outside-async warning, got: {:?}", result.warnings);
+        let has_await_warn = result
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("await") && w.message.contains("async"));
+        assert!(
+            has_await_warn,
+            "Expected await-outside-async warning, got: {:?}",
+            result.warnings
+        );
     }
 
     #[test]
@@ -1842,7 +2121,14 @@ async fn _async_fn() {
         let program = tl_parser::parse(src).unwrap();
         let config = CheckerConfig::default();
         let result = check_program(&program, &config);
-        let has_await_warn = result.warnings.iter().any(|w| w.message.contains("await") && w.message.contains("async"));
-        assert!(!has_await_warn, "Should not warn about await inside async fn, but got: {:?}", result.warnings);
+        let has_await_warn = result
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("await") && w.message.contains("async"));
+        assert!(
+            !has_await_warn,
+            "Should not warn about await inside async fn, but got: {:?}",
+            result.warnings
+        );
     }
 }

@@ -4,10 +4,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use rdkafka::Message;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::producer::{FutureProducer, FutureRecord};
-use rdkafka::Message;
 
 use super::{Connector, ConnectorConfig};
 
@@ -74,12 +74,10 @@ impl Connector for KafkaConnector {
     }
 
     fn send(&self, message: &str) -> Result<(), String> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| format!("Failed to create runtime: {e}"))?;
+        let rt =
+            tokio::runtime::Runtime::new().map_err(|e| format!("Failed to create runtime: {e}"))?;
         rt.block_on(async {
-            let record = FutureRecord::to(&self.topic)
-                .payload(message)
-                .key("");
+            let record = FutureRecord::to(&self.topic).payload(message).key("");
             self.producer
                 .send(record, Duration::from_secs(5))
                 .await
@@ -89,21 +87,16 @@ impl Connector for KafkaConnector {
     }
 
     fn recv(&self, timeout_ms: u64) -> Result<Option<String>, String> {
-        let consumer = self.consumer.lock().map_err(|e| format!("Lock error: {e}"))?;
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| format!("Failed to create runtime: {e}"))?;
+        let consumer = self
+            .consumer
+            .lock()
+            .map_err(|e| format!("Lock error: {e}"))?;
+        let rt =
+            tokio::runtime::Runtime::new().map_err(|e| format!("Failed to create runtime: {e}"))?;
         rt.block_on(async {
-            match tokio::time::timeout(
-                Duration::from_millis(timeout_ms),
-                consumer.recv(),
-            )
-            .await
-            {
+            match tokio::time::timeout(Duration::from_millis(timeout_ms), consumer.recv()).await {
                 Ok(Ok(msg)) => {
-                    let payload = msg
-                        .payload_view::<str>()
-                        .unwrap_or(Ok(""))
-                        .unwrap_or("");
+                    let payload = msg.payload_view::<str>().unwrap_or(Ok("")).unwrap_or("");
                     Ok(Some(payload.to_string()))
                 }
                 Ok(Err(e)) => Err(format!("Kafka recv error: {e}")),

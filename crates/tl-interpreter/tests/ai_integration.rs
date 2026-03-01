@@ -94,9 +94,9 @@ fn test_tensor_dot() {
 
 #[test]
 fn test_tensor_add() {
-    let result = run(
-        "let a = tensor([1.0, 2.0, 3.0])\nlet b = tensor([4.0, 5.0, 6.0])\ntensor_sum(a + b)",
-    ).unwrap();
+    let result =
+        run("let a = tensor([1.0, 2.0, 3.0])\nlet b = tensor([4.0, 5.0, 6.0])\ntensor_sum(a + b)")
+            .unwrap();
     if let Value::Float(f) = result {
         assert!((f - 21.0).abs() < 1e-6);
     } else {
@@ -108,7 +108,8 @@ fn test_tensor_add() {
 fn test_tensor_sub() {
     let result = run(
         "let a = tensor([10.0, 20.0, 30.0])\nlet b = tensor([1.0, 2.0, 3.0])\ntensor_sum(a - b)",
-    ).unwrap();
+    )
+    .unwrap();
     if let Value::Float(f) = result {
         assert!((f - 54.0).abs() < 1e-6);
     } else {
@@ -118,9 +119,8 @@ fn test_tensor_sub() {
 
 #[test]
 fn test_tensor_mul() {
-    let result = run(
-        "let a = tensor([2.0, 3.0])\nlet b = tensor([4.0, 5.0])\ntensor_sum(a * b)",
-    ).unwrap();
+    let result =
+        run("let a = tensor([2.0, 3.0])\nlet b = tensor([4.0, 5.0])\ntensor_sum(a * b)").unwrap();
     if let Value::Float(f) = result {
         assert!((f - 23.0).abs() < 1e-6);
     } else {
@@ -130,9 +130,7 @@ fn test_tensor_mul() {
 
 #[test]
 fn test_tensor_scalar_mul() {
-    let result = run(
-        "let t = tensor([1.0, 2.0, 3.0])\ntensor_sum(t * 2.0)",
-    ).unwrap();
+    let result = run("let t = tensor([1.0, 2.0, 3.0])\ntensor_sum(t * 2.0)").unwrap();
     if let Value::Float(f) = result {
         assert!((f - 12.0).abs() < 1e-6);
     } else {
@@ -144,10 +142,9 @@ fn test_tensor_scalar_mul() {
 
 #[test]
 fn test_similarity() {
-    let result = run(
-        "let a = tensor([1.0, 0.0, 0.0])\nlet b = tensor([1.0, 0.0, 0.0])\nsimilarity(a, b)",
-    )
-    .unwrap();
+    let result =
+        run("let a = tensor([1.0, 0.0, 0.0])\nlet b = tensor([1.0, 0.0, 0.0])\nsimilarity(a, b)")
+            .unwrap();
     if let Value::Float(f) = result {
         assert!((f - 1.0).abs() < 1e-6, "Expected ~1.0, got {f}");
     } else {

@@ -3,8 +3,8 @@
 
 use std::collections::HashMap;
 
-use linfa::prelude::*;
 use linfa::Dataset;
+use linfa::prelude::*;
 use ndarray::{Array1, Array2};
 
 use crate::model::{LinfaKind, ModelMeta, TlModel};
@@ -81,8 +81,7 @@ fn train_linear(config: &TrainConfig) -> Result<TlModel, String> {
         "params": params.as_slice().unwrap_or(&[]),
         "intercept": intercept,
     });
-    let data =
-        serde_json::to_vec(&model_data).map_err(|e| format!("Serialization failed: {e}"))?;
+    let data = serde_json::to_vec(&model_data).map_err(|e| format!("Serialization failed: {e}"))?;
 
     let mut metrics = HashMap::new();
     metrics.insert("r2".to_string(), r2);
@@ -131,8 +130,7 @@ fn train_logistic(config: &TrainConfig) -> Result<TlModel, String> {
         "params": params.as_slice().unwrap_or(&[]),
         "intercept": intercept,
     });
-    let data =
-        serde_json::to_vec(&model_data).map_err(|e| format!("Serialization failed: {e}"))?;
+    let data = serde_json::to_vec(&model_data).map_err(|e| format!("Serialization failed: {e}"))?;
 
     let mut metrics = HashMap::new();
     metrics.insert("accuracy".to_string(), accuracy);
@@ -188,8 +186,7 @@ fn train_decision_tree(config: &TrainConfig) -> Result<TlModel, String> {
         "type": "decision_tree",
         "accuracy": accuracy,
     });
-    let data =
-        serde_json::to_vec(&model_data).map_err(|e| format!("Serialization failed: {e}"))?;
+    let data = serde_json::to_vec(&model_data).map_err(|e| format!("Serialization failed: {e}"))?;
 
     let mut metrics = HashMap::new();
     metrics.insert("accuracy".to_string(), accuracy);
@@ -236,9 +233,12 @@ pub fn predict_linfa(model: &TlModel, input: &TlTensor) -> Result<TlTensor, Stri
                     let mut preds = Vec::with_capacity(rows);
                     for i in 0..rows {
                         let row = &flat[i * cols..(i + 1) * cols];
-                        let pred: f64 =
-                            row.iter().zip(params.iter()).map(|(a, b)| a * b).sum::<f64>()
-                                + intercept;
+                        let pred: f64 = row
+                            .iter()
+                            .zip(params.iter())
+                            .map(|(a, b)| a * b)
+                            .sum::<f64>()
+                            + intercept;
                         preds.push(pred);
                     }
                     Ok(TlTensor::from_list(preds))
@@ -275,9 +275,12 @@ pub fn predict_linfa(model: &TlModel, input: &TlTensor) -> Result<TlTensor, Stri
                     let mut preds = Vec::with_capacity(rows);
                     for i in 0..rows {
                         let row = &flat[i * cols..(i + 1) * cols];
-                        let logit: f64 =
-                            row.iter().zip(params.iter()).map(|(a, b)| a * b).sum::<f64>()
-                                + intercept;
+                        let logit: f64 = row
+                            .iter()
+                            .zip(params.iter())
+                            .map(|(a, b)| a * b)
+                            .sum::<f64>()
+                            + intercept;
                         let prob = 1.0 / (1.0 + (-logit).exp());
                         preds.push(if prob > 0.5 { 1.0 } else { 0.0 });
                     }
@@ -305,8 +308,8 @@ mod tests {
         // y = 2*x1 + 3*x2 + 1
         let features = TlTensor::from_vec(
             vec![
-                1.0, 1.0, 2.0, 1.0, 3.0, 1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 2.0, 1.0, 3.0, 2.0,
-                3.0, 3.0, 3.0, 4.0, 4.0,
+                1.0, 1.0, 2.0, 1.0, 3.0, 1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 2.0, 1.0, 3.0, 2.0, 3.0,
+                3.0, 3.0, 4.0, 4.0,
             ],
             &[10, 2],
         )

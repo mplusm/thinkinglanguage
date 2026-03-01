@@ -1,7 +1,7 @@
 // ThinkingLanguage — Data lineage tracking
 
-use std::collections::HashMap;
 use chrono::Utc;
+use std::collections::HashMap;
 
 /// A node in the data lineage graph.
 #[derive(Debug, Clone)]

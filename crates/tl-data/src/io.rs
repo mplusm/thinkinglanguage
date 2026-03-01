@@ -6,7 +6,10 @@ impl DataEngine {
     /// Read a CSV file into a DataFusion DataFrame.
     /// Supports local paths and s3:// URLs (after register_s3).
     pub fn read_csv(&self, path: &str) -> Result<DataFrame, String> {
-        if !path.starts_with("s3://") && !path.starts_with("http://") && !path.starts_with("https://") {
+        if !path.starts_with("s3://")
+            && !path.starts_with("http://")
+            && !path.starts_with("https://")
+        {
             let p = Path::new(path);
             if !p.exists() {
                 return Err(format!("CSV file not found: {}", p.display()));
@@ -20,26 +23,28 @@ impl DataEngine {
     /// Read a Parquet file into a DataFusion DataFrame.
     /// Supports local paths and s3:// URLs (after register_s3).
     pub fn read_parquet(&self, path: &str) -> Result<DataFrame, String> {
-        if !path.starts_with("s3://") && !path.starts_with("http://") && !path.starts_with("https://") {
+        if !path.starts_with("s3://")
+            && !path.starts_with("http://")
+            && !path.starts_with("https://")
+        {
             let p = Path::new(path);
             if !p.exists() {
                 return Err(format!("Parquet file not found: {}", p.display()));
             }
         }
         self.rt
-            .block_on(
-                self.ctx
-                    .read_parquet(path, ParquetReadOptions::default()),
-            )
+            .block_on(self.ctx.read_parquet(path, ParquetReadOptions::default()))
             .map_err(|e| format!("Parquet read error: {e}"))
     }
 
     /// Write a DataFrame to a CSV file.
     pub fn write_csv(&self, df: DataFrame, path: &str) -> Result<(), String> {
         self.rt
-            .block_on(
-                df.write_csv(path, datafusion::dataframe::DataFrameWriteOptions::default(), None),
-            )
+            .block_on(df.write_csv(
+                path,
+                datafusion::dataframe::DataFrameWriteOptions::default(),
+                None,
+            ))
             .map_err(|e| format!("CSV write error: {e}"))?;
         Ok(())
     }
@@ -68,7 +73,11 @@ mod tests {
         let csv_path = dir.path().join("test.csv");
 
         // Write a test CSV
-        fs::write(&csv_path, "id,name,age\n1,Alice,30\n2,Bob,25\n3,Charlie,35\n").unwrap();
+        fs::write(
+            &csv_path,
+            "id,name,age\n1,Alice,30\n2,Bob,25\n3,Charlie,35\n",
+        )
+        .unwrap();
 
         let engine = DataEngine::new();
         let df = engine.read_csv(csv_path.to_str().unwrap()).unwrap();

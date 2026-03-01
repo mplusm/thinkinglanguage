@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 use tl_ast::*;
-use tl_errors::{TlError, RuntimeError, Span};
+use tl_errors::{RuntimeError, Span, TlError};
 
 use crate::chunk::*;
 use crate::opcode::*;
@@ -23,7 +23,7 @@ fn compile_err(msg: String) -> TlError {
         message: msg,
         span: None,
         stack_trace: vec![],
-        })
+    })
 }
 
 /// A local variable in the current scope.
@@ -126,7 +126,7 @@ impl CompilerState {
         let op = (old >> 24) as u8;
         let a = ((old >> 16) & 0xFF) as u8;
         self.proto.code[inst_pos] = encode_abx(
-            unsafe { std::mem::transmute(op) },
+            unsafe { std::mem::transmute::<u8, Op>(op) },
             a,
             offset as u16,
         );
@@ -167,6 +167,7 @@ impl Compiler {
     }
 
     /// Get the current line number for emit calls.
+    #[allow(dead_code)]
     fn line(&self) -> u32 {
         self.current_line
     }
@@ -278,7 +279,9 @@ impl Compiler {
                 self.compile_expr(value, reg)?;
                 Ok(())
             }
-            StmtKind::FnDecl { name, params, body, .. } => {
+            StmtKind::FnDecl {
+                name, params, body, ..
+            } => {
                 let reg = self.add_local(name.clone());
                 self.compile_function(name.clone(), params, body, false)?;
                 // The closure instruction already targets `reg`
@@ -304,84 +307,148 @@ impl Compiler {
                 self.current().dead_code = true;
                 Ok(())
             }
-            StmtKind::If { condition, then_body, else_ifs, else_body } => {
-                self.compile_if(condition, then_body, else_ifs, else_body)
-            }
-            StmtKind::While { condition, body } => {
-                self.compile_while(condition, body)
-            }
-            StmtKind::For { name, iter, body } => {
-                self.compile_for(name, iter, body)
-            }
+            StmtKind::If {
+                condition,
+                then_body,
+                else_ifs,
+                else_body,
+            } => self.compile_if(condition, then_body, else_ifs, else_body),
+            StmtKind::While { condition, body } => self.compile_while(condition, body),
+            StmtKind::For { name, iter, body } => self.compile_for(name, iter, body),
             StmtKind::ParallelFor { name, iter, body } => {
                 // Compile as a regular for loop (rayon parallelism at VM level)
                 self.compile_for(name, iter, body)
             }
-            StmtKind::Schema { name, fields, version, .. } => {
-                self.compile_schema(name, fields, version)
-            }
-            StmtKind::Train { name, algorithm, config } => {
-                self.compile_train(name, algorithm, config)
-            }
-            StmtKind::Pipeline { name, extract, transform, load, schedule, timeout, retries, on_failure, on_success } => {
-                self.compile_pipeline(name, extract, transform, load, schedule, timeout, retries, on_failure, on_success)
-            }
-            StmtKind::StreamDecl { name, source, transform: _, sink: _, window, watermark } => {
-                self.compile_stream_decl(name, source, window, watermark)
-            }
-            StmtKind::SourceDecl { name, connector_type, config } => {
-                self.compile_connector_decl(name, connector_type, config)
-            }
-            StmtKind::SinkDecl { name, connector_type, config } => {
-                self.compile_connector_decl(name, connector_type, config)
-            }
+            StmtKind::Schema {
+                name,
+                fields,
+                version,
+                ..
+            } => self.compile_schema(name, fields, version),
+            StmtKind::Train {
+                name,
+                algorithm,
+                config,
+            } => self.compile_train(name, algorithm, config),
+            StmtKind::Pipeline {
+                name,
+                extract,
+                transform,
+                load,
+                schedule,
+                timeout,
+                retries,
+                on_failure,
+                on_success,
+            } => self.compile_pipeline(
+                name, extract, transform, load, schedule, timeout, retries, on_failure, on_success,
+            ),
+            StmtKind::StreamDecl {
+                name,
+                source,
+                transform: _,
+                sink: _,
+                window,
+                watermark,
+            } => self.compile_stream_decl(name, source, window, watermark),
+            StmtKind::SourceDecl {
+                name,
+                connector_type,
+                config,
+            } => self.compile_connector_decl(name, connector_type, config),
+            StmtKind::SinkDecl {
+                name,
+                connector_type,
+                config,
+            } => self.compile_connector_decl(name, connector_type, config),
             StmtKind::StructDecl { name, fields, .. } => {
                 let reg = self.add_local(name.clone());
-                let field_names: Vec<Arc<str>> = fields.iter().map(|f| Arc::from(f.name.as_str())).collect();
-                let name_idx = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
+                let field_names: Vec<Arc<str>> =
+                    fields.iter().map(|f| Arc::from(f.name.as_str())).collect();
+                let name_idx = self
+                    .current()
+                    .add_constant(Constant::String(Arc::from(name.as_str())));
                 // Store field names as string constants
                 let fields_idx = self.current().add_constant(Constant::AstExprList(
-                    field_names.iter().map(|f| tl_ast::Expr::String(f.to_string())).collect()
+                    field_names
+                        .iter()
+                        .map(|f| tl_ast::Expr::String(f.to_string()))
+                        .collect(),
                 ));
                 // High bit of c marks this as a declaration (not instance creation)
-                self.current().emit_abc(Op::NewStruct, reg, name_idx as u8, (fields_idx as u8) | 0x80, 0);
+                self.current().emit_abc(
+                    Op::NewStruct,
+                    reg,
+                    name_idx as u8,
+                    (fields_idx as u8) | 0x80,
+                    0,
+                );
                 Ok(())
             }
             StmtKind::EnumDecl { name, variants, .. } => {
                 let reg = self.add_local(name.clone());
-                let name_idx = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
+                let name_idx = self
+                    .current()
+                    .add_constant(Constant::String(Arc::from(name.as_str())));
                 // Store variant info
-                let variant_info: Vec<tl_ast::Expr> = variants.iter().map(|v| {
-                    tl_ast::Expr::String(format!("{}:{}", v.name, v.fields.len()))
-                }).collect();
-                let variants_idx = self.current().add_constant(Constant::AstExprList(variant_info));
+                let variant_info: Vec<tl_ast::Expr> = variants
+                    .iter()
+                    .map(|v| tl_ast::Expr::String(format!("{}:{}", v.name, v.fields.len())))
+                    .collect();
+                let variants_idx = self
+                    .current()
+                    .add_constant(Constant::AstExprList(variant_info));
                 // High bit of c marks this as a declaration (not instance creation)
-                self.current().emit_abc(Op::NewStruct, reg, name_idx as u8, (variants_idx as u8) | 0x80, 0);
+                self.current().emit_abc(
+                    Op::NewStruct,
+                    reg,
+                    name_idx as u8,
+                    (variants_idx as u8) | 0x80,
+                    0,
+                );
                 // We reuse NewStruct op but tag it differently via the globals
                 // Actually, let's use a dedicated approach: store as global with special name
-                let global_idx = self.current().add_constant(Constant::String(Arc::from(format!("__enum_{name}").as_str())));
+                let global_idx = self.current().add_constant(Constant::String(Arc::from(
+                    format!("__enum_{name}").as_str(),
+                )));
                 self.current().emit_abx(Op::SetGlobal, reg, global_idx, 0);
                 // Also set as normal global
-                let name_g = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
+                let name_g = self
+                    .current()
+                    .add_constant(Constant::String(Arc::from(name.as_str())));
                 self.current().emit_abx(Op::SetGlobal, reg, name_g, 0);
                 Ok(())
             }
-            StmtKind::ImplBlock { type_name, methods, .. } => {
+            StmtKind::ImplBlock {
+                type_name, methods, ..
+            } => {
                 // Compile each method as a global function with mangled name Type::method
                 for method in methods {
-                    if let StmtKind::FnDecl { name: mname, params, body, .. } = &method.kind {
+                    if let StmtKind::FnDecl {
+                        name: mname,
+                        params,
+                        body,
+                        ..
+                    } = &method.kind
+                    {
                         let mangled = format!("{type_name}::{mname}");
                         // add_local creates the local binding that compile_function looks up
                         let reg = self.add_local(mangled.clone());
                         self.compile_function(mangled.clone(), params, body, false)?;
                         // Store as global so dispatch_method can find it
-                        let idx = self.current().add_constant(Constant::String(Arc::from(mangled.as_str())));
+                        let idx = self
+                            .current()
+                            .add_constant(Constant::String(Arc::from(mangled.as_str())));
                         self.current().emit_abx(Op::SetGlobal, reg, idx, 0);
                     }
                 }
                 Ok(())
             }
-            StmtKind::TryCatch { try_body, catch_var, catch_body } => {
+            StmtKind::TryCatch {
+                try_body,
+                catch_var,
+                catch_body,
+            } => {
                 // Emit TryBegin with offset to catch handler
                 let try_begin_pos = self.current().current_pos();
                 self.current().emit_abx(Op::TryBegin, 0, 0, 0); // patch later
@@ -433,9 +500,12 @@ impl Compiler {
             }
             StmtKind::Import { path, alias } => {
                 let reg = self.current().alloc_register();
-                let path_idx = self.current().add_constant(Constant::String(Arc::from(path.as_str())));
+                let path_idx = self
+                    .current()
+                    .add_constant(Constant::String(Arc::from(path.as_str())));
                 let alias_idx = if let Some(a) = alias {
-                    self.current().add_constant(Constant::String(Arc::from(a.as_str())))
+                    self.current()
+                        .add_constant(Constant::String(Arc::from(a.as_str())))
                 } else {
                     self.current().add_constant(Constant::String(Arc::from("")))
                 };
@@ -449,9 +519,7 @@ impl Compiler {
                 // Tests are only run in test mode; skip during normal compilation
                 Ok(())
             }
-            StmtKind::Use { item, .. } => {
-                self.compile_use(item)
-            }
+            StmtKind::Use { item, .. } => self.compile_use(item),
             StmtKind::ModDecl { .. } => {
                 // ModDecl is handled at load time, not compilation
                 Ok(())
@@ -460,14 +528,24 @@ impl Compiler {
                 // Trait definitions are type-checker only; no runtime code needed
                 Ok(())
             }
-            StmtKind::TraitImpl { type_name, methods, .. } => {
+            StmtKind::TraitImpl {
+                type_name, methods, ..
+            } => {
                 // Compile as a regular impl block — trait impls are type-erased at runtime
                 for method in methods {
-                    if let StmtKind::FnDecl { name: mname, params, body, .. } = &method.kind {
+                    if let StmtKind::FnDecl {
+                        name: mname,
+                        params,
+                        body,
+                        ..
+                    } = &method.kind
+                    {
                         let mangled = format!("{type_name}::{mname}");
                         let reg = self.add_local(mangled.clone());
                         self.compile_function(mangled.clone(), params, body, false)?;
-                        let idx = self.current().add_constant(Constant::String(Arc::from(mangled.as_str())));
+                        let idx = self
+                            .current()
+                            .add_constant(Constant::String(Arc::from(mangled.as_str())));
                         self.current().emit_abx(Op::SetGlobal, reg, idx, 0);
                     }
                 }
@@ -506,9 +584,12 @@ impl Compiler {
                 // Type aliases are type-checker only; no runtime code needed
                 Ok(())
             }
-            StmtKind::Migrate { schema_name, from_version, to_version, operations } => {
-                self.compile_migrate(schema_name, *from_version, *to_version, operations)
-            }
+            StmtKind::Migrate {
+                schema_name,
+                from_version,
+                to_version,
+                operations,
+            } => self.compile_migrate(schema_name, *from_version, *to_version, operations),
         }
     }
 
@@ -522,13 +603,21 @@ impl Compiler {
             Pattern::Wildcard => {} // ignore value
             Pattern::Struct { fields, .. } => {
                 for field in fields {
-                    let fname_const = self.current().add_constant(Constant::String(Arc::from(field.name.as_str())));
+                    let fname_const = self
+                        .current()
+                        .add_constant(Constant::String(Arc::from(field.name.as_str())));
                     let bind_name = match &field.pattern {
                         Some(Pattern::Binding(n)) => n.clone(),
                         _ => field.name.clone(),
                     };
                     let local = self.add_local(bind_name);
-                    self.current().emit_abc(Op::ExtractNamedField, local, val_reg, fname_const as u8, 0);
+                    self.current().emit_abc(
+                        Op::ExtractNamedField,
+                        local,
+                        val_reg,
+                        fname_const as u8,
+                        0,
+                    );
                 }
             }
             Pattern::List { elements, rest } => {
@@ -536,7 +625,8 @@ impl Compiler {
                     match elem_pat {
                         Pattern::Binding(name) => {
                             let local = self.add_local(name.clone());
-                            self.current().emit_abc(Op::ExtractField, local, val_reg, i as u8, 0);
+                            self.current()
+                                .emit_abc(Op::ExtractField, local, val_reg, i as u8, 0);
                         }
                         Pattern::Wildcard => {}
                         _ => {}
@@ -544,7 +634,13 @@ impl Compiler {
                 }
                 if let Some(rest_name) = rest {
                     let local = self.add_local(rest_name.clone());
-                    self.current().emit_abc(Op::ExtractField, local, val_reg, (elements.len() as u8) | 0x80, 0);
+                    self.current().emit_abc(
+                        Op::ExtractField,
+                        local,
+                        val_reg,
+                        (elements.len() as u8) | 0x80,
+                        0,
+                    );
                 }
             }
             Pattern::Enum { args, .. } => {
@@ -552,7 +648,8 @@ impl Compiler {
                 for (i, arg_pat) in args.iter().enumerate() {
                     if let Pattern::Binding(name) = arg_pat {
                         let local = self.add_local(name.clone());
-                        self.current().emit_abc(Op::ExtractField, local, val_reg, i as u8, 0);
+                        self.current()
+                            .emit_abc(Op::ExtractField, local, val_reg, i as u8, 0);
                     }
                 }
             }
@@ -576,7 +673,10 @@ impl Compiler {
         } else {
             // For FnDecl, the local was already added
             let state = self.states.last().unwrap();
-            state.locals.iter().rev()
+            state
+                .locals
+                .iter()
+                .rev()
                 .find(|l| l.name == name)
                 .map(|l| l.register)
                 .unwrap_or(0)
@@ -622,7 +722,12 @@ impl Compiler {
                     last_expr_reg = Some(reg);
                     // Don't free — we'll return it
                 }
-                StmtKind::If { condition, then_body, else_ifs, else_body } if is_last && else_body.is_some() => {
+                StmtKind::If {
+                    condition,
+                    then_body,
+                    else_ifs,
+                    else_body,
+                } if is_last && else_body.is_some() => {
                     // Last statement is if-else — compile as expression for implicit return
                     let dest = self.current().alloc_register();
                     self.compile_if_as_expr(condition, then_body, else_ifs, else_body, dest)?;
@@ -661,10 +766,14 @@ impl Compiler {
         let fn_state = self.states.pop().unwrap();
         let mut proto = fn_state.proto;
         proto.is_generator = fn_state.has_yield;
-        proto.upvalue_defs = fn_state.upvalues.iter().map(|uv| UpvalueDef {
-            is_local: uv.is_local,
-            index: uv.index,
-        }).collect();
+        proto.upvalue_defs = fn_state
+            .upvalues
+            .iter()
+            .map(|uv| UpvalueDef {
+                is_local: uv.is_local,
+                index: uv.index,
+            })
+            .collect();
 
         // Add the prototype as a constant in the enclosing function
         let proto_arc = Arc::new(proto);
@@ -686,13 +795,21 @@ impl Compiler {
         let body_stmts = match body {
             ClosureBody::Expr(e) => {
                 // Single-expression closure: wrap in return
-                vec![Stmt { kind: StmtKind::Return(Some(e.as_ref().clone())), span: Span::new(0, 0), doc_comment: None }]
+                vec![Stmt {
+                    kind: StmtKind::Return(Some(e.as_ref().clone())),
+                    span: Span::new(0, 0),
+                    doc_comment: None,
+                }]
             }
             ClosureBody::Block { stmts, expr } => {
                 // Block closure: compile stmts, then return tail expr (if any)
                 let mut all = stmts.clone();
                 if let Some(e) = expr {
-                    all.push(Stmt { kind: StmtKind::Return(Some(e.as_ref().clone())), span: Span::new(0, 0), doc_comment: None });
+                    all.push(Stmt {
+                        kind: StmtKind::Return(Some(e.as_ref().clone())),
+                        span: Span::new(0, 0),
+                        doc_comment: None,
+                    });
                 }
                 all
             }
@@ -740,10 +857,14 @@ impl Compiler {
 
         let fn_state = self.states.pop().unwrap();
         let mut proto = fn_state.proto;
-        proto.upvalue_defs = fn_state.upvalues.iter().map(|uv| UpvalueDef {
-            is_local: uv.is_local,
-            index: uv.index,
-        }).collect();
+        proto.upvalue_defs = fn_state
+            .upvalues
+            .iter()
+            .map(|uv| UpvalueDef {
+                is_local: uv.is_local,
+                index: uv.index,
+            })
+            .collect();
 
         let proto_arc = Arc::new(proto);
         let const_idx = self.current().add_constant(Constant::Prototype(proto_arc));
@@ -908,7 +1029,12 @@ impl Compiler {
                 StmtKind::Expr(expr) if is_last => {
                     self.compile_expr(expr, dest)?;
                 }
-                StmtKind::If { condition, then_body, else_ifs, else_body } if is_last && else_body.is_some() => {
+                StmtKind::If {
+                    condition,
+                    then_body,
+                    else_ifs,
+                    else_body,
+                } if is_last && else_body.is_some() => {
                     self.compile_if_as_expr(condition, then_body, else_ifs, else_body, dest)?;
                 }
                 _ => {
@@ -970,7 +1096,8 @@ impl Compiler {
         // Create iterator (index counter)
         let iter_reg = self.current().alloc_register();
         let zero_const = self.current().add_constant(Constant::Int(0));
-        self.current().emit_abx(Op::LoadConst, iter_reg, zero_const, 0);
+        self.current()
+            .emit_abx(Op::LoadConst, iter_reg, zero_const, 0);
 
         let loop_start = self.current().current_pos();
         self.current().loop_stack.push(LoopCtx {
@@ -981,7 +1108,8 @@ impl Compiler {
         // ForIter: check if iterator is done, load value
         self.begin_scope();
         let val_reg = self.add_local(name.to_string());
-        self.current().emit_abc(Op::ForIter, iter_reg, list_reg, val_reg, 0);
+        self.current()
+            .emit_abc(Op::ForIter, iter_reg, list_reg, val_reg, 0);
         // The next instruction is the jump offset if done
         let exit_jump = self.current().current_pos();
         self.current().emit_abx(Op::Jump, 0, 0, 0); // placeholder, patched
@@ -1019,95 +1147,159 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_schema(&mut self, name: &str, fields: &[SchemaField], version: &Option<i64>) -> Result<(), TlError> {
+    fn compile_schema(
+        &mut self,
+        name: &str,
+        fields: &[SchemaField],
+        version: &Option<i64>,
+    ) -> Result<(), TlError> {
         // Schema compilation: store as a global with the schema data
         // We use a special constant and SetGlobal
         let reg = self.current().alloc_register();
 
         // Encode schema as a constant with name + version + fields as string
         let ver_str = version.map_or(String::new(), |v| format!(":v{}", v));
-        let schema_str = format!("__schema__:{}{}:{}", name, ver_str,
-            fields.iter().map(|f| format!("{}:{:?}", f.name, f.type_ann)).collect::<Vec<_>>().join(","));
-        let const_idx = self.current().add_constant(Constant::String(Arc::from(schema_str.as_str())));
+        let schema_str = format!(
+            "__schema__:{}{}:{}",
+            name,
+            ver_str,
+            fields
+                .iter()
+                .map(|f| format!("{}:{:?}", f.name, f.type_ann))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let const_idx = self
+            .current()
+            .add_constant(Constant::String(Arc::from(schema_str.as_str())));
         self.current().emit_abx(Op::LoadConst, reg, const_idx, 0);
 
-        let name_idx = self.current().add_constant(Constant::String(Arc::from(name)));
+        let name_idx = self
+            .current()
+            .add_constant(Constant::String(Arc::from(name)));
         self.current().emit_abx(Op::SetGlobal, reg, name_idx, 0);
         self.current().free_register();
 
         // Also add as local
         let local_reg = self.add_local(name.to_string());
-        self.current().emit_abx(Op::LoadConst, local_reg, const_idx, 0);
+        self.current()
+            .emit_abx(Op::LoadConst, local_reg, const_idx, 0);
 
         Ok(())
     }
 
-    fn compile_migrate(&mut self, schema_name: &str, from_version: i64, to_version: i64, operations: &[MigrateOp]) -> Result<(), TlError> {
+    fn compile_migrate(
+        &mut self,
+        schema_name: &str,
+        from_version: i64,
+        to_version: i64,
+        operations: &[MigrateOp],
+    ) -> Result<(), TlError> {
         // Encode migration as a constant string with ops
         let mut ops_str = Vec::new();
         for op in operations {
             let s = match op {
-                MigrateOp::AddColumn { name, type_ann, default } => {
-                    let def_str = if let Some(d) = default { format!(",default:{d:?}") } else { String::new() };
+                MigrateOp::AddColumn {
+                    name,
+                    type_ann,
+                    default,
+                } => {
+                    let def_str = if let Some(d) = default {
+                        format!(",default:{d:?}")
+                    } else {
+                        String::new()
+                    };
                     format!("add:{name}:{type_ann:?}{def_str}")
                 }
                 MigrateOp::DropColumn { name } => format!("drop:{name}"),
                 MigrateOp::RenameColumn { from, to } => format!("rename:{from}:{to}"),
                 MigrateOp::AlterType { column, new_type } => format!("alter:{column}:{new_type:?}"),
-                MigrateOp::AddConstraint { column, constraint } => format!("add_constraint:{column}:{constraint}"),
-                MigrateOp::DropConstraint { column, constraint } => format!("drop_constraint:{column}:{constraint}"),
+                MigrateOp::AddConstraint { column, constraint } => {
+                    format!("add_constraint:{column}:{constraint}")
+                }
+                MigrateOp::DropConstraint { column, constraint } => {
+                    format!("drop_constraint:{column}:{constraint}")
+                }
             };
             ops_str.push(s);
         }
-        let migrate_str = format!("__migrate__:{}:{}:{}:{}", schema_name, from_version, to_version, ops_str.join(";"));
+        let migrate_str = format!(
+            "__migrate__:{}:{}:{}:{}",
+            schema_name,
+            from_version,
+            to_version,
+            ops_str.join(";")
+        );
         let reg = self.current().alloc_register();
-        let const_idx = self.current().add_constant(Constant::String(Arc::from(migrate_str.as_str())));
+        let const_idx = self
+            .current()
+            .add_constant(Constant::String(Arc::from(migrate_str.as_str())));
         self.current().emit_abx(Op::LoadConst, reg, const_idx, 0);
         // Store as a global migration record
         let name_key = format!("__migrate_{schema_name}_{from_version}_{to_version}");
-        let name_idx = self.current().add_constant(Constant::String(Arc::from(name_key.as_str())));
+        let name_idx = self
+            .current()
+            .add_constant(Constant::String(Arc::from(name_key.as_str())));
         self.current().emit_abx(Op::SetGlobal, reg, name_idx, 0);
         self.current().free_register();
         Ok(())
     }
 
-    fn compile_train(&mut self, name: &str, algorithm: &str, config: &[(String, Expr)]) -> Result<(), TlError> {
+    fn compile_train(
+        &mut self,
+        name: &str,
+        algorithm: &str,
+        config: &[(String, Expr)],
+    ) -> Result<(), TlError> {
         let dest = self.add_local(name.to_string());
 
         // Store algorithm as constant
-        let algo_idx = self.current().add_constant(Constant::String(Arc::from(algorithm)));
+        let algo_idx = self
+            .current()
+            .add_constant(Constant::String(Arc::from(algorithm)));
 
         // For any config value that's an Ident, ensure the local is exported as a global
         // so the VM's eval_ast_to_vm can resolve it at runtime.
         for (_key, val) in config {
-            if let Expr::Ident(ident_name) = val {
-                if let Some(reg) = self.resolve_local(ident_name) {
-                    let name_idx = self.current().add_constant(Constant::String(Arc::from(ident_name.as_str())));
-                    self.current().emit_abx(Op::SetGlobal, reg, name_idx, 0);
-                }
+            if let Expr::Ident(ident_name) = val
+                && let Some(reg) = self.resolve_local(ident_name)
+            {
+                let name_idx = self
+                    .current()
+                    .add_constant(Constant::String(Arc::from(ident_name.as_str())));
+                self.current().emit_abx(Op::SetGlobal, reg, name_idx, 0);
             }
         }
 
         // Store config key-value pairs: compile each value expr, then store as AstExprList
-        let config_exprs: Vec<tl_ast::Expr> = config.iter().map(|(k, v)| {
-            // Encode config as a list of NamedArg expressions
-            tl_ast::Expr::NamedArg {
-                name: k.clone(),
-                value: Box::new(v.clone()),
-            }
-        }).collect();
-        let config_idx = self.current().add_constant(Constant::AstExprList(config_exprs));
+        let config_exprs: Vec<tl_ast::Expr> = config
+            .iter()
+            .map(|(k, v)| {
+                // Encode config as a list of NamedArg expressions
+                tl_ast::Expr::NamedArg {
+                    name: k.clone(),
+                    value: Box::new(v.clone()),
+                }
+            })
+            .collect();
+        let config_idx = self
+            .current()
+            .add_constant(Constant::AstExprList(config_exprs));
 
         // Emit Train instruction
-        self.current().emit_abc(Op::Train, dest, algo_idx as u8, config_idx as u8, 0);
+        self.current()
+            .emit_abc(Op::Train, dest, algo_idx as u8, config_idx as u8, 0);
 
         // Also set as global
-        let name_idx = self.current().add_constant(Constant::String(Arc::from(name)));
+        let name_idx = self
+            .current()
+            .add_constant(Constant::String(Arc::from(name)));
         self.current().emit_abx(Op::SetGlobal, dest, name_idx, 0);
 
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn compile_pipeline(
         &mut self,
         name: &str,
@@ -1123,7 +1315,9 @@ impl Compiler {
         let dest = self.add_local(name.to_string());
 
         // Store pipeline config as constants
-        let name_const = self.current().add_constant(Constant::String(Arc::from(name)));
+        let name_const = self
+            .current()
+            .add_constant(Constant::String(Arc::from(name)));
 
         // Compile extract/transform/load blocks as AstExprList of the statements
         // For simplicity, store the blocks as AST and handle at runtime
@@ -1153,7 +1347,9 @@ impl Compiler {
                 value: Box::new(tl_ast::Expr::Int(*r)),
             });
         }
-        let config_idx = self.current().add_constant(Constant::AstExprList(config_exprs));
+        let config_idx = self
+            .current()
+            .add_constant(Constant::AstExprList(config_exprs));
 
         // Compile blocks inline for VM execution (shared scope)
         for stmt in extract {
@@ -1174,10 +1370,18 @@ impl Compiler {
         }
 
         // Emit PipelineExec to store the pipeline def
-        self.current().emit_abc(Op::PipelineExec, dest, name_const as u8, config_idx as u8, 0);
+        self.current().emit_abc(
+            Op::PipelineExec,
+            dest,
+            name_const as u8,
+            config_idx as u8,
+            0,
+        );
 
         // Set as global
-        let gname = self.current().add_constant(Constant::String(Arc::from(name)));
+        let gname = self
+            .current()
+            .add_constant(Constant::String(Arc::from(name)));
         self.current().emit_abx(Op::SetGlobal, dest, gname, 0);
 
         Ok(())
@@ -1220,14 +1424,19 @@ impl Compiler {
                 value: Box::new(tl_ast::Expr::String(wm.clone())),
             });
         }
-        let config_idx = self.current().add_constant(Constant::AstExprList(config_exprs));
+        let config_idx = self
+            .current()
+            .add_constant(Constant::AstExprList(config_exprs));
 
         // Emit StreamExec instruction
-        self.current().emit_abc(Op::StreamExec, dest, config_idx as u8, src_reg, 0);
+        self.current()
+            .emit_abc(Op::StreamExec, dest, config_idx as u8, src_reg, 0);
         self.current().free_register(); // free src_reg
 
         // Set as global
-        let gname = self.current().add_constant(Constant::String(Arc::from(name)));
+        let gname = self
+            .current()
+            .add_constant(Constant::String(Arc::from(name)));
         self.current().emit_abx(Op::SetGlobal, dest, gname, 0);
 
         Ok(())
@@ -1242,22 +1451,30 @@ impl Compiler {
         let dest = self.add_local(name.to_string());
 
         // Store connector type as constant
-        let type_idx = self.current().add_constant(Constant::String(Arc::from(connector_type)));
+        let type_idx = self
+            .current()
+            .add_constant(Constant::String(Arc::from(connector_type)));
 
         // Store config as AstExprList
-        let config_exprs: Vec<tl_ast::Expr> = config.iter().map(|(k, v)| {
-            tl_ast::Expr::NamedArg {
+        let config_exprs: Vec<tl_ast::Expr> = config
+            .iter()
+            .map(|(k, v)| tl_ast::Expr::NamedArg {
                 name: k.clone(),
                 value: Box::new(v.clone()),
-            }
-        }).collect();
-        let config_idx = self.current().add_constant(Constant::AstExprList(config_exprs));
+            })
+            .collect();
+        let config_idx = self
+            .current()
+            .add_constant(Constant::AstExprList(config_exprs));
 
         // Emit ConnectorDecl instruction
-        self.current().emit_abc(Op::ConnectorDecl, dest, type_idx as u8, config_idx as u8, 0);
+        self.current()
+            .emit_abc(Op::ConnectorDecl, dest, type_idx as u8, config_idx as u8, 0);
 
         // Set as global
-        let gname = self.current().add_constant(Constant::String(Arc::from(name)));
+        let gname = self
+            .current()
+            .add_constant(Constant::String(Arc::from(name)));
         self.current().emit_abx(Op::SetGlobal, dest, gname, 0);
 
         Ok(())
@@ -1279,19 +1496,21 @@ impl Compiler {
             }
             Expr::String(_) => None,
 
-            Expr::UnaryOp { op: UnaryOp::Neg, expr } => {
-                match Self::try_fold_const(expr)? {
-                    FoldedConst::Int(n) => Some(FoldedConst::Int(-n)),
-                    FoldedConst::Float(f) => Some(FoldedConst::Float(-f)),
-                    _ => None,
-                }
-            }
-            Expr::UnaryOp { op: UnaryOp::Not, expr } => {
-                match Self::try_fold_const(expr)? {
-                    FoldedConst::Bool(b) => Some(FoldedConst::Bool(!b)),
-                    _ => None,
-                }
-            }
+            Expr::UnaryOp {
+                op: UnaryOp::Neg,
+                expr,
+            } => match Self::try_fold_const(expr)? {
+                FoldedConst::Int(n) => Some(FoldedConst::Int(-n)),
+                FoldedConst::Float(f) => Some(FoldedConst::Float(-f)),
+                _ => None,
+            },
+            Expr::UnaryOp {
+                op: UnaryOp::Not,
+                expr,
+            } => match Self::try_fold_const(expr)? {
+                FoldedConst::Bool(b) => Some(FoldedConst::Bool(!b)),
+                _ => None,
+            },
 
             Expr::BinOp { left, op, right } => {
                 let l = Self::try_fold_const(left)?;
@@ -1313,11 +1532,15 @@ impl Compiler {
                 BinOp::Sub => Some(FoldedConst::Int(a.checked_sub(*b)?)),
                 BinOp::Mul => Some(FoldedConst::Int(a.checked_mul(*b)?)),
                 BinOp::Div => {
-                    if *b == 0 { return None; } // defer to runtime error
+                    if *b == 0 {
+                        return None;
+                    } // defer to runtime error
                     Some(FoldedConst::Int(a / b))
                 }
                 BinOp::Mod => {
-                    if *b == 0 { return None; }
+                    if *b == 0 {
+                        return None;
+                    }
                     Some(FoldedConst::Int(a % b))
                 }
                 BinOp::Pow => {
@@ -1342,11 +1565,15 @@ impl Compiler {
                 BinOp::Sub => Some(FoldedConst::Float(a - b)),
                 BinOp::Mul => Some(FoldedConst::Float(a * b)),
                 BinOp::Div => {
-                    if *b == 0.0 { return None; }
+                    if *b == 0.0 {
+                        return None;
+                    }
                     Some(FoldedConst::Float(a / b))
                 }
                 BinOp::Mod => {
-                    if *b == 0.0 { return None; }
+                    if *b == 0.0 {
+                        return None;
+                    }
                     Some(FoldedConst::Float(a % b))
                 }
                 BinOp::Pow => Some(FoldedConst::Float(a.powf(*b))),
@@ -1413,7 +1640,9 @@ impl Compiler {
                     self.current().emit_abx(Op::LoadFalse, dest, 0, 0);
                 }
                 FoldedConst::String(s) => {
-                    let idx = self.current().add_constant(Constant::String(Arc::from(s.as_str())));
+                    let idx = self
+                        .current()
+                        .add_constant(Constant::String(Arc::from(s.as_str())));
                     self.current().emit_abx(Op::LoadConst, dest, idx, 0);
                 }
             }
@@ -1430,7 +1659,9 @@ impl Compiler {
                 self.current().emit_abx(Op::LoadConst, dest, idx, 0);
             }
             Expr::Decimal(s) => {
-                let idx = self.current().add_constant(Constant::Decimal(Arc::from(s.as_str())));
+                let idx = self
+                    .current()
+                    .add_constant(Constant::Decimal(Arc::from(s.as_str())));
                 self.current().emit_abx(Op::LoadConst, dest, idx, 0);
             }
             Expr::String(s) => {
@@ -1454,7 +1685,9 @@ impl Compiler {
                 } else if let Some(uv) = self.resolve_upvalue(name) {
                     self.current().emit_abc(Op::GetUpvalue, dest, uv, 0, 0);
                 } else {
-                    let idx = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
+                    let idx = self
+                        .current()
+                        .add_constant(Constant::String(Arc::from(name.as_str())));
                     self.current().emit_abx(Op::GetGlobal, dest, idx, 0);
                 }
             }
@@ -1556,7 +1789,8 @@ impl Compiler {
                         let r = self.current().alloc_register();
                         self.compile_expr(el, r)?;
                     }
-                    self.current().emit_abc(Op::NewList, dest, start, elements.len() as u8, 0);
+                    self.current()
+                        .emit_abc(Op::NewList, dest, start, elements.len() as u8, 0);
                     for _ in elements {
                         self.current().free_register();
                     }
@@ -1574,7 +1808,8 @@ impl Compiler {
                         let vr = self.current().alloc_register();
                         self.compile_expr(val, vr)?;
                     }
-                    self.current().emit_abc(Op::NewMap, dest, start, pairs.len() as u8, 0);
+                    self.current()
+                        .emit_abc(Op::NewMap, dest, start, pairs.len() as u8, 0);
                     for _ in 0..pairs.len() * 2 {
                         self.current().free_register();
                     }
@@ -1585,7 +1820,8 @@ impl Compiler {
                 let idx_reg = self.current().alloc_register();
                 self.compile_expr(object, obj_reg)?;
                 self.compile_expr(index, idx_reg)?;
-                self.current().emit_abc(Op::GetIndex, dest, obj_reg, idx_reg, 0);
+                self.current()
+                    .emit_abc(Op::GetIndex, dest, obj_reg, idx_reg, 0);
                 self.current().free_register();
                 self.current().free_register();
             }
@@ -1617,7 +1853,13 @@ impl Compiler {
                 self.compile_expr(start, start_reg)?;
                 self.compile_expr(end, end_reg)?;
                 // CallBuiltin Range with 2 args
-                self.current().emit_abc(Op::CallBuiltin, dest, BuiltinId::Range as u8, start_reg, 0);
+                self.current().emit_abc(
+                    Op::CallBuiltin,
+                    dest,
+                    BuiltinId::Range as u8,
+                    start_reg,
+                    0,
+                );
                 // Encode arg count in next instruction
                 self.current().emit_abc(Op::Move, 2, 0, 0, 0); // arg count = 2
                 self.current().free_register();
@@ -1641,7 +1883,9 @@ impl Compiler {
                     } else if let Some(uv) = self.resolve_upvalue(name) {
                         self.current().emit_abc(Op::SetUpvalue, dest, uv, 0, 0);
                     } else {
-                        let idx = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
+                        let idx = self
+                            .current()
+                            .add_constant(Constant::String(Arc::from(name.as_str())));
                         self.current().emit_abx(Op::SetGlobal, dest, idx, 0);
                     }
                 } else if let Expr::Index { object, index } = target.as_ref() {
@@ -1652,13 +1896,16 @@ impl Compiler {
                     self.compile_expr(index, idx_reg)?;
                     self.compile_expr(value, dest)?;
                     // SetIndex: a=value, b=object, c=index
-                    self.current().emit_abc(Op::SetIndex, dest, obj_reg, idx_reg, 0);
+                    self.current()
+                        .emit_abc(Op::SetIndex, dest, obj_reg, idx_reg, 0);
                     // Write the modified object back to the variable
                     if let Expr::Ident(name) = object.as_ref() {
                         if let Some(reg) = self.resolve_local(name) {
                             self.current().emit_abc(Op::Move, reg, obj_reg, 0, 0);
                         } else {
-                            let c_idx = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
+                            let c_idx = self
+                                .current()
+                                .add_constant(Constant::String(Arc::from(name.as_str())));
                             self.current().emit_abx(Op::SetGlobal, obj_reg, c_idx, 0);
                         }
                     }
@@ -1673,14 +1920,19 @@ impl Compiler {
                         self.compile_expr(value, dest)?;
                         // Use SetIndex with string key for member assignment
                         let key_reg = self.current().alloc_register();
-                        let key_idx = self.current().add_constant(Constant::String(Arc::from(field.as_str())));
+                        let key_idx = self
+                            .current()
+                            .add_constant(Constant::String(Arc::from(field.as_str())));
                         self.current().emit_abx(Op::LoadConst, key_reg, key_idx, 0);
-                        self.current().emit_abc(Op::SetIndex, dest, obj_reg, key_reg, 0);
+                        self.current()
+                            .emit_abc(Op::SetIndex, dest, obj_reg, key_reg, 0);
                         // Write back
                         if let Some(reg) = self.resolve_local(name) {
                             self.current().emit_abc(Op::Move, reg, obj_reg, 0, 0);
                         } else {
-                            let c_idx = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
+                            let c_idx = self
+                                .current()
+                                .add_constant(Constant::String(Arc::from(name.as_str())));
                             self.current().emit_abx(Op::SetGlobal, obj_reg, c_idx, 0);
                         }
                         self.current().free_register(); // key_reg
@@ -1695,8 +1947,11 @@ impl Compiler {
             Expr::Member { object, field } => {
                 let obj_reg = self.current().alloc_register();
                 self.compile_expr(object, obj_reg)?;
-                let field_idx = self.current().add_constant(Constant::String(Arc::from(field.as_str())));
-                self.current().emit_abc(Op::GetMember, dest, obj_reg, field_idx as u8, 0);
+                let field_idx = self
+                    .current()
+                    .add_constant(Constant::String(Arc::from(field.as_str())));
+                self.current()
+                    .emit_abc(Op::GetMember, dest, obj_reg, field_idx as u8, 0);
                 self.current().free_register();
             }
             Expr::NamedArg { .. } => {
@@ -1705,31 +1960,44 @@ impl Compiler {
             }
             Expr::StructInit { name, fields } => {
                 // Compile struct init: load type name, compile field values, emit NewStruct
-                let name_idx = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
+                let name_idx = self
+                    .current()
+                    .add_constant(Constant::String(Arc::from(name.as_str())));
                 let start = self.current().next_register;
                 for (fname, fexpr) in fields {
                     let fname_reg = self.current().alloc_register();
-                    let fname_idx = self.current().add_constant(Constant::String(Arc::from(fname.as_str())));
-                    self.current().emit_abx(Op::LoadConst, fname_reg, fname_idx, 0);
+                    let fname_idx = self
+                        .current()
+                        .add_constant(Constant::String(Arc::from(fname.as_str())));
+                    self.current()
+                        .emit_abx(Op::LoadConst, fname_reg, fname_idx, 0);
                     let fval_reg = self.current().alloc_register();
                     self.compile_expr(fexpr, fval_reg)?;
                 }
-                self.current().emit_abc(Op::NewStruct, dest, name_idx as u8, fields.len() as u8, 0);
+                self.current()
+                    .emit_abc(Op::NewStruct, dest, name_idx as u8, fields.len() as u8, 0);
                 // Encode start register in next instruction
                 self.current().emit_abc(Op::Move, start, 0, 0, 0);
                 for _ in 0..fields.len() * 2 {
                     self.current().free_register();
                 }
             }
-            Expr::EnumVariant { enum_name, variant, args } => {
+            Expr::EnumVariant {
+                enum_name,
+                variant,
+                args,
+            } => {
                 let full_name = format!("{enum_name}::{variant}");
-                let name_idx = self.current().add_constant(Constant::String(Arc::from(full_name.as_str())));
+                let name_idx = self
+                    .current()
+                    .add_constant(Constant::String(Arc::from(full_name.as_str())));
                 let start = self.current().next_register;
                 for arg in args {
                     let r = self.current().alloc_register();
                     self.compile_expr(arg, r)?;
                 }
-                self.current().emit_abc(Op::NewEnum, dest, name_idx as u8, start, 0);
+                self.current()
+                    .emit_abc(Op::NewEnum, dest, name_idx as u8, start, 0);
                 // Encode arg count
                 self.current().emit_abc(Op::Move, args.len() as u8, 0, 0, 0);
                 for _ in args {
@@ -1740,32 +2008,31 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_call(
-        &mut self,
-        function: &Expr,
-        args: &[Expr],
-        dest: u8,
-    ) -> Result<(), TlError> {
+    fn compile_call(&mut self, function: &Expr, args: &[Expr], dest: u8) -> Result<(), TlError> {
         // Check for builtin calls
-        if let Expr::Ident(name) = function {
-            if let Some(builtin_id) = BuiltinId::from_name(name) {
-                return self.compile_builtin_call(builtin_id, args, dest);
-            }
+        if let Expr::Ident(name) = function
+            && let Some(builtin_id) = BuiltinId::from_name(name)
+        {
+            return self.compile_builtin_call(builtin_id, args, dest);
         }
 
         // Method call: obj.method(args) -> MethodCall
         if let Expr::Member { object, field } = function {
             let obj_reg = self.current().alloc_register();
             self.compile_expr(object, obj_reg)?;
-            let method_idx = self.current().add_constant(Constant::String(Arc::from(field.as_str())));
+            let method_idx = self
+                .current()
+                .add_constant(Constant::String(Arc::from(field.as_str())));
             let args_start = self.current().next_register;
             for arg in args {
                 let r = self.current().alloc_register();
                 self.compile_expr(arg, r)?;
             }
-            self.current().emit_abc(Op::MethodCall, dest, obj_reg, method_idx as u8, 0);
+            self.current()
+                .emit_abc(Op::MethodCall, dest, obj_reg, method_idx as u8, 0);
             // Next instruction: args_start, arg_count
-            self.current().emit_abc(Op::Move, args_start, args.len() as u8, 0, 0);
+            self.current()
+                .emit_abc(Op::Move, args_start, args.len() as u8, 0, 0);
             for _ in args {
                 self.current().free_register();
             }
@@ -1783,7 +2050,8 @@ impl Compiler {
             self.compile_expr(arg, r)?;
         }
 
-        self.current().emit_abc(Op::Call, func_reg, args_start, args.len() as u8, 0);
+        self.current()
+            .emit_abc(Op::Call, func_reg, args_start, args.len() as u8, 0);
 
         // Free arg registers
         for _ in args {
@@ -1811,7 +2079,8 @@ impl Compiler {
             self.compile_expr(arg, r)?;
         }
 
-        self.current().emit_abc(Op::CallBuiltin, dest, builtin_id as u8, args_start, 0);
+        self.current()
+            .emit_abc(Op::CallBuiltin, dest, builtin_id as u8, args_start, 0);
         // Encode arg count
         self.current().emit_abc(Op::Move, args.len() as u8, 0, 0, 0); // arg count marker
 
@@ -1830,8 +2099,10 @@ impl Compiler {
             } else {
                 let moved_reg = self.current().alloc_register();
                 self.current().emit_abc(Op::LoadMoved, moved_reg, 0, 0, 0);
-                let idx = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
-                self.current().emit_abx(Op::SetGlobal, moved_reg, idx as u16, 0);
+                let idx = self
+                    .current()
+                    .add_constant(Constant::String(Arc::from(name.as_str())));
+                self.current().emit_abx(Op::SetGlobal, moved_reg, idx, 0);
                 self.current().free_register();
             }
         }
@@ -1840,24 +2111,29 @@ impl Compiler {
     /// Table operations recognized by the compiler for Op::TablePipe emission.
     /// Must match what the VM's handle_table_pipe expects for the legacy path.
     const TABLE_OPS: &'static [&'static str] = &[
-        "filter", "select", "sort", "with", "aggregate",
-        "join", "head", "limit", "collect", "show",
-        "describe", "write_csv", "write_parquet",
+        "filter",
+        "select",
+        "sort",
+        "with",
+        "aggregate",
+        "join",
+        "head",
+        "limit",
+        "collect",
+        "show",
+        "describe",
+        "write_csv",
+        "write_parquet",
     ];
 
-    fn compile_pipe(
-        &mut self,
-        left: &Expr,
-        right: &Expr,
-        dest: u8,
-    ) -> Result<(), TlError> {
+    fn compile_pipe(&mut self, left: &Expr, right: &Expr, dest: u8) -> Result<(), TlError> {
         // Try IR-optimized path for table pipe chains
-        if let Some((source, ops)) = self.try_extract_table_pipe_chain(left, right) {
-            if let Ok(plan) = tl_ir::build_query_plan(&source, &ops) {
-                let optimized = tl_ir::optimize(plan);
-                let lowered = tl_ir::lower_plan(&optimized);
-                return self.emit_optimized_plan(left, &source, &lowered, dest);
-            }
+        if let Some((source, ops)) = self.try_extract_table_pipe_chain(left, right)
+            && let Ok(plan) = tl_ir::build_query_plan(&source, &ops)
+        {
+            let optimized = tl_ir::optimize(plan);
+            let lowered = tl_ir::lower_plan(&optimized);
+            return self.emit_optimized_plan(left, &source, &lowered, dest);
         }
         // Fall back to legacy path
         self.compile_pipe_legacy(left, right, dest)
@@ -1949,13 +2225,14 @@ impl Compiler {
 
         // Emit TablePipe for each lowered operation
         for (op_name, args) in lowered_ops {
-            let args_idx = self.current().add_constant(
-                Constant::AstExprList(args.clone())
-            );
-            let op_idx = self.current().add_constant(
-                Constant::String(Arc::from(op_name.as_str()))
-            );
-            self.current().emit_abc(Op::TablePipe, left_reg, op_idx as u8, args_idx as u8, 0);
+            let args_idx = self
+                .current()
+                .add_constant(Constant::AstExprList(args.clone()));
+            let op_idx = self
+                .current()
+                .add_constant(Constant::String(Arc::from(op_name.as_str())));
+            self.current()
+                .emit_abc(Op::TablePipe, left_reg, op_idx as u8, args_idx as u8, 0);
         }
 
         if left_reg != dest {
@@ -1965,12 +2242,7 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_pipe_legacy(
-        &mut self,
-        left: &Expr,
-        right: &Expr,
-        dest: u8,
-    ) -> Result<(), TlError> {
+    fn compile_pipe_legacy(&mut self, left: &Expr, right: &Expr, dest: u8) -> Result<(), TlError> {
         let left_reg = self.current().alloc_register();
         self.compile_expr(left, left_reg)?;
 
@@ -1983,13 +2255,19 @@ impl Compiler {
                     // Check if this is a table operation
                     if Self::TABLE_OPS.contains(&fname.as_str()) {
                         // Store AST args as constant for table pipe
-                        let args_idx = self.current().add_constant(
-                            Constant::AstExprList(args.clone())
+                        let args_idx = self
+                            .current()
+                            .add_constant(Constant::AstExprList(args.clone()));
+                        let op_idx = self
+                            .current()
+                            .add_constant(Constant::String(Arc::from(fname.as_str())));
+                        self.current().emit_abc(
+                            Op::TablePipe,
+                            left_reg,
+                            op_idx as u8,
+                            args_idx as u8,
+                            0,
                         );
-                        let op_idx = self.current().add_constant(
-                            Constant::String(Arc::from(fname.as_str()))
-                        );
-                        self.current().emit_abc(Op::TablePipe, left_reg, op_idx as u8, args_idx as u8, 0);
                         if left_reg != dest {
                             self.current().emit_abc(Op::Move, dest, left_reg, 0, 0);
                         }
@@ -2005,8 +2283,15 @@ impl Compiler {
                             let r = self.current().alloc_register();
                             self.compile_expr(arg, r)?;
                         }
-                        self.current().emit_abc(Op::CallBuiltin, dest, builtin_id as u8, args_start, 0);
-                        self.current().emit_abc(Op::Move, (args.len() + 1) as u8, 0, 0, 0);
+                        self.current().emit_abc(
+                            Op::CallBuiltin,
+                            dest,
+                            builtin_id as u8,
+                            args_start,
+                            0,
+                        );
+                        self.current()
+                            .emit_abc(Op::Move, (args.len() + 1) as u8, 0, 0, 0);
                         for _ in args {
                             self.current().free_register();
                         }
@@ -2030,7 +2315,8 @@ impl Compiler {
                 }
 
                 let total_args = args.len() + 1;
-                self.current().emit_abc(Op::Call, func_reg, args_start, total_args as u8, 0);
+                self.current()
+                    .emit_abc(Op::Call, func_reg, args_start, total_args as u8, 0);
 
                 for _ in 0..total_args {
                     self.current().free_register();
@@ -2044,18 +2330,23 @@ impl Compiler {
             Expr::Ident(name) => {
                 // Pipe into named function with left as only arg
                 if let Some(builtin_id) = BuiltinId::from_name(name) {
-                    self.current().emit_abc(Op::CallBuiltin, dest, builtin_id as u8, left_reg, 0);
+                    self.current()
+                        .emit_abc(Op::CallBuiltin, dest, builtin_id as u8, left_reg, 0);
                     self.current().emit_abc(Op::Move, 1, 0, 0, 0);
                 } else {
                     let func_reg = self.current().alloc_register();
-                    let name_idx = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
-                    self.current().emit_abx(Op::GetGlobal, func_reg, name_idx, 0);
+                    let name_idx = self
+                        .current()
+                        .add_constant(Constant::String(Arc::from(name.as_str())));
+                    self.current()
+                        .emit_abx(Op::GetGlobal, func_reg, name_idx, 0);
 
                     let args_start = self.current().next_register;
                     let first_arg = self.current().alloc_register();
                     self.current().emit_abc(Op::Move, first_arg, left_reg, 0, 0);
 
-                    self.current().emit_abc(Op::Call, func_reg, args_start, 1, 0);
+                    self.current()
+                        .emit_abc(Op::Call, func_reg, args_start, 1, 0);
                     if func_reg != dest {
                         self.current().emit_abc(Op::Move, dest, func_reg, 0, 0);
                     }
@@ -2064,7 +2355,9 @@ impl Compiler {
                 }
             }
             _ => {
-                return Err(compile_err("Right side of |> must be a function call".to_string()));
+                return Err(compile_err(
+                    "Right side of |> must be a function call".to_string(),
+                ));
             }
         }
 
@@ -2110,7 +2403,12 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_match(&mut self, subject: &Expr, arms: &[MatchArm], dest: u8) -> Result<(), TlError> {
+    fn compile_match(
+        &mut self,
+        subject: &Expr,
+        arms: &[MatchArm],
+        dest: u8,
+    ) -> Result<(), TlError> {
         let subj_reg = self.current().alloc_register();
         self.compile_expr(subject, subj_reg)?;
 
@@ -2198,7 +2496,8 @@ impl Compiler {
                 let pat_reg = self.current().alloc_register();
                 self.compile_expr(expr, pat_reg)?;
                 let result_reg = self.current().alloc_register();
-                self.current().emit_abc(Op::TestMatch, subj_reg, pat_reg, result_reg, 0);
+                self.current()
+                    .emit_abc(Op::TestMatch, subj_reg, pat_reg, result_reg, 0);
 
                 let jump_false = self.current().current_pos();
                 self.current().emit_abx(Op::JumpIfFalse, result_reg, 0, 0);
@@ -2207,10 +2506,22 @@ impl Compiler {
 
                 self.compile_guard_and_body(arm, dest, end_jumps, jump_false)?;
             }
-            Pattern::Enum { type_name: _, variant, args } => {
-                let variant_const = self.current().add_constant(Constant::String(Arc::from(variant.as_str())));
+            Pattern::Enum {
+                type_name: _,
+                variant,
+                args,
+            } => {
+                let variant_const = self
+                    .current()
+                    .add_constant(Constant::String(Arc::from(variant.as_str())));
                 let result_reg = self.current().alloc_register();
-                self.current().emit_abc(Op::MatchEnum, subj_reg, variant_const as u8, result_reg, 0);
+                self.current().emit_abc(
+                    Op::MatchEnum,
+                    subj_reg,
+                    variant_const as u8,
+                    result_reg,
+                    0,
+                );
 
                 let jump_false = self.current().current_pos();
                 self.current().emit_abx(Op::JumpIfFalse, result_reg, 0, 0);
@@ -2221,7 +2532,8 @@ impl Compiler {
                     match arg_pat {
                         Pattern::Binding(name) => {
                             let local = self.add_local(name.clone());
-                            self.current().emit_abc(Op::ExtractField, local, subj_reg, i as u8, 0);
+                            self.current()
+                                .emit_abc(Op::ExtractField, local, subj_reg, i as u8, 0);
                         }
                         Pattern::Wildcard => {}
                         _ => {}
@@ -2230,14 +2542,21 @@ impl Compiler {
 
                 self.compile_guard_and_body(arm, dest, end_jumps, jump_false)?;
             }
-            Pattern::Struct { name: struct_name, fields } => {
+            Pattern::Struct {
+                name: struct_name,
+                fields,
+            } => {
                 // For named structs, check struct type via TestMatch
                 let jump_false = if let Some(sname) = struct_name {
-                    let name_const = self.current().add_constant(Constant::String(Arc::from(sname.as_str())));
+                    let name_const = self
+                        .current()
+                        .add_constant(Constant::String(Arc::from(sname.as_str())));
                     let name_reg = self.current().alloc_register();
-                    self.current().emit_abx(Op::LoadConst, name_reg, name_const as u16, 0);
+                    self.current()
+                        .emit_abx(Op::LoadConst, name_reg, name_const, 0);
                     let result_reg = self.current().alloc_register();
-                    self.current().emit_abc(Op::TestMatch, subj_reg, name_reg, result_reg, 0);
+                    self.current()
+                        .emit_abc(Op::TestMatch, subj_reg, name_reg, result_reg, 0);
                     let jf = self.current().current_pos();
                     self.current().emit_abx(Op::JumpIfFalse, result_reg, 0, 0);
                     self.current().free_register(); // result_reg
@@ -2249,7 +2568,9 @@ impl Compiler {
 
                 // Extract named fields
                 for field in fields {
-                    let fname_const = self.current().add_constant(Constant::String(Arc::from(field.name.as_str())));
+                    let fname_const = self
+                        .current()
+                        .add_constant(Constant::String(Arc::from(field.name.as_str())));
                     match &field.pattern {
                         None | Some(Pattern::Binding(_)) => {
                             let bind_name = match &field.pattern {
@@ -2257,12 +2578,24 @@ impl Compiler {
                                 _ => field.name.clone(),
                             };
                             let local = self.add_local(bind_name);
-                            self.current().emit_abc(Op::ExtractNamedField, local, subj_reg, fname_const as u8, 0);
+                            self.current().emit_abc(
+                                Op::ExtractNamedField,
+                                local,
+                                subj_reg,
+                                fname_const as u8,
+                                0,
+                            );
                         }
                         Some(Pattern::Wildcard) => {}
                         _ => {
                             let local = self.add_local(field.name.clone());
-                            self.current().emit_abc(Op::ExtractNamedField, local, subj_reg, fname_const as u8, 0);
+                            self.current().emit_abc(
+                                Op::ExtractNamedField,
+                                local,
+                                subj_reg,
+                                fname_const as u8,
+                                0,
+                            );
                         }
                     }
                 }
@@ -2298,19 +2631,28 @@ impl Compiler {
                 // Check list length
                 let len_builtin_reg = self.current().alloc_register();
                 // Call len(subj)
-                self.current().emit_abc(Op::CallBuiltin, len_builtin_reg, BuiltinId::Len as u8, subj_reg, 0);
+                self.current().emit_abc(
+                    Op::CallBuiltin,
+                    len_builtin_reg,
+                    BuiltinId::Len as u8,
+                    subj_reg,
+                    0,
+                );
                 self.current().emit_abc(Op::Move, 1, 0, 0, 0); // arg count = 1
 
                 let expected_len_reg = self.current().alloc_register();
                 let len_val = elements.len() as i64;
                 let len_const = self.current().add_constant(Constant::Int(len_val));
-                self.current().emit_abx(Op::LoadConst, expected_len_reg, len_const as u16, 0);
+                self.current()
+                    .emit_abx(Op::LoadConst, expected_len_reg, len_const, 0);
 
                 let cmp_reg = self.current().alloc_register();
                 if rest.is_some() {
-                    self.current().emit_abc(Op::Gte, cmp_reg, len_builtin_reg, expected_len_reg, 0);
+                    self.current()
+                        .emit_abc(Op::Gte, cmp_reg, len_builtin_reg, expected_len_reg, 0);
                 } else {
-                    self.current().emit_abc(Op::Eq, cmp_reg, len_builtin_reg, expected_len_reg, 0);
+                    self.current()
+                        .emit_abc(Op::Eq, cmp_reg, len_builtin_reg, expected_len_reg, 0);
                 }
                 let jump_false = self.current().current_pos();
                 self.current().emit_abx(Op::JumpIfFalse, cmp_reg, 0, 0);
@@ -2323,7 +2665,8 @@ impl Compiler {
                     match elem_pat {
                         Pattern::Binding(name) => {
                             let local = self.add_local(name.clone());
-                            self.current().emit_abc(Op::ExtractField, local, subj_reg, i as u8, 0);
+                            self.current()
+                                .emit_abc(Op::ExtractField, local, subj_reg, i as u8, 0);
                         }
                         Pattern::Wildcard => {}
                         _ => {}
@@ -2333,7 +2676,13 @@ impl Compiler {
                 // Rest pattern
                 if let Some(rest_name) = rest {
                     let local = self.add_local(rest_name.clone());
-                    self.current().emit_abc(Op::ExtractField, local, subj_reg, (elements.len() as u8) | 0x80, 0);
+                    self.current().emit_abc(
+                        Op::ExtractField,
+                        local,
+                        subj_reg,
+                        (elements.len() as u8) | 0x80,
+                        0,
+                    );
                 }
 
                 self.compile_guard_and_body(arm, dest, end_jumps, jump_false)?;
@@ -2347,7 +2696,13 @@ impl Compiler {
                             let pat_reg = self.current().alloc_register();
                             self.compile_expr(expr, pat_reg)?;
                             let result_reg = self.current().alloc_register();
-                            self.current().emit_abc(Op::TestMatch, subj_reg, pat_reg, result_reg, 0);
+                            self.current().emit_abc(
+                                Op::TestMatch,
+                                subj_reg,
+                                pat_reg,
+                                result_reg,
+                                0,
+                            );
                             let jump_true = self.current().current_pos();
                             self.current().emit_abx(Op::JumpIfTrue, result_reg, 0, 0);
                             match_jumps.push(jump_true);
@@ -2355,9 +2710,17 @@ impl Compiler {
                             self.current().free_register(); // pat_reg
                         }
                         Pattern::Enum { variant, .. } => {
-                            let variant_const = self.current().add_constant(Constant::String(Arc::from(variant.as_str())));
+                            let variant_const = self
+                                .current()
+                                .add_constant(Constant::String(Arc::from(variant.as_str())));
                             let result_reg = self.current().alloc_register();
-                            self.current().emit_abc(Op::MatchEnum, subj_reg, variant_const as u8, result_reg, 0);
+                            self.current().emit_abc(
+                                Op::MatchEnum,
+                                subj_reg,
+                                variant_const as u8,
+                                result_reg,
+                                0,
+                            );
                             let jump_true = self.current().current_pos();
                             self.current().emit_abx(Op::JumpIfTrue, result_reg, 0, 0);
                             match_jumps.push(jump_true);
@@ -2451,10 +2814,13 @@ impl Compiler {
                 let mut var_name = String::new();
                 let mut depth = 1;
                 for c in chars.by_ref() {
-                    if c == '{' { depth += 1; }
-                    else if c == '}' {
+                    if c == '{' {
+                        depth += 1;
+                    } else if c == '}' {
                         depth -= 1;
-                        if depth == 0 { break; }
+                        if depth == 0 {
+                            break;
+                        }
                     }
                     var_name.push(c);
                 }
@@ -2468,7 +2834,10 @@ impl Compiler {
                     Some('t') => current_literal.push('\t'),
                     Some('\\') => current_literal.push('\\'),
                     Some('"') => current_literal.push('"'),
-                    Some(c) => { current_literal.push('\\'); current_literal.push(c); }
+                    Some(c) => {
+                        current_literal.push('\\');
+                        current_literal.push(c);
+                    }
                     None => current_literal.push('\\'),
                 }
             } else {
@@ -2487,12 +2856,14 @@ impl Compiler {
         }
 
         // If no interpolation, just load the constant
-        if segments.len() == 1 {
-            if let StringSegment::Literal(ref lit) = segments[0] {
-                let idx = self.current().add_constant(Constant::String(Arc::from(lit.as_str())));
-                self.current().emit_abx(Op::LoadConst, dest, idx, 0);
-                return Ok(());
-            }
+        if segments.len() == 1
+            && let StringSegment::Literal(ref lit) = segments[0]
+        {
+            let idx = self
+                .current()
+                .add_constant(Constant::String(Arc::from(lit.as_str())));
+            self.current().emit_abx(Op::LoadConst, dest, idx, 0);
+            return Ok(());
         }
 
         // Compile first segment into dest
@@ -2512,7 +2883,9 @@ impl Compiler {
     fn compile_string_segment(&mut self, seg: &StringSegment, dest: u8) -> Result<(), TlError> {
         match seg {
             StringSegment::Literal(s) => {
-                let idx = self.current().add_constant(Constant::String(Arc::from(s.as_str())));
+                let idx = self
+                    .current()
+                    .add_constant(Constant::String(Arc::from(s.as_str())));
                 self.current().emit_abx(Op::LoadConst, dest, idx, 0);
             }
             StringSegment::Variable(name) => {
@@ -2525,11 +2898,14 @@ impl Compiler {
                 } else if let Some(uv) = self.resolve_upvalue(name) {
                     self.current().emit_abc(Op::GetUpvalue, var_reg, uv, 0, 0);
                 } else {
-                    let idx = self.current().add_constant(Constant::String(Arc::from(name.as_str())));
+                    let idx = self
+                        .current()
+                        .add_constant(Constant::String(Arc::from(name.as_str())));
                     self.current().emit_abx(Op::GetGlobal, var_reg, idx, 0);
                 }
                 // Convert to string via CallBuiltin Str
-                self.current().emit_abc(Op::CallBuiltin, dest, BuiltinId::Str as u8, var_reg, 0);
+                self.current()
+                    .emit_abc(Op::CallBuiltin, dest, BuiltinId::Str as u8, var_reg, 0);
                 self.current().emit_abc(Op::Move, 1, 0, 0, 0); // 1 arg
                 self.current().free_register(); // var_reg
             }
@@ -2544,29 +2920,40 @@ impl Compiler {
         match item {
             UseItem::Single(path) => {
                 let path_str = path.join(".");
-                let path_idx = self.current().add_constant(Constant::String(Arc::from(path_str.as_str())));
+                let path_idx = self
+                    .current()
+                    .add_constant(Constant::String(Arc::from(path_str.as_str())));
                 self.current().emit_abx(Op::Import, reg, path_idx, 0);
                 // A=0 (unused), B=kind=0 (Single), C=0xAB (use marker)
                 self.current().emit_abc(Op::Move, 0, 0, 0xAB, 0);
             }
             UseItem::Group(prefix, names) => {
                 let path_str = format!("{}.{{{}}}", prefix.join("."), names.join(","));
-                let path_idx = self.current().add_constant(Constant::String(Arc::from(path_str.as_str())));
+                let path_idx = self
+                    .current()
+                    .add_constant(Constant::String(Arc::from(path_str.as_str())));
                 self.current().emit_abx(Op::Import, reg, path_idx, 0);
                 self.current().emit_abc(Op::Move, 0, 1, 0xAB, 0); // B=1 Group
             }
             UseItem::Wildcard(path) => {
                 let path_str = format!("{}.*", path.join("."));
-                let path_idx = self.current().add_constant(Constant::String(Arc::from(path_str.as_str())));
+                let path_idx = self
+                    .current()
+                    .add_constant(Constant::String(Arc::from(path_str.as_str())));
                 self.current().emit_abx(Op::Import, reg, path_idx, 0);
                 self.current().emit_abc(Op::Move, 0, 2, 0xAB, 0); // B=2 Wildcard
             }
             UseItem::Aliased(path, alias) => {
                 let path_str = path.join(".");
-                let path_idx = self.current().add_constant(Constant::String(Arc::from(path_str.as_str())));
-                let alias_idx = self.current().add_constant(Constant::String(Arc::from(alias.as_str())));
+                let path_idx = self
+                    .current()
+                    .add_constant(Constant::String(Arc::from(path_str.as_str())));
+                let alias_idx = self
+                    .current()
+                    .add_constant(Constant::String(Arc::from(alias.as_str())));
                 self.current().emit_abx(Op::Import, reg, path_idx, 0);
-                self.current().emit_abc(Op::Move, alias_idx as u8, 3, 0xAB, 0); // B=3 Aliased
+                self.current()
+                    .emit_abc(Op::Move, alias_idx as u8, 3, 0xAB, 0); // B=3 Aliased
             }
         }
         self.current().free_register();
@@ -2610,7 +2997,12 @@ pub fn compile_with_source(program: &Program, source: &str) -> Result<Prototype,
                 compiler.compile_expr(expr, reg)?;
                 last_expr_reg = Some(reg);
             }
-            StmtKind::If { condition, then_body, else_ifs, else_body } if is_last && else_body.is_some() => {
+            StmtKind::If {
+                condition,
+                then_body,
+                else_ifs,
+                else_body,
+            } if is_last && else_body.is_some() => {
                 let dest = compiler.current().alloc_register();
                 compiler.compile_if_as_expr(condition, then_body, else_ifs, else_body, dest)?;
                 last_expr_reg = Some(dest);
@@ -2665,7 +3057,12 @@ mod tests {
         let program = parse("42").unwrap();
         let proto = compile(&program).unwrap();
         assert!(!proto.code.is_empty());
-        assert!(proto.constants.iter().any(|c| matches!(c, Constant::Int(42))));
+        assert!(
+            proto
+                .constants
+                .iter()
+                .any(|c| matches!(c, Constant::Int(42)))
+        );
     }
 
     #[test]
@@ -2675,7 +3072,12 @@ mod tests {
         let proto = compile(&program).unwrap();
         assert!(!proto.code.is_empty());
         // Should fold to constant 3
-        assert!(proto.constants.iter().any(|c| matches!(c, Constant::Int(3))));
+        assert!(
+            proto
+                .constants
+                .iter()
+                .any(|c| matches!(c, Constant::Int(3)))
+        );
     }
 
     #[test]
@@ -2683,9 +3085,10 @@ mod tests {
         let program = parse("fn add(a, b) { a + b }").unwrap();
         let proto = compile(&program).unwrap();
         // Should have a Closure instruction
-        let has_closure = proto.code.iter().any(|&inst| {
-            decode_op(inst) == Op::Closure
-        });
+        let has_closure = proto
+            .code
+            .iter()
+            .any(|&inst| decode_op(inst) == Op::Closure);
         assert!(has_closure);
     }
 
@@ -2693,9 +3096,10 @@ mod tests {
     fn test_compile_closure() {
         let program = parse("let f = (x) => x * 2").unwrap();
         let proto = compile(&program).unwrap();
-        let has_closure = proto.code.iter().any(|&inst| {
-            decode_op(inst) == Op::Closure
-        });
+        let has_closure = proto
+            .code
+            .iter()
+            .any(|&inst| decode_op(inst) == Op::Closure);
         assert!(has_closure);
     }
 
@@ -2706,31 +3110,54 @@ mod tests {
         // 2 + 3 should fold to 5 at compile time
         let program = parse("2 + 3").unwrap();
         let proto = compile(&program).unwrap();
-        assert!(proto.constants.iter().any(|c| matches!(c, Constant::Int(5))));
+        assert!(
+            proto
+                .constants
+                .iter()
+                .any(|c| matches!(c, Constant::Int(5)))
+        );
         // Should NOT have an Add instruction
         let has_add = proto.code.iter().any(|&inst| decode_op(inst) == Op::Add);
-        assert!(!has_add, "Folded expression should not have Add instruction");
+        assert!(
+            !has_add,
+            "Folded expression should not have Add instruction"
+        );
     }
 
     #[test]
     fn test_fold_float_multiplication() {
         let program = parse("2.0 * 3.0").unwrap();
         let proto = compile(&program).unwrap();
-        assert!(proto.constants.iter().any(|c| matches!(c, Constant::Float(f) if (*f - 6.0).abs() < f64::EPSILON)));
+        assert!(
+            proto
+                .constants
+                .iter()
+                .any(|c| matches!(c, Constant::Float(f) if (*f - 6.0).abs() < f64::EPSILON))
+        );
     }
 
     #[test]
     fn test_fold_string_concatenation() {
         let program = parse("\"hello\" + \" world\"").unwrap();
         let proto = compile(&program).unwrap();
-        assert!(proto.constants.iter().any(|c| matches!(c, Constant::String(s) if s.as_ref() == "hello world")));
+        assert!(
+            proto
+                .constants
+                .iter()
+                .any(|c| matches!(c, Constant::String(s) if s.as_ref() == "hello world"))
+        );
     }
 
     #[test]
     fn test_fold_negation() {
         let program = parse("-42").unwrap();
         let proto = compile(&program).unwrap();
-        assert!(proto.constants.iter().any(|c| matches!(c, Constant::Int(-42))));
+        assert!(
+            proto
+                .constants
+                .iter()
+                .any(|c| matches!(c, Constant::Int(-42)))
+        );
     }
 
     #[test]
@@ -2738,7 +3165,10 @@ mod tests {
         let program = parse("not true").unwrap();
         let proto = compile(&program).unwrap();
         // Should emit LoadFalse
-        let has_load_false = proto.code.iter().any(|&inst| decode_op(inst) == Op::LoadFalse);
+        let has_load_false = proto
+            .code
+            .iter()
+            .any(|&inst| decode_op(inst) == Op::LoadFalse);
         assert!(has_load_false, "'not true' should fold to false");
     }
 
@@ -2747,7 +3177,12 @@ mod tests {
         // 2 + 3 * 4 should fold to 14
         let program = parse("2 + 3 * 4").unwrap();
         let proto = compile(&program).unwrap();
-        assert!(proto.constants.iter().any(|c| matches!(c, Constant::Int(14))));
+        assert!(
+            proto
+                .constants
+                .iter()
+                .any(|c| matches!(c, Constant::Int(14)))
+        );
     }
 
     #[test]
@@ -2799,46 +3234,89 @@ mod tests {
         let program = parse("fn f() {\n  return 1\n  print(\"dead\")\n}").unwrap();
         let proto = compile(&program).unwrap();
         // Find the function prototype
-        let fn_proto = proto.constants.iter().find_map(|c| {
-            if let Constant::Prototype(p) = c { Some(p.clone()) } else { None }
-        }).expect("should have function prototype");
+        let fn_proto = proto
+            .constants
+            .iter()
+            .find_map(|c| {
+                if let Constant::Prototype(p) = c {
+                    Some(p.clone())
+                } else {
+                    None
+                }
+            })
+            .expect("should have function prototype");
         // The function should NOT have a CallBuiltin (print) after the Return
-        let return_pos = fn_proto.code.iter().position(|&inst| decode_op(inst) == Op::Return);
+        let return_pos = fn_proto
+            .code
+            .iter()
+            .position(|&inst| decode_op(inst) == Op::Return);
         assert!(return_pos.is_some(), "Should have a Return instruction");
         // No CallBuiltin after Return
-        let after_return: Vec<_> = fn_proto.code[return_pos.unwrap()+1..].iter()
+        let after_return: Vec<_> = fn_proto.code[return_pos.unwrap() + 1..]
+            .iter()
             .filter(|&&inst| decode_op(inst) == Op::CallBuiltin)
             .collect();
-        assert!(after_return.is_empty(), "Should not have CallBuiltin after Return");
+        assert!(
+            after_return.is_empty(),
+            "Should not have CallBuiltin after Return"
+        );
     }
 
     #[test]
     fn test_dce_after_break() {
         // Code after break in loop should not be compiled
-        let program = parse("fn f() {\n  while true {\n    break\n    print(\"dead\")\n  }\n}").unwrap();
+        let program =
+            parse("fn f() {\n  while true {\n    break\n    print(\"dead\")\n  }\n}").unwrap();
         let proto = compile(&program).unwrap();
-        let fn_proto = proto.constants.iter().find_map(|c| {
-            if let Constant::Prototype(p) = c { Some(p.clone()) } else { None }
-        }).expect("should have function prototype");
+        let fn_proto = proto
+            .constants
+            .iter()
+            .find_map(|c| {
+                if let Constant::Prototype(p) = c {
+                    Some(p.clone())
+                } else {
+                    None
+                }
+            })
+            .expect("should have function prototype");
         // Count CallBuiltin instructions — should be 0 (dead code eliminated)
-        let call_builtins: Vec<_> = fn_proto.code.iter()
+        let call_builtins: Vec<_> = fn_proto
+            .code
+            .iter()
             .filter(|&&inst| decode_op(inst) == Op::CallBuiltin)
             .collect();
-        assert!(call_builtins.is_empty(), "Should not have CallBuiltin after break");
+        assert!(
+            call_builtins.is_empty(),
+            "Should not have CallBuiltin after break"
+        );
     }
 
     #[test]
     fn test_dce_after_continue() {
         // Code after continue in loop should not be compiled
-        let program = parse("fn f() {\n  while true {\n    continue\n    print(\"dead\")\n  }\n}").unwrap();
+        let program =
+            parse("fn f() {\n  while true {\n    continue\n    print(\"dead\")\n  }\n}").unwrap();
         let proto = compile(&program).unwrap();
-        let fn_proto = proto.constants.iter().find_map(|c| {
-            if let Constant::Prototype(p) = c { Some(p.clone()) } else { None }
-        }).expect("should have function prototype");
-        let call_builtins: Vec<_> = fn_proto.code.iter()
+        let fn_proto = proto
+            .constants
+            .iter()
+            .find_map(|c| {
+                if let Constant::Prototype(p) = c {
+                    Some(p.clone())
+                } else {
+                    None
+                }
+            })
+            .expect("should have function prototype");
+        let call_builtins: Vec<_> = fn_proto
+            .code
+            .iter()
             .filter(|&&inst| decode_op(inst) == Op::CallBuiltin)
             .collect();
-        assert!(call_builtins.is_empty(), "Should not have CallBuiltin after continue");
+        assert!(
+            call_builtins.is_empty(),
+            "Should not have CallBuiltin after continue"
+        );
     }
 
     #[test]
@@ -2846,27 +3324,55 @@ mod tests {
         // If both branches return, code after if is dead
         let program = parse("fn f(x) {\n  if x {\n    return 1\n  } else {\n    return 2\n  }\n  print(\"dead\")\n}").unwrap();
         let proto = compile(&program).unwrap();
-        let fn_proto = proto.constants.iter().find_map(|c| {
-            if let Constant::Prototype(p) = c { Some(p.clone()) } else { None }
-        }).expect("should have function prototype");
-        let call_builtins: Vec<_> = fn_proto.code.iter()
+        let fn_proto = proto
+            .constants
+            .iter()
+            .find_map(|c| {
+                if let Constant::Prototype(p) = c {
+                    Some(p.clone())
+                } else {
+                    None
+                }
+            })
+            .expect("should have function prototype");
+        let call_builtins: Vec<_> = fn_proto
+            .code
+            .iter()
             .filter(|&&inst| decode_op(inst) == Op::CallBuiltin)
             .collect();
-        assert!(call_builtins.is_empty(), "Should not have CallBuiltin after if where both branches return");
+        assert!(
+            call_builtins.is_empty(),
+            "Should not have CallBuiltin after if where both branches return"
+        );
     }
 
     #[test]
     fn test_dce_if_one_branch_returns() {
         // If only one branch returns, code after if is NOT dead
-        let program = parse("fn f(x) {\n  if x {\n    return 1\n  }\n  print(\"alive\")\n  return 0\n}").unwrap();
+        let program =
+            parse("fn f(x) {\n  if x {\n    return 1\n  }\n  print(\"alive\")\n  return 0\n}")
+                .unwrap();
         let proto = compile(&program).unwrap();
-        let fn_proto = proto.constants.iter().find_map(|c| {
-            if let Constant::Prototype(p) = c { Some(p.clone()) } else { None }
-        }).expect("should have function prototype");
-        let call_builtins: Vec<_> = fn_proto.code.iter()
+        let fn_proto = proto
+            .constants
+            .iter()
+            .find_map(|c| {
+                if let Constant::Prototype(p) = c {
+                    Some(p.clone())
+                } else {
+                    None
+                }
+            })
+            .expect("should have function prototype");
+        let call_builtins: Vec<_> = fn_proto
+            .code
+            .iter()
             .filter(|&&inst| decode_op(inst) == Op::CallBuiltin)
             .collect();
-        assert!(!call_builtins.is_empty(), "Should have CallBuiltin after if where only one branch returns");
+        assert!(
+            !call_builtins.is_empty(),
+            "Should have CallBuiltin after if where only one branch returns"
+        );
     }
 
     #[test]
@@ -2875,30 +3381,59 @@ mod tests {
         let program = parse("fn outer() {\n  fn inner() {\n    return 1\n    print(\"dead\")\n  }\n  print(\"alive\")\n}").unwrap();
         let proto = compile(&program).unwrap();
         // The outer function should have CallBuiltin (print("alive"))
-        let outer_fn = proto.constants.iter().find_map(|c| {
-            if let Constant::Prototype(p) = c {
-                if p.name == "outer" { Some(p.clone()) } else { None }
-            } else { None }
-        }).expect("should have outer function");
-        let call_builtins: Vec<_> = outer_fn.code.iter()
+        let outer_fn = proto
+            .constants
+            .iter()
+            .find_map(|c| {
+                if let Constant::Prototype(p) = c {
+                    if p.name == "outer" {
+                        Some(p.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .expect("should have outer function");
+        let call_builtins: Vec<_> = outer_fn
+            .code
+            .iter()
             .filter(|&&inst| decode_op(inst) == Op::CallBuiltin)
             .collect();
-        assert!(!call_builtins.is_empty(), "Outer function should have CallBuiltin");
+        assert!(
+            !call_builtins.is_empty(),
+            "Outer function should have CallBuiltin"
+        );
     }
 
     #[test]
     fn test_dce_try_catch_independent() {
         // Return in try doesn't make catch dead
-        let program = parse("fn f() {\n  try {\n    return 1\n  } catch e {\n    print(e)\n  }\n}").unwrap();
+        let program =
+            parse("fn f() {\n  try {\n    return 1\n  } catch e {\n    print(e)\n  }\n}").unwrap();
         let proto = compile(&program).unwrap();
-        let fn_proto = proto.constants.iter().find_map(|c| {
-            if let Constant::Prototype(p) = c { Some(p.clone()) } else { None }
-        }).expect("should have function prototype");
+        let fn_proto = proto
+            .constants
+            .iter()
+            .find_map(|c| {
+                if let Constant::Prototype(p) = c {
+                    Some(p.clone())
+                } else {
+                    None
+                }
+            })
+            .expect("should have function prototype");
         // Catch block should still have its instructions compiled
-        let call_builtins: Vec<_> = fn_proto.code.iter()
+        let call_builtins: Vec<_> = fn_proto
+            .code
+            .iter()
             .filter(|&&inst| decode_op(inst) == Op::CallBuiltin)
             .collect();
-        assert!(!call_builtins.is_empty(), "Catch block should not be eliminated by try body return");
+        assert!(
+            !call_builtins.is_empty(),
+            "Catch block should not be eliminated by try body return"
+        );
     }
 
     #[test]

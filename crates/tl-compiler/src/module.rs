@@ -190,10 +190,7 @@ impl ModuleResolver {
 
     fn base_dir(&self) -> PathBuf {
         if let Some(ref current) = self.current_file {
-            current
-                .parent()
-                .unwrap_or(Path::new("."))
-                .to_path_buf()
+            current.parent().unwrap_or(Path::new(".")).to_path_buf()
         } else {
             self.root.clone()
         }
@@ -216,7 +213,8 @@ impl ModuleResolver {
 
         let pkg_name = &segments[0];
         let pkg_name_hyphen = pkg_name.replace('_', "-");
-        let pkg_root = package_roots.get(pkg_name.as_str())
+        let pkg_root = package_roots
+            .get(pkg_name.as_str())
             .or_else(|| package_roots.get(&pkg_name_hyphen))?;
 
         let remaining = &segments[1..];
@@ -227,13 +225,19 @@ impl ModuleResolver {
             for entry in &["lib.tl", "mod.tl", "main.tl"] {
                 let p = src.join(entry);
                 if p.exists() {
-                    return Some(ResolvedModule { file_path: p, item_name: None });
+                    return Some(ResolvedModule {
+                        file_path: p,
+                        item_name: None,
+                    });
                 }
             }
             for entry in &["mod.tl", "lib.tl"] {
                 let p = pkg_root.join(entry);
                 if p.exists() {
-                    return Some(ResolvedModule { file_path: p, item_name: None });
+                    return Some(ResolvedModule {
+                        file_path: p,
+                        item_name: None,
+                    });
                 }
             }
             return None;
@@ -245,19 +249,28 @@ impl ModuleResolver {
         // Try src/<rel>.tl
         let file_path = src.join(&rel).with_extension("tl");
         if file_path.exists() {
-            return Some(ResolvedModule { file_path, item_name: None });
+            return Some(ResolvedModule {
+                file_path,
+                item_name: None,
+            });
         }
 
         // Try src/<rel>/mod.tl
         let dir_path = src.join(&rel).join("mod.tl");
         if dir_path.exists() {
-            return Some(ResolvedModule { file_path: dir_path, item_name: None });
+            return Some(ResolvedModule {
+                file_path: dir_path,
+                item_name: None,
+            });
         }
 
         // Try <root>/<rel>.tl
         let file_path = pkg_root.join(&rel).with_extension("tl");
         if file_path.exists() {
-            return Some(ResolvedModule { file_path, item_name: None });
+            return Some(ResolvedModule {
+                file_path,
+                item_name: None,
+            });
         }
 
         // Parent fallback for item within module
@@ -266,7 +279,10 @@ impl ModuleResolver {
             let item = remaining.last().unwrap().clone();
             let parent_file = src.join(&parent).with_extension("tl");
             if parent_file.exists() {
-                return Some(ResolvedModule { file_path: parent_file, item_name: Some(item) });
+                return Some(ResolvedModule {
+                    file_path: parent_file,
+                    item_name: Some(item),
+                });
             }
         }
 
@@ -318,7 +334,9 @@ mod tests {
         let dir = setup_test_dir();
         let resolver = ModuleResolver::new(dir.path().to_path_buf());
 
-        let result = resolver.resolve_path(&["data".into(), "transforms".into()]).unwrap();
+        let result = resolver
+            .resolve_path(&["data".into(), "transforms".into()])
+            .unwrap();
         assert_eq!(result.file_path, dir.path().join("data/transforms.tl"));
         assert!(result.item_name.is_none());
     }
@@ -339,7 +357,9 @@ mod tests {
         let resolver = ModuleResolver::new(dir.path().to_path_buf());
 
         // "math.add" → math.tl file with item "add"
-        let result = resolver.resolve_path(&["math".into(), "add".into()]).unwrap();
+        let result = resolver
+            .resolve_path(&["math".into(), "add".into()])
+            .unwrap();
         assert_eq!(result.file_path, dir.path().join("math.tl"));
         assert_eq!(result.item_name, Some("add".into()));
     }

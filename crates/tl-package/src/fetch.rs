@@ -60,9 +60,9 @@ fn fetch_git(name: &str, dep: &DetailedDep, cache: &PackageCache) -> Result<Fetc
 
     cmd.arg(url).arg(&tmp_dir);
 
-    let output = cmd.output().map_err(|e| {
-        format!("Failed to run git clone for '{name}': {e}. Is git installed?")
-    })?;
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to run git clone for '{name}': {e}. Is git installed?"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -83,7 +83,9 @@ fn fetch_git(name: &str, dep: &DetailedDep, cache: &PackageCache) -> Result<Fetc
         if !checkout.status.success() {
             let stderr = String::from_utf8_lossy(&checkout.stderr);
             let _ = std::fs::remove_dir_all(&tmp_dir);
-            return Err(format!("Git checkout failed for '{name}' rev '{rev}': {stderr}"));
+            return Err(format!(
+                "Git checkout failed for '{name}' rev '{rev}': {stderr}"
+            ));
         }
     }
 
@@ -96,7 +98,9 @@ fn fetch_git(name: &str, dep: &DetailedDep, cache: &PackageCache) -> Result<Fetc
         .output()
         .map_err(|e| format!("Failed to get git rev: {e}"))?;
 
-    let rev = String::from_utf8_lossy(&rev_output.stdout).trim().to_string();
+    let rev = String::from_utf8_lossy(&rev_output.stdout)
+        .trim()
+        .to_string();
 
     // Read tl.toml from the cloned repo to get version
     let version = read_package_version(&tmp_dir, name)?;
@@ -144,7 +148,10 @@ fn fetch_path(
     };
 
     let canonical = abs_path.canonicalize().map_err(|e| {
-        format!("Path dependency '{name}' at '{}' not found: {e}", abs_path.display())
+        format!(
+            "Path dependency '{name}' at '{}' not found: {e}",
+            abs_path.display()
+        )
     })?;
 
     // Validate tl.toml exists
@@ -187,7 +194,11 @@ fn fetch_path(
 }
 
 /// Registry fetch — downloads from the package registry when the `registry` feature is enabled.
-fn fetch_registry(name: &str, version_req: &str, cache: &PackageCache) -> Result<FetchResult, String> {
+fn fetch_registry(
+    name: &str,
+    version_req: &str,
+    cache: &PackageCache,
+) -> Result<FetchResult, String> {
     #[cfg(feature = "registry")]
     {
         fetch_registry_impl(name, version_req, cache)
@@ -207,7 +218,11 @@ fn fetch_registry(name: &str, version_req: &str, cache: &PackageCache) -> Result
 }
 
 #[cfg(feature = "registry")]
-fn fetch_registry_impl(name: &str, version_req: &str, cache: &PackageCache) -> Result<FetchResult, String> {
+fn fetch_registry_impl(
+    name: &str,
+    version_req: &str,
+    cache: &PackageCache,
+) -> Result<FetchResult, String> {
     use crate::version::VersionReq;
 
     // Get package info from registry
@@ -218,17 +233,11 @@ fn fetch_registry_impl(name: &str, version_req: &str, cache: &PackageCache) -> R
     let matching = info
         .versions
         .iter()
-        .filter(|v| {
-            crate::version::Version::parse(&v.version)
-                .is_ok_and(|ver| req.matches(&ver))
-        })
+        .filter(|v| crate::version::Version::parse(&v.version).is_ok_and(|ver| req.matches(&ver)))
         .last(); // latest matching version
 
-    let version_entry = matching.ok_or_else(|| {
-        format!(
-            "No version of '{name}' matches requirement '{version_req}'"
-        )
-    })?;
+    let version_entry = matching
+        .ok_or_else(|| format!("No version of '{name}' matches requirement '{version_req}'"))?;
 
     let version = &version_entry.version;
 
@@ -254,8 +263,7 @@ fn fetch_registry_impl(name: &str, version_req: &str, cache: &PackageCache) -> R
     if cache_dir.exists() {
         let _ = std::fs::remove_dir_all(&cache_dir);
     }
-    std::fs::create_dir_all(&cache_dir)
-        .map_err(|e| format!("Failed to create cache dir: {e}"))?;
+    std::fs::create_dir_all(&cache_dir).map_err(|e| format!("Failed to create cache dir: {e}"))?;
 
     {
         use flate2::read::GzDecoder;
@@ -267,7 +275,10 @@ fn fetch_registry_impl(name: &str, version_req: &str, cache: &PackageCache) -> R
             .map_err(|e| format!("Failed to extract package: {e}"))?;
     }
 
-    let source_desc = format!("registry+{}@{version}", crate::registry_client::registry_url());
+    let source_desc = format!(
+        "registry+{}@{version}",
+        crate::registry_client::registry_url()
+    );
 
     Ok(FetchResult {
         name: name.to_string(),
@@ -337,12 +348,14 @@ mod tests {
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(
             dir.join("tl.toml"),
-            format!(
-                "[project]\nname = \"{name}\"\nversion = \"{version}\"\n"
-            ),
+            format!("[project]\nname = \"{name}\"\nversion = \"{version}\"\n"),
         )
         .unwrap();
-        std::fs::write(dir.join("src/lib.tl"), "pub fn hello() { print(\"hello\") }\n").unwrap();
+        std::fs::write(
+            dir.join("src/lib.tl"),
+            "pub fn hello() { print(\"hello\") }\n",
+        )
+        .unwrap();
     }
 
     #[test]

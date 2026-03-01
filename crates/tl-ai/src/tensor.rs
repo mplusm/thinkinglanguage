@@ -1,7 +1,7 @@
 // ThinkingLanguage — Tensor type
 // Wraps ndarray::ArrayD<f64> for numerical computing.
 
-use ndarray::{ArrayD, IxDyn, Axis};
+use ndarray::{ArrayD, Axis, IxDyn};
 use std::fmt;
 
 /// A dynamically-shaped tensor of f64 values.
@@ -131,27 +131,17 @@ impl TlTensor {
     /// Mean of all elements.
     pub fn mean(&self) -> f64 {
         let n = self.data.len() as f64;
-        if n == 0.0 {
-            0.0
-        } else {
-            self.data.sum() / n
-        }
+        if n == 0.0 { 0.0 } else { self.data.sum() / n }
     }
 
     /// Minimum element.
     pub fn min(&self) -> f64 {
-        self.data
-            .iter()
-            .cloned()
-            .fold(f64::INFINITY, f64::min)
+        self.data.iter().cloned().fold(f64::INFINITY, f64::min)
     }
 
     /// Maximum element.
     pub fn max(&self) -> f64 {
-        self.data
-            .iter()
-            .cloned()
-            .fold(f64::NEG_INFINITY, f64::max)
+        self.data.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
     }
 
     /// Get element by flat index for 1D tensors or multi-index.
@@ -164,7 +154,9 @@ impl TlTensor {
         if self.data.ndim() == 0 {
             return Err("Cannot slice a scalar tensor".to_string());
         }
-        let sliced = self.data.slice_axis(Axis(0), ndarray::Slice::from(start..end));
+        let sliced = self
+            .data
+            .slice_axis(Axis(0), ndarray::Slice::from(start..end));
         Ok(TlTensor {
             data: sliced.to_owned(),
             name: self.name.clone(),

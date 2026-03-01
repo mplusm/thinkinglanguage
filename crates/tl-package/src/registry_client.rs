@@ -46,10 +46,10 @@ pub struct PublishResponse {
 pub fn publish_package(project_root: &Path) -> Result<PublishResponse, String> {
     // Read manifest
     let manifest_path = project_root.join("tl.toml");
-    let content = std::fs::read_to_string(&manifest_path)
-        .map_err(|e| format!("Cannot read tl.toml: {e}"))?;
-    let manifest: crate::Manifest = toml::from_str(&content)
-        .map_err(|e| format!("Cannot parse tl.toml: {e}"))?;
+    let content =
+        std::fs::read_to_string(&manifest_path).map_err(|e| format!("Cannot read tl.toml: {e}"))?;
+    let manifest: crate::Manifest =
+        toml::from_str(&content).map_err(|e| format!("Cannot parse tl.toml: {e}"))?;
 
     let name = &manifest.project.name;
     let version = &manifest.project.version;
@@ -101,8 +101,8 @@ pub fn publish_package(project_root: &Path) -> Result<PublishResponse, String> {
 pub fn search_packages(query: &str) -> Result<Vec<SearchResult>, String> {
     let url = format!("{}/api/v1/search?q={}", registry_url(), query);
 
-    let resp = reqwest::blocking::get(&url)
-        .map_err(|e| format!("Failed to connect to registry: {e}"))?;
+    let resp =
+        reqwest::blocking::get(&url).map_err(|e| format!("Failed to connect to registry: {e}"))?;
 
     if resp.status().is_success() {
         resp.json::<Vec<SearchResult>>()
@@ -118,8 +118,8 @@ pub fn search_packages(query: &str) -> Result<Vec<SearchResult>, String> {
 pub fn get_package_info(name: &str) -> Result<PackageInfo, String> {
     let url = format!("{}/api/v1/packages/{}", registry_url(), name);
 
-    let resp = reqwest::blocking::get(&url)
-        .map_err(|e| format!("Failed to connect to registry: {e}"))?;
+    let resp =
+        reqwest::blocking::get(&url).map_err(|e| format!("Failed to connect to registry: {e}"))?;
 
     if resp.status().is_success() {
         resp.json::<PackageInfo>()
@@ -138,8 +138,8 @@ pub fn download_package(name: &str, version: &str) -> Result<Vec<u8>, String> {
         version
     );
 
-    let resp = reqwest::blocking::get(&url)
-        .map_err(|e| format!("Failed to connect to registry: {e}"))?;
+    let resp =
+        reqwest::blocking::get(&url).map_err(|e| format!("Failed to connect to registry: {e}"))?;
 
     if resp.status().is_success() {
         resp.bytes()
@@ -154,8 +154,8 @@ pub fn download_package(name: &str, version: &str) -> Result<Vec<u8>, String> {
 
 /// Create a gzipped tar archive from a project directory.
 fn create_tarball(project_root: &Path) -> Result<Vec<u8>, String> {
-    use flate2::write::GzEncoder;
     use flate2::Compression;
+    use flate2::write::GzEncoder;
     use tar::Builder;
 
     let buf = Vec::new();

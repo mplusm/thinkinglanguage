@@ -1,16 +1,16 @@
 // ThinkingLanguage — LLVM Backend (Phase 30)
 // AOT native compilation via inkwell (LLVM bindings)
 
-pub mod types;
-pub mod runtime;
-pub mod codegen;
 pub mod aot;
+pub mod codegen;
+pub mod runtime;
+pub mod types;
 
 #[cfg(test)]
 mod tests {
     use inkwell::context::Context;
-    use tl_compiler::{compile_with_source, VmValue, Vm};
     use tl_compiler::chunk::Prototype;
+    use tl_compiler::{Vm, VmValue, compile_with_source};
     use tl_parser::parse;
 
     use crate::codegen::LlvmCodegen;
@@ -29,7 +29,9 @@ mod tests {
         let codegen = LlvmCodegen::new(&context, "test");
         codegen.declare_runtime_helpers();
         let proto_ptr = &proto as *const Prototype;
-        codegen.compile_prototype(&proto, proto_ptr).expect("codegen failed");
+        codegen
+            .compile_prototype(&proto, proto_ptr)
+            .expect("codegen failed");
         codegen.verify().expect("verification failed");
         codegen.get_ir()
     }
@@ -44,19 +46,23 @@ mod tests {
         codegen.declare_runtime_helpers();
 
         let proto_ptr = &proto as *const Prototype;
-        codegen.compile_prototype(&proto, proto_ptr).expect("codegen failed");
+        codegen
+            .compile_prototype(&proto, proto_ptr)
+            .expect("codegen failed");
         codegen.verify().expect("verification failed");
 
-        let ee = codegen.module.create_jit_execution_engine(OptimizationLevel::None)
+        let ee = codegen
+            .module
+            .create_jit_execution_engine(OptimizationLevel::None)
             .expect("jit engine failed");
 
         crate::aot::register_runtime_symbols_ee(&ee);
 
-        type TlFnType = unsafe extern "C" fn(*mut VmContext, *const VmValue, i64, *mut VmValue) -> i64;
+        type TlFnType =
+            unsafe extern "C" fn(*mut VmContext, *const VmValue, i64, *mut VmValue) -> i64;
 
-        let compiled_fn: inkwell::execution_engine::JitFunction<TlFnType> = unsafe {
-            ee.get_function("tl_main").expect("tl_main not found")
-        };
+        let compiled_fn: inkwell::execution_engine::JitFunction<TlFnType> =
+            unsafe { ee.get_function("tl_main").expect("tl_main not found") };
 
         let mut vm = Vm::new();
         let mut vm_ctx = VmContext {
@@ -85,7 +91,10 @@ mod tests {
         let ir = source_to_ir("let x = 42");
         eprintln!("IR:\n{}", &ir[..std::cmp::min(ir.len(), 2000)]);
         assert!(ir.contains("tl_main"), "Should contain main function");
-        assert!(ir.contains("tl_rt_get_const"), "Should call tl_rt_get_const");
+        assert!(
+            ir.contains("tl_rt_get_const"),
+            "Should call tl_rt_get_const"
+        );
     }
 
     #[test]
@@ -109,39 +118,54 @@ mod tests {
         let codegen = LlvmCodegen::new(&context, "test");
         codegen.declare_runtime_helpers();
         let proto_ptr = &proto as *const Prototype;
-        codegen.compile_prototype(&proto, proto_ptr).expect("codegen failed");
+        codegen
+            .compile_prototype(&proto, proto_ptr)
+            .expect("codegen failed");
         let ir = codegen.get_ir();
         eprintln!("Control flow IR:\n{ir}");
         codegen.verify().expect("verification failed");
-        assert!(ir.contains("tl_rt_is_truthy"), "Should call tl_rt_is_truthy");
+        assert!(
+            ir.contains("tl_rt_is_truthy"),
+            "Should call tl_rt_is_truthy"
+        );
         assert!(ir.contains("br i1"), "Should have conditional branch");
     }
 
     #[test]
     fn test_function_call_ir() {
         let ir = source_to_ir("fn add(a, b) { a + b }\nadd(1, 2)");
-        assert!(ir.contains("tl_rt_call") || ir.contains("tl_rt_add"),
-            "Should contain call or add helper");
+        assert!(
+            ir.contains("tl_rt_call") || ir.contains("tl_rt_add"),
+            "Should contain call or add helper"
+        );
     }
 
     #[test]
     fn test_builtin_call_ir() {
         let ir = source_to_ir("println(42)");
-        assert!(ir.contains("tl_rt_call_builtin"), "Should call tl_rt_call_builtin");
+        assert!(
+            ir.contains("tl_rt_call_builtin"),
+            "Should call tl_rt_call_builtin"
+        );
     }
 
     #[test]
     fn test_list_ir() {
         let ir = source_to_ir("let x = [1, 2, 3]");
-        assert!(ir.contains("tl_rt_make_list"), "Should call tl_rt_make_list");
+        assert!(
+            ir.contains("tl_rt_make_list"),
+            "Should call tl_rt_make_list"
+        );
     }
 
     #[test]
     fn test_global_access_ir() {
         let ir = source_to_ir("let x = 1\nlet y = x + 2");
         // x is a global in top-level scope
-        assert!(ir.contains("tl_rt_get_const") || ir.contains("tl_rt_add"),
-            "Should contain const loading or add");
+        assert!(
+            ir.contains("tl_rt_get_const") || ir.contains("tl_rt_add"),
+            "Should contain const loading or add"
+        );
     }
 
     #[test]
@@ -236,8 +260,10 @@ mod tests {
 
     #[test]
     fn test_llvm_exec_string_concat() {
-        let output = run_llvm(r#"let a = "hello" + " " + "world"
-println(a)"#);
+        let output = run_llvm(
+            r#"let a = "hello" + " " + "world"
+println(a)"#,
+        );
         assert_eq!(output, vec!["hello world"]);
     }
 
@@ -250,7 +276,11 @@ println(a)"#);
     #[test]
     fn test_llvm_exec_float() {
         let output = run_llvm("println(3.14)");
-        assert!(output[0].starts_with("3.14"), "Expected 3.14, got {}", output[0]);
+        assert!(
+            output[0].starts_with("3.14"),
+            "Expected 3.14, got {}",
+            output[0]
+        );
     }
 
     #[test]

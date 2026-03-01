@@ -49,12 +49,22 @@ impl Prototype {
         use crate::opcode::*;
 
         let mut out = String::new();
-        let label = if self.name.is_empty() { "<script>" } else { &self.name };
+        let label = if self.name.is_empty() {
+            "<script>"
+        } else {
+            &self.name
+        };
         out.push_str(&format!("=== {label} ===\n"));
         out.push_str(&format!(
             "  arity={} locals={} registers={}{}\n",
-            self.arity, self.num_locals, self.num_registers,
-            if self.is_generator { " [generator]" } else { "" }
+            self.arity,
+            self.num_locals,
+            self.num_registers,
+            if self.is_generator {
+                " [generator]"
+            } else {
+                ""
+            }
         ));
 
         let mut offset = 0usize;
@@ -71,7 +81,11 @@ impl Prototype {
             // Line number
             let line_num = if inst_offset < self.lines.len() {
                 let ln = self.lines[inst_offset];
-                if ln == 0 { "----".to_string() } else { format!("{ln:04}") }
+                if ln == 0 {
+                    "----".to_string()
+                } else {
+                    format!("{ln:04}")
+                }
             } else {
                 "----".to_string()
             };
@@ -109,16 +123,38 @@ impl Prototype {
                 Op::SetUpvalue => format!("U{b} = R{a}"),
 
                 // ABC: arithmetic/comparison/logic
-                Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod | Op::Pow
-                | Op::Eq | Op::Neq | Op::Lt | Op::Gt | Op::Lte | Op::Gte
-                | Op::And | Op::Or | Op::Concat => {
+                Op::Add
+                | Op::Sub
+                | Op::Mul
+                | Op::Div
+                | Op::Mod
+                | Op::Pow
+                | Op::Eq
+                | Op::Neq
+                | Op::Lt
+                | Op::Gt
+                | Op::Lte
+                | Op::Gte
+                | Op::And
+                | Op::Or
+                | Op::Concat => {
                     let sym = match op {
-                        Op::Add => "+", Op::Sub => "-", Op::Mul => "*", Op::Div => "/",
-                        Op::Mod => "%", Op::Pow => "**",
-                        Op::Eq => "==", Op::Neq => "!=", Op::Lt => "<", Op::Gt => ">",
-                        Op::Lte => "<=", Op::Gte => ">=",
-                        Op::And => "and", Op::Or => "or", Op::Concat => "..",
-                        _ => "?"
+                        Op::Add => "+",
+                        Op::Sub => "-",
+                        Op::Mul => "*",
+                        Op::Div => "/",
+                        Op::Mod => "%",
+                        Op::Pow => "**",
+                        Op::Eq => "==",
+                        Op::Neq => "!=",
+                        Op::Lt => "<",
+                        Op::Gt => ">",
+                        Op::Lte => "<=",
+                        Op::Gte => ">=",
+                        Op::And => "and",
+                        Op::Or => "or",
+                        Op::Concat => "..",
+                        _ => "?",
                     };
                     format!("R{a} = R{b} {sym} R{c}")
                 }
@@ -997,7 +1033,10 @@ mod tests {
         let program = parse(source).unwrap();
         let proto = compile_with_source(&program, source).unwrap();
         let output = proto.disassemble();
-        assert!(output.contains("LoadConst"), "expected LoadConst in:\n{output}");
+        assert!(
+            output.contains("LoadConst"),
+            "expected LoadConst in:\n{output}"
+        );
         assert!(output.contains("42"), "expected 42 in:\n{output}");
     }
 
@@ -1027,6 +1066,9 @@ mod tests {
         let program = parse(source).unwrap();
         let proto = compile_with_source(&program, source).unwrap();
         let output = proto.disassemble();
-        assert!(output.contains("hello world"), "expected 'hello world' in:\n{output}");
+        assert!(
+            output.contains("hello world"),
+            "expected 'hello world' in:\n{output}"
+        );
     }
 }

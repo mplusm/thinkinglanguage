@@ -55,7 +55,12 @@ fn collect_defs_from_body(stmts: &[Stmt], defs: &mut Vec<(String, DefKind, Span)
             StmtKind::ImplBlock { methods, .. } => {
                 collect_defs_from_body(methods, defs);
             }
-            StmtKind::If { then_body, else_ifs, else_body, .. } => {
+            StmtKind::If {
+                then_body,
+                else_ifs,
+                else_body,
+                ..
+            } => {
                 collect_defs_from_body(then_body, defs);
                 for (_, body) in else_ifs {
                     collect_defs_from_body(body, defs);
@@ -67,7 +72,11 @@ fn collect_defs_from_body(stmts: &[Stmt], defs: &mut Vec<(String, DefKind, Span)
             StmtKind::While { body, .. } | StmtKind::For { body, .. } => {
                 collect_defs_from_body(body, defs);
             }
-            StmtKind::TryCatch { try_body, catch_body, .. } => {
+            StmtKind::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
                 collect_defs_from_body(try_body, defs);
                 collect_defs_from_body(catch_body, defs);
             }
@@ -129,7 +138,7 @@ pub fn find_ident_at_offset(source: &str, offset: usize) -> Option<(String, usiz
     let name = source[start..end].to_string();
 
     // Don't return pure numbers
-    if name.chars().next().map_or(true, |c| c.is_ascii_digit()) {
+    if name.chars().next().is_none_or(|c| c.is_ascii_digit()) {
         return None;
     }
 
@@ -143,7 +152,12 @@ pub fn collect_params_at_offset(program: &Program, offset: usize) -> Vec<String>
         if stmt.span.start > offset {
             break;
         }
-        if let StmtKind::FnDecl { params: fn_params, body, .. } = &stmt.kind {
+        if let StmtKind::FnDecl {
+            params: fn_params,
+            body,
+            ..
+        } = &stmt.kind
+        {
             // Check if offset is within this function's body
             if stmt.span.start <= offset && stmt.span.end >= offset {
                 for p in fn_params {
@@ -151,11 +165,15 @@ pub fn collect_params_at_offset(program: &Program, offset: usize) -> Vec<String>
                 }
                 // Check nested functions
                 for s in body {
-                    if let StmtKind::FnDecl { params: inner_params, .. } = &s.kind {
-                        if s.span.start <= offset && s.span.end >= offset {
-                            for p in inner_params {
-                                params.push(p.name.clone());
-                            }
+                    if let StmtKind::FnDecl {
+                        params: inner_params,
+                        ..
+                    } = &s.kind
+                        && s.span.start <= offset
+                        && s.span.end >= offset
+                    {
+                        for p in inner_params {
+                            params.push(p.name.clone());
                         }
                     }
                 }

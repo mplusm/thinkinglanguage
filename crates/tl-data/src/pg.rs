@@ -1,8 +1,8 @@
-use std::sync::Arc;
+use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
-use datafusion::arrow::array::RecordBatch;
 use postgres::{Client, NoTls};
+use std::sync::Arc;
 
 use crate::engine::DataEngine;
 
@@ -15,9 +15,9 @@ fn pg_type_to_arrow(pg_type: &postgres::types::Type) -> DataType {
         postgres::types::Type::INT8 => DataType::Int64,
         postgres::types::Type::FLOAT4 => DataType::Float32,
         postgres::types::Type::FLOAT8 => DataType::Float64,
-        postgres::types::Type::TEXT | postgres::types::Type::VARCHAR | postgres::types::Type::BPCHAR => {
-            DataType::Utf8
-        }
+        postgres::types::Type::TEXT
+        | postgres::types::Type::VARCHAR
+        | postgres::types::Type::BPCHAR => DataType::Utf8,
         _ => DataType::Utf8, // fallback: convert to string
     }
 }
@@ -53,33 +53,27 @@ impl DataEngine {
             let arrow_type = pg_type_to_arrow(col.type_());
             let array: Arc<dyn Array> = match arrow_type {
                 DataType::Boolean => {
-                    let values: Vec<Option<bool>> =
-                        rows.iter().map(|r| r.get(col_idx)).collect();
+                    let values: Vec<Option<bool>> = rows.iter().map(|r| r.get(col_idx)).collect();
                     Arc::new(BooleanArray::from(values))
                 }
                 DataType::Int16 => {
-                    let values: Vec<Option<i16>> =
-                        rows.iter().map(|r| r.get(col_idx)).collect();
+                    let values: Vec<Option<i16>> = rows.iter().map(|r| r.get(col_idx)).collect();
                     Arc::new(Int16Array::from(values))
                 }
                 DataType::Int32 => {
-                    let values: Vec<Option<i32>> =
-                        rows.iter().map(|r| r.get(col_idx)).collect();
+                    let values: Vec<Option<i32>> = rows.iter().map(|r| r.get(col_idx)).collect();
                     Arc::new(Int32Array::from(values))
                 }
                 DataType::Int64 => {
-                    let values: Vec<Option<i64>> =
-                        rows.iter().map(|r| r.get(col_idx)).collect();
+                    let values: Vec<Option<i64>> = rows.iter().map(|r| r.get(col_idx)).collect();
                     Arc::new(Int64Array::from(values))
                 }
                 DataType::Float32 => {
-                    let values: Vec<Option<f32>> =
-                        rows.iter().map(|r| r.get(col_idx)).collect();
+                    let values: Vec<Option<f32>> = rows.iter().map(|r| r.get(col_idx)).collect();
                     Arc::new(Float32Array::from(values))
                 }
                 DataType::Float64 => {
-                    let values: Vec<Option<f64>> =
-                        rows.iter().map(|r| r.get(col_idx)).collect();
+                    let values: Vec<Option<f64>> = rows.iter().map(|r| r.get(col_idx)).collect();
                     Arc::new(Float64Array::from(values))
                 }
                 _ => {

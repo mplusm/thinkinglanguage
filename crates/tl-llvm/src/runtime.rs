@@ -3,9 +3,9 @@
 // These bridge compiled code back into the VM runtime for dynamic dispatch.
 
 use std::sync::Arc;
-use tl_compiler::value::VmValue;
-use tl_compiler::chunk::{Constant, Prototype};
 use tl_compiler::Vm;
+use tl_compiler::chunk::{Constant, Prototype};
+use tl_compiler::value::VmValue;
 
 /// Bridge struct passed to compiled functions so they can access VM state.
 #[repr(C)]
@@ -31,7 +31,9 @@ pub extern "C" fn tl_rt_add(a: *const VmValue, b: *const VmValue, out: *mut VmVa
         (VmValue::Decimal(x), VmValue::Decimal(y)) => VmValue::Decimal(x + y),
         _ => VmValue::None,
     };
-    unsafe { out.write(result); }
+    unsafe {
+        out.write(result);
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -46,7 +48,9 @@ pub extern "C" fn tl_rt_sub(a: *const VmValue, b: *const VmValue, out: *mut VmVa
         (VmValue::Decimal(x), VmValue::Decimal(y)) => VmValue::Decimal(x - y),
         _ => VmValue::None,
     };
-    unsafe { out.write(result); }
+    unsafe {
+        out.write(result);
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -61,7 +65,9 @@ pub extern "C" fn tl_rt_mul(a: *const VmValue, b: *const VmValue, out: *mut VmVa
         (VmValue::Decimal(x), VmValue::Decimal(y)) => VmValue::Decimal(x * y),
         _ => VmValue::None,
     };
-    unsafe { out.write(result); }
+    unsafe {
+        out.write(result);
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -76,7 +82,9 @@ pub extern "C" fn tl_rt_div(a: *const VmValue, b: *const VmValue, out: *mut VmVa
         (VmValue::Decimal(x), VmValue::Decimal(y)) if !y.is_zero() => VmValue::Decimal(x / y),
         _ => VmValue::None,
     };
-    unsafe { out.write(result); }
+    unsafe {
+        out.write(result);
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -90,7 +98,9 @@ pub extern "C" fn tl_rt_mod(a: *const VmValue, b: *const VmValue, out: *mut VmVa
         (VmValue::Float(x), VmValue::Int(y)) => VmValue::Float(x % *y as f64),
         _ => VmValue::None,
     };
-    unsafe { out.write(result); }
+    unsafe {
+        out.write(result);
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -104,7 +114,9 @@ pub extern "C" fn tl_rt_pow(a: *const VmValue, b: *const VmValue, out: *mut VmVa
         (VmValue::Float(x), VmValue::Int(y)) => VmValue::Float(x.powi(*y as i32)),
         _ => VmValue::None,
     };
-    unsafe { out.write(result); }
+    unsafe {
+        out.write(result);
+    }
 }
 
 // ── Unary ops ──
@@ -118,14 +130,18 @@ pub extern "C" fn tl_rt_neg(a: *const VmValue, out: *mut VmValue) {
         VmValue::Decimal(x) => VmValue::Decimal(-x),
         _ => VmValue::None,
     };
-    unsafe { out.write(result); }
+    unsafe {
+        out.write(result);
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn tl_rt_not(a: *const VmValue, out: *mut VmValue) {
     let a = unsafe { &*a };
     let result = VmValue::Bool(!a.is_truthy());
-    unsafe { out.write(result); }
+    unsafe {
+        out.write(result);
+    }
 }
 
 // ── Comparison helpers (produce Bool VmValue) ──
@@ -135,7 +151,9 @@ pub extern "C" fn tl_rt_eq(a: *const VmValue, b: *const VmValue, out: *mut VmVal
     let a = unsafe { &*a };
     let b = unsafe { &*b };
     let result = VmValue::Bool(vmvalue_eq(a, b));
-    unsafe { out.write(result); }
+    unsafe {
+        out.write(result);
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -143,31 +161,41 @@ pub extern "C" fn tl_rt_neq(a: *const VmValue, b: *const VmValue, out: *mut VmVa
     let a = unsafe { &*a };
     let b = unsafe { &*b };
     let result = VmValue::Bool(!vmvalue_eq(a, b));
-    unsafe { out.write(result); }
+    unsafe {
+        out.write(result);
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn tl_rt_lt(a: *const VmValue, b: *const VmValue, out: *mut VmValue) {
     let result = VmValue::Bool(tl_rt_cmp(a, b) < 0);
-    unsafe { out.write(result); }
+    unsafe {
+        out.write(result);
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn tl_rt_gt(a: *const VmValue, b: *const VmValue, out: *mut VmValue) {
     let result = VmValue::Bool(tl_rt_cmp(a, b) > 0);
-    unsafe { out.write(result); }
+    unsafe {
+        out.write(result);
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn tl_rt_lte(a: *const VmValue, b: *const VmValue, out: *mut VmValue) {
     let result = VmValue::Bool(tl_rt_cmp(a, b) <= 0);
-    unsafe { out.write(result); }
+    unsafe {
+        out.write(result);
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn tl_rt_gte(a: *const VmValue, b: *const VmValue, out: *mut VmValue) {
     let result = VmValue::Bool(tl_rt_cmp(a, b) >= 0);
-    unsafe { out.write(result); }
+    unsafe {
+        out.write(result);
+    }
 }
 
 /// Comparison returning -1, 0, 1
@@ -177,26 +205,48 @@ pub extern "C" fn tl_rt_cmp(a: *const VmValue, b: *const VmValue) -> i64 {
     let b = unsafe { &*b };
     match (a, b) {
         (VmValue::Int(x), VmValue::Int(y)) => {
-            if x < y { -1 } else if x > y { 1 } else { 0 }
+            if x < y {
+                -1
+            } else if x > y {
+                1
+            } else {
+                0
+            }
         }
         (VmValue::Float(x), VmValue::Float(y)) => {
-            if x < y { -1 } else if x > y { 1 } else { 0 }
+            if x < y {
+                -1
+            } else if x > y {
+                1
+            } else {
+                0
+            }
         }
         (VmValue::Int(x), VmValue::Float(y)) => {
             let xf = *x as f64;
-            if xf < *y { -1 } else if xf > *y { 1 } else { 0 }
+            if xf < *y {
+                -1
+            } else if xf > *y {
+                1
+            } else {
+                0
+            }
         }
         (VmValue::Float(x), VmValue::Int(y)) => {
             let yf = *y as f64;
-            if *x < yf { -1 } else if *x > yf { 1 } else { 0 }
-        }
-        (VmValue::String(x), VmValue::String(y)) => {
-            match x.as_ref().cmp(y.as_ref()) {
-                std::cmp::Ordering::Less => -1,
-                std::cmp::Ordering::Equal => 0,
-                std::cmp::Ordering::Greater => 1,
+            if *x < yf {
+                -1
+            } else if *x > yf {
+                1
+            } else {
+                0
             }
         }
+        (VmValue::String(x), VmValue::String(y)) => match x.as_ref().cmp(y.as_ref()) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
+        },
         _ => 0,
     }
 }
@@ -214,25 +264,35 @@ pub extern "C" fn tl_rt_is_truthy(val: *const VmValue) -> i64 {
 pub extern "C" fn tl_rt_concat(a: *const VmValue, b: *const VmValue, out: *mut VmValue) {
     let a = unsafe { &*a };
     let b = unsafe { &*b };
-    let result = VmValue::String(Arc::from(format!("{}{}", vmvalue_display(a), vmvalue_display(b)).as_str()));
-    unsafe { out.write(result); }
+    let result = VmValue::String(Arc::from(
+        format!("{}{}", vmvalue_display(a), vmvalue_display(b)).as_str(),
+    ));
+    unsafe {
+        out.write(result);
+    }
 }
 
 // ── Constant loading ──
 
 #[unsafe(no_mangle)]
 pub extern "C" fn tl_rt_load_none(out: *mut VmValue) {
-    unsafe { out.write(VmValue::None); }
+    unsafe {
+        out.write(VmValue::None);
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn tl_rt_load_true(out: *mut VmValue) {
-    unsafe { out.write(VmValue::Bool(true)); }
+    unsafe {
+        out.write(VmValue::Bool(true));
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn tl_rt_load_false(out: *mut VmValue) {
-    unsafe { out.write(VmValue::Bool(false)); }
+    unsafe {
+        out.write(VmValue::Bool(false));
+    }
 }
 
 /// Load constant from prototype's constant pool into out.
@@ -247,15 +307,15 @@ pub extern "C" fn tl_rt_get_const(proto: *const Prototype, idx: i64, out: *mut V
             use std::str::FromStr;
             VmValue::Decimal(rust_decimal::Decimal::from_str(s).unwrap_or_default())
         }
-        Constant::Prototype(p) => {
-            VmValue::Function(Arc::new(tl_compiler::value::VmClosure {
-                prototype: p.clone(),
-                upvalues: Vec::new(),
-            }))
-        }
+        Constant::Prototype(p) => VmValue::Function(Arc::new(tl_compiler::value::VmClosure {
+            prototype: p.clone(),
+            upvalues: Vec::new(),
+        })),
         Constant::AstExpr(_) | Constant::AstExprList(_) => VmValue::None,
     };
-    unsafe { out.write(val); }
+    unsafe {
+        out.write(val);
+    }
 }
 
 // ── Global access ──
@@ -270,12 +330,16 @@ pub extern "C" fn tl_rt_get_global(
 ) -> i64 {
     let ctx = unsafe { &mut *ctx };
     let vm = unsafe { &mut *ctx.vm };
-    let name = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize)) };
+    let name = unsafe {
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
+    };
     let val = vm.globals.get(name).cloned().unwrap_or(VmValue::None);
     if matches!(val, VmValue::Moved) {
         return 1; // error: use after move
     }
-    unsafe { out.write(val); }
+    unsafe {
+        out.write(val);
+    }
     0
 }
 
@@ -289,7 +353,9 @@ pub extern "C" fn tl_rt_set_global(
 ) -> i64 {
     let ctx = unsafe { &mut *ctx };
     let vm = unsafe { &mut *ctx.vm };
-    let name = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize)) };
+    let name = unsafe {
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
+    };
     let val = unsafe { (*val).clone() };
     vm.globals.insert(name.to_string(), val);
     0
@@ -328,11 +394,15 @@ pub extern "C" fn tl_rt_call(
             }
             match vm.execute(proto) {
                 Ok(val) => {
-                    unsafe { out.write(val); }
+                    unsafe {
+                        out.write(val);
+                    }
                     0
                 }
                 Err(_e) => {
-                    unsafe { out.write(VmValue::None); }
+                    unsafe {
+                        out.write(VmValue::None);
+                    }
                     1
                 }
             }
@@ -341,7 +411,9 @@ pub extern "C" fn tl_rt_call(
             tl_rt_call_builtin(ctx as *mut VmContext, *id as i64, args, nargs, out)
         }
         _ => {
-            unsafe { out.write(VmValue::None); }
+            unsafe {
+                out.write(VmValue::None);
+            }
             1
         }
     }
@@ -372,12 +444,16 @@ pub extern "C" fn tl_rt_call_builtin(
     match vm.call_builtin(builtin_id as u8, base, nargs as usize) {
         Ok(val) => {
             vm.stack.truncate(base);
-            unsafe { out.write(val); }
+            unsafe {
+                out.write(val);
+            }
             0
         }
         Err(_e) => {
             vm.stack.truncate(base);
-            unsafe { out.write(VmValue::None); }
+            unsafe {
+                out.write(VmValue::None);
+            }
             1
         }
     }
@@ -393,7 +469,9 @@ pub extern "C" fn tl_rt_make_list(vals: *const VmValue, count: i64, out: *mut Vm
     } else {
         Vec::new()
     };
-    unsafe { out.write(VmValue::List(items)); }
+    unsafe {
+        out.write(VmValue::List(items));
+    }
 }
 
 /// Construct a map from parallel key/value arrays.
@@ -412,7 +490,9 @@ pub extern "C" fn tl_rt_make_map(
             pairs.push((s.clone(), val.clone()));
         }
     }
-    unsafe { out.write(VmValue::Map(pairs)); }
+    unsafe {
+        out.write(VmValue::Map(pairs));
+    }
 }
 
 // ── Index access ──
@@ -431,14 +511,15 @@ pub extern "C" fn tl_rt_get_index(
             let index = if *i < 0 { items.len() as i64 + i } else { *i } as usize;
             items.get(index).cloned().unwrap_or(VmValue::None)
         }
-        (VmValue::Map(pairs), VmValue::String(key)) => {
-            pairs.iter().find(|(k, _)| k.as_ref() == key.as_ref())
-                .map(|(_, v)| v.clone())
-                .unwrap_or(VmValue::None)
-        }
+        (VmValue::Map(pairs), VmValue::String(key)) => pairs
+            .iter()
+            .find(|(k, _)| k.as_ref() == key.as_ref())
+            .map(|(_, v)| v.clone())
+            .unwrap_or(VmValue::None),
         (VmValue::String(s), VmValue::Int(i)) => {
             let index = if *i < 0 { s.len() as i64 + i } else { *i } as usize;
-            s.chars().nth(index)
+            s.chars()
+                .nth(index)
                 .map(|c| VmValue::String(Arc::from(c.to_string().as_str())))
                 .unwrap_or(VmValue::None)
         }
@@ -447,7 +528,9 @@ pub extern "C" fn tl_rt_get_index(
         }
         _ => VmValue::None,
     };
-    unsafe { out.write(result); }
+    unsafe {
+        out.write(result);
+    }
     0
 }
 
@@ -492,21 +575,22 @@ pub extern "C" fn tl_rt_get_member(
     out: *mut VmValue,
 ) -> i64 {
     let val = unsafe { &*val };
-    let name = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize)) };
+    let name = unsafe {
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
+    };
     let result = match val {
-        VmValue::StructInstance(inst) => {
-            inst.fields.iter().find(|(k, _)| k.as_ref() == name)
-                .map(|(_, v)| v.clone())
-                .unwrap_or(VmValue::None)
-        }
-        VmValue::Map(pairs) => {
-            pairs.iter().find(|(k, _)| k.as_ref() == name)
-                .map(|(_, v)| v.clone())
-                .unwrap_or(VmValue::None)
-        }
-        VmValue::Module(m) => {
-            m.exports.get(name).cloned().unwrap_or(VmValue::None)
-        }
+        VmValue::StructInstance(inst) => inst
+            .fields
+            .iter()
+            .find(|(k, _)| k.as_ref() == name)
+            .map(|(_, v)| v.clone())
+            .unwrap_or(VmValue::None),
+        VmValue::Map(pairs) => pairs
+            .iter()
+            .find(|(k, _)| k.as_ref() == name)
+            .map(|(_, v)| v.clone())
+            .unwrap_or(VmValue::None),
+        VmValue::Module(m) => m.exports.get(name).cloned().unwrap_or(VmValue::None),
         VmValue::EnumDef(def) => {
             // Return a function-like value that creates an enum variant
             if def.variants.iter().any(|(n, _)| n.as_ref() == name) {
@@ -520,7 +604,9 @@ pub extern "C" fn tl_rt_get_member(
         }
         _ => VmValue::None,
     };
-    unsafe { out.write(result); }
+    unsafe {
+        out.write(result);
+    }
     0
 }
 
@@ -533,7 +619,9 @@ pub extern "C" fn tl_rt_set_member(
     new_val: *const VmValue,
 ) -> i64 {
     let val = unsafe { &mut *val };
-    let name = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize)) };
+    let name = unsafe {
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
+    };
     let new_val = unsafe { (*new_val).clone() };
     match val {
         VmValue::StructInstance(inst) => {
@@ -571,7 +659,9 @@ pub extern "C" fn tl_rt_method_call(
     let ctx = unsafe { &mut *ctx };
     let vm = unsafe { &mut *ctx.vm };
     let obj = unsafe { (*obj).clone() };
-    let name = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize)) };
+    let name = unsafe {
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
+    };
     let args_slice = if nargs > 0 {
         unsafe { std::slice::from_raw_parts(args, nargs as usize) }.to_vec()
     } else {
@@ -580,11 +670,15 @@ pub extern "C" fn tl_rt_method_call(
 
     match vm.dispatch_method(obj, name, &args_slice) {
         Ok(val) => {
-            unsafe { out.write(val); }
+            unsafe {
+                out.write(val);
+            }
             0
         }
         Err(_e) => {
-            unsafe { out.write(VmValue::None); }
+            unsafe {
+                out.write(VmValue::None);
+            }
             1
         }
     }
@@ -606,9 +700,13 @@ pub extern "C" fn tl_rt_make_closure(
     // (upvalue capture requires more complex logic)
     let const_val = unsafe { &*const_idx };
     if let VmValue::Function(closure) = const_val {
-        unsafe { out.write(VmValue::Function(closure.clone())); }
+        unsafe {
+            out.write(VmValue::Function(closure.clone()));
+        }
     } else {
-        unsafe { out.write(VmValue::None); }
+        unsafe {
+            out.write(VmValue::None);
+        }
     }
 }
 
@@ -635,7 +733,10 @@ pub extern "C" fn tl_rt_vm_exec_op(
     let proto = unsafe { &*ctx.prototype };
 
     // Reconstruct the instruction word
-    let inst = ((opcode as u32) << 24) | ((a as u32 & 0xFF) << 16) | ((b as u32 & 0xFF) << 8) | (c as u32 & 0xFF);
+    let inst = ((opcode as u32) << 24)
+        | ((a as u32 & 0xFF) << 16)
+        | ((b as u32 & 0xFF) << 8)
+        | (c as u32 & 0xFF);
 
     // Copy register values into VM stack for execution
     let base = vm.stack.len();
@@ -651,7 +752,9 @@ pub extern "C" fn tl_rt_vm_exec_op(
     // Copy modified registers back
     for i in 0..nr {
         let val = vm.stack[base + i].clone();
-        unsafe { regs_base.add(i).write(val); }
+        unsafe {
+            regs_base.add(i).write(val);
+        }
     }
     vm.stack.truncate(base);
 
@@ -667,7 +770,9 @@ pub extern "C" fn tl_rt_vm_exec_op(
 #[unsafe(no_mangle)]
 pub extern "C" fn tl_rt_move_value(src: *const VmValue, dst: *mut VmValue) {
     let val = unsafe { (*src).clone() };
-    unsafe { dst.write(val); }
+    unsafe {
+        dst.write(val);
+    }
 }
 
 // ── Internal helpers ──

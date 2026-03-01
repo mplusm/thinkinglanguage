@@ -103,7 +103,11 @@ fn handle_request(
         };
         send_response(connection, id, serde_json::to_value(result)?)?;
     } else if let Some((_, params)) = cast_request::<GotoDefinition>(&req) {
-        let uri = params.text_document_position_params.text_document.uri.clone();
+        let uri = params
+            .text_document_position_params
+            .text_document
+            .uri
+            .clone();
         let doc = state.get_document(&uri);
         let result = if let Some(doc) = doc {
             goto_def::provide_goto_definition(
@@ -156,8 +160,11 @@ fn handle_notification(
         let uri = params.text_document.uri.clone();
         // Full sync: use the last content change
         if let Some(change) = params.content_changes.into_iter().last() {
-            let diagnostics =
-                state.update_document(params.text_document.uri, change.text, params.text_document.version);
+            let diagnostics = state.update_document(
+                params.text_document.uri,
+                change.text,
+                params.text_document.version,
+            );
             publish_diagnostics(connection, uri, diagnostics)?;
         }
     } else if not.method == DidCloseTextDocument::METHOD {

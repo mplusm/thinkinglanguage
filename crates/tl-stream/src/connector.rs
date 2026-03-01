@@ -156,14 +156,11 @@ impl Connector for ChannelReceiver {
     }
     fn recv(&self, timeout_ms: u64) -> Result<Option<String>, String> {
         let mut rx = self.rx.lock().map_err(|e| format!("Lock error: {e}"))?;
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| format!("Failed to create runtime: {e}"))?;
+        let rt =
+            tokio::runtime::Runtime::new().map_err(|e| format!("Failed to create runtime: {e}"))?;
         rt.block_on(async {
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(timeout_ms),
-                rx.recv(),
-            )
-            .await
+            match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), rx.recv())
+                .await
             {
                 Ok(Some(msg)) => Ok(Some(msg)),
                 Ok(None) => Ok(None),
@@ -177,21 +174,24 @@ impl Connector for ChannelReceiver {
 #[cfg(feature = "kafka")]
 pub mod kafka;
 
+type SendFn = Box<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+type RecvFn = Box<dyn Fn(u64) -> Result<Option<String>, String> + Send + Sync>;
+
 /// User-defined connector wrapping TL struct methods.
 /// Allows TL code to create custom connectors by implementing send/recv.
 pub struct UserDefinedConnector {
     name: String,
-    send_fn: Box<dyn Fn(&str) -> Result<(), String> + Send + Sync>,
-    recv_fn: Box<dyn Fn(u64) -> Result<Option<String>, String> + Send + Sync>,
+    send_fn: SendFn,
+    recv_fn: RecvFn,
 }
 
 impl UserDefinedConnector {
-    pub fn new(
-        name: String,
-        send_fn: Box<dyn Fn(&str) -> Result<(), String> + Send + Sync>,
-        recv_fn: Box<dyn Fn(u64) -> Result<Option<String>, String> + Send + Sync>,
-    ) -> Self {
-        UserDefinedConnector { name, send_fn, recv_fn }
+    pub fn new(name: String, send_fn: SendFn, recv_fn: RecvFn) -> Self {
+        UserDefinedConnector {
+            name,
+            send_fn,
+            recv_fn,
+        }
     }
 }
 

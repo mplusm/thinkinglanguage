@@ -4,11 +4,11 @@
 // Axum-based HTTP server for the package registry.
 
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -85,7 +85,12 @@ async fn publish_package(
 
     let storage = state.storage.lock().await;
     let sha256 = storage
-        .publish(&req.name, &req.version, req.description.as_deref(), &tarball)
+        .publish(
+            &req.name,
+            &req.version,
+            req.description.as_deref(),
+            &tarball,
+        )
         .map_err(|e| (StatusCode::CONFLICT, e))?;
 
     Ok((
@@ -106,10 +111,7 @@ async fn get_package_info(
     let storage = state.storage.lock().await;
     match storage.load_metadata(&name) {
         Ok(Some(meta)) => Ok(Json(meta)),
-        Ok(None) => Err((
-            StatusCode::NOT_FOUND,
-            format!("Package '{name}' not found"),
-        )),
+        Ok(None) => Err((StatusCode::NOT_FOUND, format!("Package '{name}' not found"))),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e)),
     }
 }
@@ -123,10 +125,7 @@ async fn download_package(
     match storage.download(&name, &version) {
         Ok(data) => Ok((
             StatusCode::OK,
-            [(
-                axum::http::header::CONTENT_TYPE,
-                "application/gzip",
-            )],
+            [(axum::http::header::CONTENT_TYPE, "application/gzip")],
             data,
         )),
         Err(e) => Err((StatusCode::NOT_FOUND, e)),

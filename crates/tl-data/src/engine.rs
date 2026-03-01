@@ -1,11 +1,11 @@
-use std::sync::Arc;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::execution::context::SessionContext;
-use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::execution::disk_manager::DiskManagerConfig;
 use datafusion::execution::memory_pool::FairSpillPool;
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::prelude::*;
+use std::sync::Arc;
 use tokio::runtime::Runtime;
 
 /// Configuration for the DataEngine.
@@ -34,6 +34,12 @@ pub struct DataEngine {
     pub rt: Arc<Runtime>,
 }
 
+impl Default for DataEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DataEngine {
     /// Create a new DataEngine with default configuration.
     /// Backward-compatible with existing code.
@@ -43,15 +49,12 @@ impl DataEngine {
 
     /// Create a new DataEngine with custom configuration.
     pub fn with_config(config: DataEngineConfig) -> Self {
-        let rt = Arc::new(
-            Runtime::new().expect("Failed to create tokio runtime for DataEngine"),
-        );
+        let rt = Arc::new(Runtime::new().expect("Failed to create tokio runtime for DataEngine"));
 
         // Build runtime environment with memory pool and disk manager
         let pool = FairSpillPool::new(config.max_memory_bytes);
 
-        let mut rt_builder = RuntimeEnvBuilder::new()
-            .with_memory_pool(Arc::new(pool));
+        let mut rt_builder = RuntimeEnvBuilder::new().with_memory_pool(Arc::new(pool));
 
         if config.spill_to_disk {
             let disk_config = if let Some(ref path) = config.spill_path {
@@ -66,8 +69,7 @@ impl DataEngine {
 
         // Configure session with parallelism
         let target_partitions = num_cpus::get();
-        let session_config = SessionConfig::new()
-            .with_target_partitions(target_partitions);
+        let session_config = SessionConfig::new().with_target_partitions(target_partitions);
 
         let ctx = SessionContext::new_with_config_rt(session_config, Arc::new(runtime_env));
 
@@ -89,11 +91,7 @@ impl DataEngine {
     }
 
     /// Register a RecordBatch as a named table in the session.
-    pub fn register_batch(
-        &self,
-        name: &str,
-        batch: RecordBatch,
-    ) -> Result<(), String> {
+    pub fn register_batch(&self, name: &str, batch: RecordBatch) -> Result<(), String> {
         let schema = batch.schema();
         let provider = datafusion::datasource::MemTable::try_new(schema, vec![vec![batch]])
             .map_err(|e| format!("MemTable error: {e}"))?;
@@ -157,13 +155,9 @@ mod tests {
             spill_path: None,
         };
         let engine = DataEngine::with_config(config);
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("x", DataType::Int64, false),
-        ]));
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![Arc::new(Int64Array::from(vec![1, 2, 3]))],
-        ).unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int64, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![1, 2, 3]))]).unwrap();
         engine.register_batch("t", batch).unwrap();
         let df = engine.sql("SELECT * FROM t").unwrap();
         let results = engine.collect(df).unwrap();

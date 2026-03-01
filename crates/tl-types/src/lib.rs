@@ -101,7 +101,9 @@ impl fmt::Display for Type {
             }
             Type::Struct(name) => write!(f, "{name}"),
             Type::Enum(name) => write!(f, "{name}"),
-            Type::Table { name: Some(name), .. } => write!(f, "table<{name}>"),
+            Type::Table {
+                name: Some(name), ..
+            } => write!(f, "table<{name}>"),
             Type::Table { name: None, .. } => write!(f, "table"),
             Type::Generator(t) => write!(f, "generator<{t}>"),
             Type::Task(t) => write!(f, "task<{t}>"),
@@ -138,11 +140,20 @@ pub struct TypeEnv {
     /// Trait definitions: name -> trait info
     traits: std::collections::HashMap<std::string::String, TraitInfo>,
     /// Trait implementations: (trait_name, type_name) -> method names
-    trait_impls: std::collections::HashMap<(std::string::String, std::string::String), Vec<std::string::String>>,
+    trait_impls: std::collections::HashMap<
+        (std::string::String, std::string::String),
+        Vec<std::string::String>,
+    >,
     /// Type aliases: name -> (type_params, TypeExpr)
-    type_aliases: std::collections::HashMap<std::string::String, (Vec<std::string::String>, tl_ast::TypeExpr)>,
+    type_aliases: std::collections::HashMap<
+        std::string::String,
+        (Vec<std::string::String>, tl_ast::TypeExpr),
+    >,
     /// Sensitive field annotations: type_name -> [(field_name, annotation)]
-    sensitive_fields: std::collections::HashMap<std::string::String, Vec<(std::string::String, std::string::String)>>,
+    sensitive_fields: std::collections::HashMap<
+        std::string::String,
+        Vec<(std::string::String, std::string::String)>,
+    >,
     /// Currently resolving aliases (cycle detection)
     resolving_aliases: std::collections::HashSet<std::string::String>,
     /// Next inference variable ID
@@ -183,41 +194,59 @@ impl TypeEnv {
     /// Register built-in trait hierarchy.
     fn register_builtin_traits(&mut self) {
         // Hashable — int, float, string, bool
-        self.traits.insert("Hashable".into(), TraitInfo {
-            name: "Hashable".into(),
-            methods: vec![],
-            supertrait: None,
-        });
+        self.traits.insert(
+            "Hashable".into(),
+            TraitInfo {
+                name: "Hashable".into(),
+                methods: vec![],
+                supertrait: None,
+            },
+        );
         // Comparable — int, float, string (implies Hashable)
-        self.traits.insert("Comparable".into(), TraitInfo {
-            name: "Comparable".into(),
-            methods: vec![],
-            supertrait: Some("Hashable".into()),
-        });
+        self.traits.insert(
+            "Comparable".into(),
+            TraitInfo {
+                name: "Comparable".into(),
+                methods: vec![],
+                supertrait: Some("Hashable".into()),
+            },
+        );
         // Numeric — int, float (implies Comparable)
-        self.traits.insert("Numeric".into(), TraitInfo {
-            name: "Numeric".into(),
-            methods: vec![],
-            supertrait: Some("Comparable".into()),
-        });
+        self.traits.insert(
+            "Numeric".into(),
+            TraitInfo {
+                name: "Numeric".into(),
+                methods: vec![],
+                supertrait: Some("Comparable".into()),
+            },
+        );
         // Displayable — all primitives
-        self.traits.insert("Displayable".into(), TraitInfo {
-            name: "Displayable".into(),
-            methods: vec![("to_string".into(), vec![], Type::String)],
-            supertrait: None,
-        });
+        self.traits.insert(
+            "Displayable".into(),
+            TraitInfo {
+                name: "Displayable".into(),
+                methods: vec![("to_string".into(), vec![], Type::String)],
+                supertrait: None,
+            },
+        );
         // Serializable — all primitives, structs
-        self.traits.insert("Serializable".into(), TraitInfo {
-            name: "Serializable".into(),
-            methods: vec![],
-            supertrait: None,
-        });
+        self.traits.insert(
+            "Serializable".into(),
+            TraitInfo {
+                name: "Serializable".into(),
+                methods: vec![],
+                supertrait: None,
+            },
+        );
         // Default — all primitives, list, map, set
-        self.traits.insert("Default".into(), TraitInfo {
-            name: "Default".into(),
-            methods: vec![],
-            supertrait: None,
-        });
+        self.traits.insert(
+            "Default".into(),
+            TraitInfo {
+                name: "Default".into(),
+                methods: vec![],
+                supertrait: None,
+            },
+        );
     }
 
     pub fn scope_depth(&self) -> u32 {
@@ -306,7 +335,10 @@ impl TypeEnv {
         self.type_aliases.insert(name, (type_params, value));
     }
 
-    pub fn lookup_type_alias(&self, name: &str) -> Option<&(Vec<std::string::String>, tl_ast::TypeExpr)> {
+    pub fn lookup_type_alias(
+        &self,
+        name: &str,
+    ) -> Option<&(Vec<std::string::String>, tl_ast::TypeExpr)> {
         self.type_aliases.get(name)
     }
 
@@ -326,7 +358,12 @@ impl TypeEnv {
     }
 
     /// Register a sensitive field annotation.
-    pub fn register_sensitive_field(&mut self, type_name: std::string::String, field_name: std::string::String, annotation: std::string::String) {
+    pub fn register_sensitive_field(
+        &mut self,
+        type_name: std::string::String,
+        field_name: std::string::String,
+        annotation: std::string::String,
+    ) {
         self.sensitive_fields
             .entry(type_name)
             .or_default()
@@ -342,7 +379,10 @@ impl TypeEnv {
     }
 
     /// Get sensitive annotations for a type's field.
-    pub fn get_field_annotations(&self, type_name: &str) -> Option<&Vec<(std::string::String, std::string::String)>> {
+    pub fn get_field_annotations(
+        &self,
+        type_name: &str,
+    ) -> Option<&Vec<(std::string::String, std::string::String)>> {
         self.sensitive_fields.get(type_name)
     }
 
@@ -352,7 +392,8 @@ impl TypeEnv {
         type_name: std::string::String,
         method_names: Vec<std::string::String>,
     ) {
-        self.trait_impls.insert((trait_name, type_name), method_names);
+        self.trait_impls
+            .insert((trait_name, type_name), method_names);
     }
 
     pub fn lookup_trait_impl(
@@ -373,10 +414,16 @@ impl TypeEnv {
         // Check built-in trait implementations
         match trait_name {
             "Numeric" => matches!(ty, Type::Int | Type::Float | Type::Decimal),
-            "Comparable" => matches!(ty, Type::Int | Type::Float | Type::String | Type::Decimal)
-                || self.type_satisfies_trait(ty, "Numeric"),
-            "Hashable" => matches!(ty, Type::Int | Type::Float | Type::String | Type::Bool | Type::Decimal)
-                || self.type_satisfies_trait(ty, "Comparable"),
+            "Comparable" => {
+                matches!(ty, Type::Int | Type::Float | Type::String | Type::Decimal)
+                    || self.type_satisfies_trait(ty, "Numeric")
+            }
+            "Hashable" => {
+                matches!(
+                    ty,
+                    Type::Int | Type::Float | Type::String | Type::Bool | Type::Decimal
+                ) || self.type_satisfies_trait(ty, "Comparable")
+            }
             "Displayable" => matches!(
                 ty,
                 Type::Int | Type::Float | Type::String | Type::Bool | Type::None | Type::Decimal
@@ -456,10 +503,10 @@ pub fn is_compatible(expected: &Type, found: &Type) -> bool {
         return true;
     }
     // T is compatible with option<T>
-    if let Type::Option(inner) = expected {
-        if is_compatible(inner, found) {
-            return true;
-        }
+    if let Type::Option(inner) = expected
+        && is_compatible(inner, found)
+    {
+        return true;
     }
     // Structural compatibility for compound types
     match (expected, found) {
@@ -475,7 +522,16 @@ pub fn is_compatible(expected: &Type, found: &Type) -> bool {
         (Type::Channel(a), Type::Channel(b)) => is_compatible(a, b),
         (Type::Stream(a), Type::Stream(b)) => is_compatible(a, b),
         // Tables: None columns = compatible with any columns
-        (Type::Table { name: n1, columns: c1 }, Type::Table { name: n2, columns: c2 }) => {
+        (
+            Type::Table {
+                name: n1,
+                columns: c1,
+            },
+            Type::Table {
+                name: n2,
+                columns: c2,
+            },
+        ) => {
             let name_ok = match (n1, n2) {
                 (Some(a), Some(b)) => a == b,
                 _ => true,
@@ -484,7 +540,9 @@ pub fn is_compatible(expected: &Type, found: &Type) -> bool {
                 (None, _) | (_, None) => true,
                 (Some(a), Some(b)) => {
                     a.len() == b.len()
-                        && a.iter().zip(b.iter()).all(|((n1, t1), (n2, t2))| n1 == n2 && is_compatible(t1, t2))
+                        && a.iter()
+                            .zip(b.iter())
+                            .all(|((n1, t1), (n2, t2))| n1 == n2 && is_compatible(t1, t2))
                 }
             };
             name_ok && cols_ok
@@ -515,7 +573,9 @@ pub struct Substitution {
 
 impl Substitution {
     pub fn new() -> Self {
-        Self { mappings: HashMap::new() }
+        Self {
+            mappings: HashMap::new(),
+        }
     }
 
     /// Compose this substitution with another.
@@ -554,7 +614,10 @@ pub fn apply_substitution(ty: &Type, subst: &Substitution) -> Type {
         Type::Channel(inner) => Type::Channel(Box::new(apply_substitution(inner, subst))),
         Type::Stream(inner) => Type::Stream(Box::new(apply_substitution(inner, subst))),
         Type::Function { params, ret } => Type::Function {
-            params: params.iter().map(|p| apply_substitution(p, subst)).collect(),
+            params: params
+                .iter()
+                .map(|p| apply_substitution(p, subst))
+                .collect(),
             ret: Box::new(apply_substitution(ret, subst)),
         },
         _ => ty.clone(),
@@ -565,8 +628,13 @@ pub fn apply_substitution(ty: &Type, subst: &Substitution) -> Type {
 fn occurs_in(id: u32, ty: &Type) -> bool {
     match ty {
         Type::Var(v) => *v == id,
-        Type::List(inner) | Type::Map(inner) | Type::Set(inner) | Type::Option(inner)
-        | Type::Generator(inner) | Type::Task(inner) | Type::Channel(inner)
+        Type::List(inner)
+        | Type::Map(inner)
+        | Type::Set(inner)
+        | Type::Option(inner)
+        | Type::Generator(inner)
+        | Type::Task(inner)
+        | Type::Channel(inner)
         | Type::Stream(inner) => occurs_in(id, inner),
         Type::Result(ok, err) => occurs_in(id, ok) || occurs_in(id, err),
         Type::Function { params, ret } => {
@@ -637,29 +705,33 @@ pub fn unify(a: &Type, b: &Type) -> Result<Substitution, std::string::String> {
         (Type::Stream(a_inner), Type::Stream(b_inner)) => unify(a_inner, b_inner),
         (Type::Result(ok1, err1), Type::Result(ok2, err2)) => {
             let mut s = unify(ok1, ok2)?;
-            let s2 = unify(
-                &apply_substitution(err1, &s),
-                &apply_substitution(err2, &s),
-            )?;
+            let s2 = unify(&apply_substitution(err1, &s), &apply_substitution(err2, &s))?;
             s.compose(&s2);
             Ok(s)
         }
-        (Type::Function { params: p1, ret: r1 }, Type::Function { params: p2, ret: r2 }) => {
+        (
+            Type::Function {
+                params: p1,
+                ret: r1,
+            },
+            Type::Function {
+                params: p2,
+                ret: r2,
+            },
+        ) => {
             if p1.len() != p2.len() {
-                return Err(format!("function arity mismatch: {} vs {}", p1.len(), p2.len()));
+                return Err(format!(
+                    "function arity mismatch: {} vs {}",
+                    p1.len(),
+                    p2.len()
+                ));
             }
             let mut s = Substitution::new();
             for (a_p, b_p) in p1.iter().zip(p2.iter()) {
-                let s2 = unify(
-                    &apply_substitution(a_p, &s),
-                    &apply_substitution(b_p, &s),
-                )?;
+                let s2 = unify(&apply_substitution(a_p, &s), &apply_substitution(b_p, &s))?;
                 s.compose(&s2);
             }
-            let s2 = unify(
-                &apply_substitution(r1, &s),
-                &apply_substitution(r2, &s),
-            )?;
+            let s2 = unify(&apply_substitution(r1, &s), &apply_substitution(r2, &s))?;
             s.compose(&s2);
             Ok(s)
         }
@@ -765,11 +837,19 @@ mod tests {
         assert_eq!(Type::Pipeline.to_string(), "pipeline");
         assert_eq!(Type::Stream(Box::new(Type::Int)).to_string(), "stream<int>");
         assert_eq!(
-            Type::Table { name: Some("User".into()), columns: None }.to_string(),
+            Type::Table {
+                name: Some("User".into()),
+                columns: None
+            }
+            .to_string(),
             "table<User>"
         );
         assert_eq!(
-            Type::Table { name: None, columns: None }.to_string(),
+            Type::Table {
+                name: None,
+                columns: None
+            }
+            .to_string(),
             "table"
         );
     }
@@ -807,16 +887,25 @@ mod tests {
     fn test_table_column_compatibility() {
         let t1 = Type::Table {
             name: None,
-            columns: Some(vec![("id".into(), Type::Int), ("name".into(), Type::String)]),
+            columns: Some(vec![
+                ("id".into(), Type::Int),
+                ("name".into(), Type::String),
+            ]),
         };
         let t2 = Type::Table {
             name: None,
-            columns: Some(vec![("id".into(), Type::Int), ("name".into(), Type::String)]),
+            columns: Some(vec![
+                ("id".into(), Type::Int),
+                ("name".into(), Type::String),
+            ]),
         };
         assert!(is_compatible(&t1, &t2));
 
         // None columns = compatible with any
-        let t3 = Type::Table { name: None, columns: None };
+        let t3 = Type::Table {
+            name: None,
+            columns: None,
+        };
         assert!(is_compatible(&t1, &t3));
         assert!(is_compatible(&t3, &t1));
     }
@@ -859,16 +948,24 @@ mod tests {
         let s = unify(
             &Type::List(Box::new(Type::Var(0))),
             &Type::List(Box::new(Type::Int)),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(s.mappings.get(&0), Some(&Type::Int));
     }
 
     #[test]
     fn test_unify_function() {
         let s = unify(
-            &Type::Function { params: vec![Type::Var(0)], ret: Box::new(Type::Var(1)) },
-            &Type::Function { params: vec![Type::Int], ret: Box::new(Type::String) },
-        ).unwrap();
+            &Type::Function {
+                params: vec![Type::Var(0)],
+                ret: Box::new(Type::Var(1)),
+            },
+            &Type::Function {
+                params: vec![Type::Int],
+                ret: Box::new(Type::String),
+            },
+        )
+        .unwrap();
         assert_eq!(s.mappings.get(&0), Some(&Type::Int));
         assert_eq!(s.mappings.get(&1), Some(&Type::String));
     }
@@ -888,7 +985,10 @@ mod tests {
         };
         assert_eq!(
             apply_substitution(&ty2, &s),
-            Type::Function { params: vec![Type::Int], ret: Box::new(Type::String) }
+            Type::Function {
+                params: vec![Type::Int],
+                ret: Box::new(Type::String)
+            }
         );
     }
 

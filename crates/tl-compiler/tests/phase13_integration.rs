@@ -1,7 +1,7 @@
 // Phase 13: Semantic Analysis & Optimization — Integration Tests
 // Tests constant folding, dead code elimination, and runtime behavior
 
-use tl_compiler::{compile, compile_with_source, Vm, VmValue};
+use tl_compiler::{Vm, VmValue, compile, compile_with_source};
 use tl_parser::parse;
 
 /// Helper: parse + compile + run, return result
@@ -9,7 +9,8 @@ fn run(src: &str) -> Result<VmValue, String> {
     let program = parse(src).map_err(|e| format!("Parse error: {e}"))?;
     let proto = compile(&program).map_err(|e| format!("Compile error: {e}"))?;
     let mut vm = Vm::new();
-    vm.execute(&proto).map_err(|e| format!("Runtime error: {e}"))
+    vm.execute(&proto)
+        .map_err(|e| format!("Runtime error: {e}"))
 }
 
 /// Helper: parse + compile with source, return disassembled bytecode
@@ -45,7 +46,10 @@ fn test_constant_folding_arithmetic() {
     let bytecode = disasm("let x = 2 + 3 * 4\nprint(x)");
     assert!(bytecode.contains("14"), "Should fold 2 + 3 * 4 to 14");
     assert!(!bytecode.contains("Mul"), "Should not have Mul instruction");
-    assert!(!bytecode.contains(" Add"), "Should not have Add instruction");
+    assert!(
+        !bytecode.contains(" Add"),
+        "Should not have Add instruction"
+    );
 
     let val = run("2 + 3 * 4").unwrap();
     assert_int(&val, 14);
@@ -54,7 +58,10 @@ fn test_constant_folding_arithmetic() {
 #[test]
 fn test_constant_folding_string_concat() {
     let bytecode = disasm("let x = \"hello\" + \" world\"\nprint(x)");
-    assert!(bytecode.contains("hello world"), "Should fold string concatenation");
+    assert!(
+        bytecode.contains("hello world"),
+        "Should fold string concatenation"
+    );
 }
 
 #[test]
@@ -69,7 +76,10 @@ fn test_constant_folding_boolean() {
 #[test]
 fn test_constant_folding_does_not_fold_variables() {
     let bytecode = disasm("let x = 5\nlet y = x + 1\nprint(y)");
-    assert!(bytecode.contains("Add"), "Should have Add when variable is involved");
+    assert!(
+        bytecode.contains("Add"),
+        "Should have Add when variable is involved"
+    );
 }
 
 #[test]
@@ -79,7 +89,10 @@ fn test_constant_folding_nested() {
     assert_int(&val, 21);
 
     let bytecode = disasm("let x = (1 + 2) * (3 + 4)\nprint(x)");
-    assert!(bytecode.contains("21"), "Should fold nested constants to 21");
+    assert!(
+        bytecode.contains("21"),
+        "Should fold nested constants to 21"
+    );
 }
 
 #[test]
@@ -95,17 +108,22 @@ fn test_constant_folding_comparison() {
 
 #[test]
 fn test_dce_after_return() {
-    let bytecode = disasm(r#"
+    let bytecode = disasm(
+        r#"
 fn foo() {
     return 1
     print("unreachable")
 }
 print(foo())
-"#);
+"#,
+    );
     // The function's sub-prototype should NOT contain "unreachable"
     // Find the foo function's disassembly section
     let foo_section = bytecode.split("=== foo ===").nth(1).unwrap_or("");
-    assert!(!foo_section.contains("unreachable"), "Should not compile code after return");
+    assert!(
+        !foo_section.contains("unreachable"),
+        "Should not compile code after return"
+    );
 
     let val = run(r#"
 fn foo() {
@@ -113,7 +131,8 @@ fn foo() {
     print("unreachable")
 }
 foo()
-"#).unwrap();
+"#)
+    .unwrap();
     assert_int(&val, 1);
 }
 
@@ -128,7 +147,8 @@ for i in range(10) {
     result = result + 1
 }
 result
-"#).unwrap();
+"#)
+    .unwrap();
     assert_int(&val, 5);
 }
 
@@ -144,7 +164,8 @@ fn classify(x: int) -> string {
     }
 }
 classify(42)
-"#).unwrap();
+"#)
+    .unwrap();
     assert!(matches!(val, VmValue::String(ref s) if s.as_ref() == "positive"));
 }
 
@@ -158,7 +179,8 @@ struct Point { x: int, y: int }
 let offset = 10 + 20 + 30
 let p = Point { x: 1 + 2, y: 3 + 4 }
 p.x + p.y + offset
-"#).unwrap();
+"#)
+    .unwrap();
     // p.x = 3, p.y = 7 (constant folded), offset = 60 (constant folded), total = 70
     assert_int(&val, 70);
 }
@@ -174,7 +196,8 @@ fn test_backward_compat_arithmetic() {
 #[test]
 fn test_backward_compat_strings() {
     let val = run(r#"let s = "hello"
-len(s)"#).unwrap();
+len(s)"#)
+    .unwrap();
     assert_int(&val, 5);
 }
 
@@ -222,7 +245,8 @@ while i < 10 {
     i = i + 1
 }
 i
-"#).unwrap();
+"#)
+    .unwrap();
     assert_int(&val, 10);
 }
 
@@ -237,6 +261,7 @@ try {
     result = 42
 }
 result
-"#).unwrap();
+"#)
+    .unwrap();
     assert_int(&val, 42);
 }

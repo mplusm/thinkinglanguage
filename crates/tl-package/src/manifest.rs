@@ -157,17 +157,27 @@ version = "0.1.0"
 
     #[test]
     fn source_kind_detection() {
-        assert_eq!(DependencySpec::Simple("1.0".into()).source_kind(), DepSourceKind::Registry);
+        assert_eq!(
+            DependencySpec::Simple("1.0".into()).source_kind(),
+            DepSourceKind::Registry
+        );
 
         let git_dep = DependencySpec::Detailed(DetailedDep {
             version: None,
             git: Some("https://github.com/user/repo.git".into()),
-            branch: None, tag: None, rev: None, path: None,
+            branch: None,
+            tag: None,
+            rev: None,
+            path: None,
         });
         assert_eq!(git_dep.source_kind(), DepSourceKind::Git);
 
         let path_dep = DependencySpec::Detailed(DetailedDep {
-            version: None, git: None, branch: None, tag: None, rev: None,
+            version: None,
+            git: None,
+            branch: None,
+            tag: None,
+            rev: None,
             path: Some("../local".into()),
         });
         assert_eq!(path_dep.source_kind(), DepSourceKind::Path);

@@ -3,8 +3,8 @@
 //
 // Create publishable .tar.gz from a project directory.
 
-use flate2::write::GzEncoder;
 use flate2::Compression;
+use flate2::write::GzEncoder;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use tar::Builder;
@@ -62,8 +62,7 @@ pub fn extract_tarball(tarball: &[u8], dest: &Path) -> Result<(), String> {
     use flate2::read::GzDecoder;
     use tar::Archive;
 
-    std::fs::create_dir_all(dest)
-        .map_err(|e| format!("Failed to create destination: {e}"))?;
+    std::fs::create_dir_all(dest).map_err(|e| format!("Failed to create destination: {e}"))?;
 
     let decoder = GzDecoder::new(tarball);
     let mut archive = Archive::new(decoder);
@@ -89,7 +88,11 @@ mod tests {
             "[project]\nname = \"mylib\"\nversion = \"1.0.0\"\n",
         )
         .unwrap();
-        std::fs::write(project.join("src/lib.tl"), "pub fn hello() { print(\"hi\") }\n").unwrap();
+        std::fs::write(
+            project.join("src/lib.tl"),
+            "pub fn hello() { print(\"hi\") }\n",
+        )
+        .unwrap();
 
         let (tarball, hash) = create_package_tarball(&project).unwrap();
         assert!(!tarball.is_empty());

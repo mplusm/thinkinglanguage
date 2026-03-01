@@ -11,10 +11,7 @@ use std::path::{Path, PathBuf};
 #[derive(Clone)]
 pub enum TlModel {
     /// An ONNX model loaded from disk.
-    Onnx {
-        path: PathBuf,
-        metadata: ModelMeta,
-    },
+    Onnx { path: PathBuf, metadata: ModelMeta },
     /// A linfa-trained model (serialized).
     Linfa {
         kind: LinfaKind,
@@ -107,33 +104,49 @@ impl TlModel {
                     "kind": kind,
                     "metadata": metadata,
                 });
-                fs::write(path.join("metadata.json"), serde_json::to_string_pretty(&meta).unwrap())
-                    .map_err(|e| format!("Failed to write metadata: {e}"))?;
+                fs::write(
+                    path.join("metadata.json"),
+                    serde_json::to_string_pretty(&meta).unwrap(),
+                )
+                .map_err(|e| format!("Failed to write metadata: {e}"))?;
                 fs::write(path.join("model.bin"), data)
                     .map_err(|e| format!("Failed to write model: {e}"))?;
             }
-            TlModel::Onnx { path: onnx_path, metadata } => {
+            TlModel::Onnx {
+                path: onnx_path,
+                metadata,
+            } => {
                 let meta = serde_json::json!({
                     "type": "onnx",
                     "onnx_path": onnx_path.display().to_string(),
                     "metadata": metadata,
                 });
-                fs::write(path.join("metadata.json"), serde_json::to_string_pretty(&meta).unwrap())
-                    .map_err(|e| format!("Failed to write metadata: {e}"))?;
+                fs::write(
+                    path.join("metadata.json"),
+                    serde_json::to_string_pretty(&meta).unwrap(),
+                )
+                .map_err(|e| format!("Failed to write metadata: {e}"))?;
                 // Copy the ONNX file if it exists
                 if onnx_path.exists() {
                     fs::copy(onnx_path, path.join("model.onnx"))
                         .map_err(|e| format!("Failed to copy ONNX model: {e}"))?;
                 }
             }
-            TlModel::LlmEndpoint { provider, model_name, .. } => {
+            TlModel::LlmEndpoint {
+                provider,
+                model_name,
+                ..
+            } => {
                 let meta = serde_json::json!({
                     "type": "llm",
                     "provider": provider,
                     "model_name": model_name,
                 });
-                fs::write(path.join("metadata.json"), serde_json::to_string_pretty(&meta).unwrap())
-                    .map_err(|e| format!("Failed to write metadata: {e}"))?;
+                fs::write(
+                    path.join("metadata.json"),
+                    serde_json::to_string_pretty(&meta).unwrap(),
+                )
+                .map_err(|e| format!("Failed to write metadata: {e}"))?;
             }
         }
         Ok(())
@@ -147,9 +160,7 @@ impl TlModel {
         let meta: serde_json::Value =
             serde_json::from_str(&meta_str).map_err(|e| format!("Invalid metadata: {e}"))?;
 
-        let model_type = meta["type"]
-            .as_str()
-            .ok_or("Missing 'type' in metadata")?;
+        let model_type = meta["type"].as_str().ok_or("Missing 'type' in metadata")?;
 
         match model_type {
             "linfa" => {
@@ -175,14 +186,8 @@ impl TlModel {
                 })
             }
             "llm" => {
-                let provider = meta["provider"]
-                    .as_str()
-                    .unwrap_or("unknown")
-                    .to_string();
-                let model_name = meta["model_name"]
-                    .as_str()
-                    .unwrap_or("unknown")
-                    .to_string();
+                let provider = meta["provider"].as_str().unwrap_or("unknown").to_string();
+                let model_name = meta["model_name"].as_str().unwrap_or("unknown").to_string();
                 Ok(TlModel::LlmEndpoint {
                     provider,
                     model_name,
@@ -232,7 +237,12 @@ mod tests {
         model.save(&model_path).unwrap();
         let loaded = TlModel::load(&model_path).unwrap();
 
-        if let TlModel::Linfa { kind, data, metadata } = loaded {
+        if let TlModel::Linfa {
+            kind,
+            data,
+            metadata,
+        } = loaded
+        {
             assert_eq!(kind, LinfaKind::LinearRegression);
             assert_eq!(data, vec![1, 2, 3, 4]);
             assert_eq!(metadata.name, "test_model");

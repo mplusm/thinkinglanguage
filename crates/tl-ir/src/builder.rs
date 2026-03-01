@@ -179,7 +179,11 @@ fn build_aggregate(input: QueryPlan, args: &[Expr]) -> Result<QueryPlan, String>
                         match item {
                             Expr::Ident(s) => group_by.push(IrScalar::Column(s.clone())),
                             Expr::String(s) => group_by.push(IrScalar::Column(s.clone())),
-                            _ => return Err("by: list items must be strings or identifiers".to_string()),
+                            _ => {
+                                return Err(
+                                    "by: list items must be strings or identifiers".to_string()
+                                );
+                            }
                         }
                     }
                 }
@@ -452,24 +456,24 @@ pub fn ast_to_ir_scalar(expr: &Expr) -> Result<IrScalar, String> {
 
         // Aggregate function calls: count(x), sum(x), avg(x), min(x), max(x)
         Expr::Call { function, args } => {
-            if let Expr::Ident(fname) = function.as_ref() {
-                if let Some(func) = match fname.as_str() {
+            if let Expr::Ident(fname) = function.as_ref()
+                && let Some(func) = match fname.as_str() {
                     "count" => Some(AggFunc::Count),
                     "sum" => Some(AggFunc::Sum),
                     "avg" => Some(AggFunc::Avg),
                     "min" => Some(AggFunc::Min),
                     "max" => Some(AggFunc::Max),
                     _ => None,
-                } {
-                    if args.len() != 1 {
-                        return Err(format!("{fname}() expects 1 argument"));
-                    }
-                    let arg = ast_to_ir_scalar(&args[0])?;
-                    return Ok(IrScalar::Aggregate {
-                        func,
-                        arg: Box::new(arg),
-                    });
                 }
+            {
+                if args.len() != 1 {
+                    return Err(format!("{fname}() expects 1 argument"));
+                }
+                let arg = ast_to_ir_scalar(&args[0])?;
+                return Ok(IrScalar::Aggregate {
+                    func,
+                    arg: Box::new(arg),
+                });
             }
             Err("Unsupported function call in IR scalar".to_string())
         }
@@ -502,7 +506,10 @@ pub fn ast_to_ir_scalar(expr: &Expr) -> Result<IrScalar, String> {
         | Expr::StructInit { .. }
         | Expr::EnumVariant { .. }
         | Expr::Try(_)
-        | Expr::Decimal(_) => Err(format!("Unsupported expression in IR scalar: {:?}", std::mem::discriminant(expr))),
+        | Expr::Decimal(_) => Err(format!(
+            "Unsupported expression in IR scalar: {:?}",
+            std::mem::discriminant(expr)
+        )),
     }
 }
 

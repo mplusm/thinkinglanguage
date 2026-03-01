@@ -123,8 +123,7 @@ impl QueryPlan {
                 )
             }
             QueryPlan::WithColumns { columns, input } => {
-                let cols: Vec<String> =
-                    columns.iter().map(|(n, e)| format!("{n} = {e}")).collect();
+                let cols: Vec<String> = columns.iter().map(|(n, e)| format!("{n} = {e}")).collect();
                 format!(
                     "{pad}WithColumns: [{}]\n{}",
                     cols.join(", "),
@@ -170,10 +169,7 @@ impl QueryPlan {
                 format!("{pad}Collect\n{}", input.display_indented(indent + 1))
             }
             QueryPlan::Show { limit, input } => {
-                format!(
-                    "{pad}Show: {limit}\n{}",
-                    input.display_indented(indent + 1)
-                )
+                format!("{pad}Show: {limit}\n{}", input.display_indented(indent + 1))
             }
             QueryPlan::Describe { input } => {
                 format!("{pad}Describe\n{}", input.display_indented(indent + 1))

@@ -9,8 +9,7 @@ use wasm_bindgen::prelude::*;
 /// Execute a TL program and return its output (or an error message).
 #[wasm_bindgen]
 pub fn execute(source: &str) -> Result<String, String> {
-    let program = tl_parser::parse(source)
-        .map_err(|e| format!("Parse error: {e}"))?;
+    let program = tl_parser::parse(source).map_err(|e| format!("Parse error: {e}"))?;
     let proto = tl_compiler::compile_with_source(&program, source)
         .map_err(|e| format!("Compile error: {e}"))?;
     let mut vm = tl_compiler::Vm::new();
