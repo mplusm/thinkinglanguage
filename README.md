@@ -19,7 +19,23 @@ ThinkingLanguage (TL) replaces the fragile Python + SQL + YAML + Spark glue-code
 
 ## Installation
 
-### Pre-built binaries (recommended)
+### Quick install (macOS & Linux)
+
+```bash
+curl -sSf https://raw.githubusercontent.com/mplusm/thinkinglanguage/main/scripts/install.sh | sh
+```
+
+### npx (Node.js)
+
+```bash
+# Run directly without installing
+npx thinkinglanguage run hello.tl
+
+# Or install globally
+npm install -g thinkinglanguage
+```
+
+### Pre-built binaries
 
 Download the latest release from [GitHub Releases](https://github.com/mplusm/thinkinglanguage/releases/latest).
 

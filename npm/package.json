@@ -1,0 +1,28 @@
+{
+  "name": "thinkinglanguage",
+  "version": "0.1.0",
+  "description": "A purpose-built language for Data Engineering & AI",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mplusm/thinkinglanguage"
+  },
+  "homepage": "https://github.com/mplusm/thinkinglanguage",
+  "keywords": [
+    "data-engineering",
+    "language",
+    "ai",
+    "pipeline",
+    "etl"
+  ],
+  "bin": {
+    "tl": "bin/tl"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "bin/",
+    "install.js"
+  ]
+}

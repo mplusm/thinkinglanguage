@@ -1,0 +1,23 @@
+#!/usr/bin/env node
+"use strict";
+
+const { execFileSync } = require("child_process");
+const path = require("path");
+const os = require("os");
+const fs = require("fs");
+
+const binName = os.platform() === "win32" ? "tl.exe" : "tl";
+const binPath = path.join(__dirname, binName);
+
+if (!fs.existsSync(binPath)) {
+  console.error(
+    "tl binary not found. Run 'npm install' or 'node install.js' to download it."
+  );
+  process.exit(1);
+}
+
+try {
+  execFileSync(binPath, process.argv.slice(2), { stdio: "inherit" });
+} catch (err) {
+  process.exit(err.status || 1);
+}
