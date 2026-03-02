@@ -17,15 +17,47 @@ ThinkingLanguage (TL) replaces the fragile Python + SQL + YAML + Spark glue-code
 - **Ownership semantics** — pipe-as-move, `.clone()`, read-only `&ref`, use-after-move detection
 - **Rich tooling** — LSP server, VS Code extension, formatter, linter, doc generator, package manager
 
+## Installation
+
+### Pre-built binaries (recommended)
+
+Download the latest release from [GitHub Releases](https://github.com/mplusm/thinkinglanguage/releases/latest).
+
+**Linux (x86_64):**
+```bash
+curl -LO https://github.com/mplusm/thinkinglanguage/releases/latest/download/tl-x86_64-unknown-linux-gnu.tar.gz
+tar xzf tl-x86_64-unknown-linux-gnu.tar.gz
+sudo mv tl /usr/local/bin/
+```
+
+**macOS (Apple Silicon):**
+```bash
+curl -LO https://github.com/mplusm/thinkinglanguage/releases/latest/download/tl-aarch64-apple-darwin.tar.gz
+tar xzf tl-aarch64-apple-darwin.tar.gz
+sudo mv tl /usr/local/bin/
+```
+
+**Windows:** Download `tl-x86_64-pc-windows-msvc.zip` from the [releases page](https://github.com/mplusm/thinkinglanguage/releases/latest), extract, and add `tl.exe` to your PATH.
+
+### From crates.io
+
+```bash
+cargo install tl-cli
+# With SQLite support
+cargo install tl-cli --features sqlite
+```
+
+### From source
+
+```bash
+git clone https://github.com/mplusm/thinkinglanguage.git
+cd thinkinglanguage
+cargo build --release --features sqlite
+```
+
 ## Quick Start
 
 ```bash
-# Install from source
-cargo install --path crates/tl-cli
-
-# Or build the workspace
-cargo build --release
-
 # Run a script
 tl run hello.tl
 
