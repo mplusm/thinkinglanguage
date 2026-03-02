@@ -8,6 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTFLAGS: -C link-arg=-fuse-ld=mold
 
 jobs:
   check:
@@ -22,12 +23,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Extend swap space
-        run: |
-          sudo fallocate -l 8G /swap2
-          sudo chmod 600 /swap2
-          sudo mkswap /swap2
-          sudo swapon /swap2
+      - name: Install mold linker
+        run: sudo apt-get install -y mold
 
       - name: Check formatting
         run: cargo fmt --all -- --check
