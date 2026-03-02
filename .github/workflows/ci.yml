@@ -22,12 +22,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Add swap space
+      - name: Extend swap space
         run: |
-          sudo fallocate -l 8G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          sudo fallocate -l 8G /swap2
+          sudo chmod 600 /swap2
+          sudo mkswap /swap2
+          sudo swapon /swap2
 
       - name: Check formatting
         run: cargo fmt --all -- --check
