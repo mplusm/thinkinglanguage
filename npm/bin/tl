@@ -7,7 +7,7 @@ const os = require("os");
 const fs = require("fs");
 
 const binName = os.platform() === "win32" ? "tl.exe" : "tl";
-const binPath = path.join(__dirname, binName);
+const binPath = path.join(__dirname, "..", "native", binName);
 
 if (!fs.existsSync(binPath)) {
   console.error(

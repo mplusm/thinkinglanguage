@@ -8,10 +8,10 @@ const https = require("https");
 const os = require("os");
 const zlib = require("zlib");
 
-const VERSION = `v${require("./package.json").version}`;
+const RELEASE_VERSION = "v0.1.0";
 const REPO = "mplusm/thinkinglanguage";
-const BIN_DIR = path.join(__dirname, "bin");
-const BIN_PATH = path.join(BIN_DIR, os.platform() === "win32" ? "tl.exe" : "tl");
+const NATIVE_DIR = path.join(__dirname, "native");
+const BIN_PATH = path.join(NATIVE_DIR, os.platform() === "win32" ? "tl.exe" : "tl");
 
 function getPlatformTarget() {
   const platform = os.platform();
@@ -130,21 +130,21 @@ async function main() {
   const isWindows = os.platform() === "win32";
   const ext = isWindows ? "zip" : "tar.gz";
   const archive = `tl-${target}.${ext}`;
-  const url = `https://github.com/${REPO}/releases/download/${VERSION}/${archive}`;
+  const url = `https://github.com/${REPO}/releases/download/${RELEASE_VERSION}/${archive}`;
 
-  console.log(`Downloading tl ${VERSION} for ${target}...`);
+  console.log(`Downloading tl ${RELEASE_VERSION} for ${target}...`);
   const buffer = await fetch(url);
 
-  fs.mkdirSync(BIN_DIR, { recursive: true });
+  fs.mkdirSync(NATIVE_DIR, { recursive: true });
 
   const binaryName = isWindows ? "tl.exe" : "tl";
 
   console.log("Extracting...");
   let found;
   if (isWindows) {
-    found = extractZip(buffer, BIN_DIR, binaryName);
+    found = extractZip(buffer, NATIVE_DIR, binaryName);
   } else {
-    found = extractTarGz(buffer, BIN_DIR, binaryName);
+    found = extractTarGz(buffer, NATIVE_DIR, binaryName);
   }
 
   if (!found) {
