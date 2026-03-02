@@ -4,11 +4,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
 description = "ThinkingLanguage — Type system and type checker"
 
 [dependencies]
-tl-ast = { path = "../tl-ast" }
-tl-errors = { path = "../tl-errors" }
+tl-ast = { path = "../tl-ast", version = "0.1.0" }
+tl-errors = { path = "../tl-errors", version = "0.1.0" }
 
 [dev-dependencies]
-tl-parser = { path = "../tl-parser" }
+tl-parser = { path = "../tl-parser", version = "0.1.0" }

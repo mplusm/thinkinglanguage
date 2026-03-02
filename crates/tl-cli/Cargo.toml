@@ -3,6 +3,12 @@ name = "tl-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
 description = "CLI entry point for ThinkingLanguage (tl run, tl shell)"
 
 [[bin]]
@@ -10,17 +16,17 @@ name = "tl"
 path = "src/main.rs"
 
 [dependencies]
-tl-lexer = { path = "../tl-lexer" }
-tl-parser = { path = "../tl-parser" }
-tl-ast = { path = "../tl-ast" }
-tl-interpreter = { path = "../tl-interpreter" }
-tl-compiler = { path = "../tl-compiler" }
-tl-errors = { path = "../tl-errors" }
-tl-types = { path = "../tl-types" }
-tl-ai = { path = "../tl-ai" }
-tl-stream = { path = "../tl-stream" }
-tl-lsp = { path = "../tl-lsp" }
-tl-package = { path = "../tl-package" }
+tl-lexer = { path = "../tl-lexer", version = "0.1.0" }
+tl-parser = { path = "../tl-parser", version = "0.1.0" }
+tl-ast = { path = "../tl-ast", version = "0.1.0" }
+tl-interpreter = { path = "../tl-interpreter", version = "0.1.0" }
+tl-compiler = { path = "../tl-compiler", version = "0.1.0" }
+tl-errors = { path = "../tl-errors", version = "0.1.0" }
+tl-types = { path = "../tl-types", version = "0.1.0" }
+tl-ai = { path = "../tl-ai", version = "0.1.0" }
+tl-stream = { path = "../tl-stream", version = "0.1.0" }
+tl-lsp = { path = "../tl-lsp", version = "0.1.0" }
+tl-package = { path = "../tl-package", version = "0.1.0" }
 tl-llvm = { path = "../tl-llvm", optional = true }
 clap.workspace = true
 rustyline.workspace = true

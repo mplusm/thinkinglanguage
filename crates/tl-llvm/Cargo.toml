@@ -3,6 +3,7 @@ name = "tl-llvm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 description = "LLVM backend for ThinkingLanguage (Phase 30)"
 
 [dependencies]

@@ -3,6 +3,7 @@ name = "tl-wasm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 description = "WASM build of ThinkingLanguage for browser execution"
 
 [lib]

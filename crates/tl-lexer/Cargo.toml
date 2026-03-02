@@ -3,8 +3,14 @@ name = "tl-lexer"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
 description = "Lexer/tokenizer for ThinkingLanguage"
 
 [dependencies]
 logos.workspace = true
-tl-errors = { path = "../tl-errors" }
+tl-errors = { path = "../tl-errors", version = "0.1.0" }

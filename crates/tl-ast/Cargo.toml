@@ -3,7 +3,13 @@ name = "tl-ast"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
 description = "Abstract Syntax Tree definitions for ThinkingLanguage"
 
 [dependencies]
-tl-errors = { path = "../tl-errors" }
+tl-errors = { path = "../tl-errors", version = "0.1.0" }

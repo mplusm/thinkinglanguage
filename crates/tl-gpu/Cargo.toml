@@ -3,10 +3,16 @@ name = "tl-gpu"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
 description = "GPU tensor compute for ThinkingLanguage via wgpu"
 
 [dependencies]
-tl-ai = { path = "../tl-ai" }
+tl-ai = { path = "../tl-ai", version = "0.1.0" }
 ndarray = "0.15"
 wgpu = "24"
 bytemuck = { version = "1", features = ["derive"] }
