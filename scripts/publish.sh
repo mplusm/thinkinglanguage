@@ -24,10 +24,10 @@ CRATES=(
     tl-ai
     tl-data
     tl-stream
-    tl-compiler
-    tl-interpreter
     tl-lsp
     tl-gpu
+    tl-compiler
+    tl-interpreter
     thinkinglanguage
 )
 

@@ -5740,6 +5740,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "thinkinglanguage"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "crossterm",
+ "ratatui",
+ "rustyline",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thinkinglanguage-types",
+ "tl-ai",
+ "tl-ast",
+ "tl-compiler",
+ "tl-errors",
+ "tl-interpreter",
+ "tl-lexer",
+ "tl-lsp",
+ "tl-package",
+ "tl-parser",
+ "tl-stream",
+ "toml",
+ "toml_edit 0.22.27",
+]
+
+[[package]]
+name = "thinkinglanguage-types"
+version = "0.1.0"
+dependencies = [
+ "tl-ast",
+ "tl-errors",
+ "tl-parser",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5900,34 +5936,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tl-cli"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "clap",
- "crossterm",
- "ratatui",
- "rustyline",
- "serde",
- "serde_json",
- "tempfile",
- "tl-ai",
- "tl-ast",
- "tl-compiler",
- "tl-errors",
- "tl-interpreter",
- "tl-lexer",
- "tl-llvm",
- "tl-lsp",
- "tl-package",
- "tl-parser",
- "tl-stream",
- "tl-types",
- "toml",
- "toml_edit 0.22.27",
-]
-
-[[package]]
 name = "tl-compiler"
 version = "0.1.0"
 dependencies = [
@@ -6063,11 +6071,11 @@ dependencies = [
  "lsp-types",
  "serde",
  "serde_json",
+ "thinkinglanguage-types",
  "tl-ast",
  "tl-errors",
  "tl-lexer",
  "tl-parser",
- "tl-types",
 ]
 
 [[package]]
@@ -6130,25 +6138,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "tl-types"
-version = "0.1.0"
-dependencies = [
- "tl-ast",
- "tl-errors",
- "tl-parser",
-]
-
-[[package]]
 name = "tl-wasm"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+ "thinkinglanguage-types",
  "tl-ast",
  "tl-compiler",
  "tl-errors",
  "tl-lexer",
  "tl-parser",
- "tl-types",
  "wasm-bindgen",
  "wasm-bindgen-test",
 ]
