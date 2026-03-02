@@ -18,7 +18,7 @@ CRATES=(
     tl-ast
     tl-lexer
     tl-parser
-    tl-types
+    thinkinglanguage-types
     tl-ir
     tl-package
     tl-ai
@@ -28,7 +28,7 @@ CRATES=(
     tl-interpreter
     tl-lsp
     tl-gpu
-    tl-cli
+    thinkinglanguage
 )
 
 CLI_CARGO="crates/tl-cli/Cargo.toml"
@@ -48,7 +48,7 @@ publish_crate() {
     echo "=== Publishing $crate ==="
 
     # Before publishing tl-cli, patch out tl-llvm optional dependency
-    if [[ "$crate" == "tl-cli" ]]; then
+    if [[ "$crate" == "thinkinglanguage" ]]; then
         echo "Patching out tl-llvm dependency from tl-cli..."
         cp "$CLI_CARGO" "$CLI_CARGO_BAK"
         # Remove the tl-llvm dependency line
@@ -60,11 +60,11 @@ publish_crate() {
     if [[ -n "$DRY_RUN" ]]; then
         cargo publish --package "$crate" --dry-run --allow-dirty
     else
-        cargo publish --package "$crate" --allow-dirty
+        cargo publish --package "$crate" --allow-dirty 2>&1 || echo "WARNING: $crate publish failed (may already exist), continuing..."
     fi
 
     # Restore tl-cli after publish
-    if [[ "$crate" == "tl-cli" && -f "$CLI_CARGO_BAK" ]]; then
+    if [[ "$crate" == "thinkinglanguage" && -f "$CLI_CARGO_BAK" ]]; then
         echo "Restoring tl-cli Cargo.toml..."
         mv "$CLI_CARGO_BAK" "$CLI_CARGO"
     fi

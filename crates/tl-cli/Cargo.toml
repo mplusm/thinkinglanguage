@@ -1,5 +1,5 @@
 [package]
-name = "tl-cli"
+name = "thinkinglanguage"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -22,7 +22,7 @@ tl-ast = { path = "../tl-ast", version = "0.1.0" }
 tl-interpreter = { path = "../tl-interpreter", version = "0.1.0" }
 tl-compiler = { path = "../tl-compiler", version = "0.1.0" }
 tl-errors = { path = "../tl-errors", version = "0.1.0" }
-tl-types = { path = "../tl-types", version = "0.1.0" }
+tl-types = { package = "thinkinglanguage-types", path = "../tl-types", version = "0.1.0" }
 tl-ai = { path = "../tl-ai", version = "0.1.0" }
 tl-stream = { path = "../tl-stream", version = "0.1.0" }
 tl-lsp = { path = "../tl-lsp", version = "0.1.0" }

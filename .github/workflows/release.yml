@@ -42,7 +42,7 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} --package tl-cli --features sqlite
+        run: cargo build --release --target ${{ matrix.target }} --package thinkinglanguage --features sqlite
 
       - name: Package (unix)
         if: matrix.archive == 'tar.gz'

@@ -42,9 +42,9 @@ sudo mv tl /usr/local/bin/
 ### From crates.io
 
 ```bash
-cargo install tl-cli
+cargo install thinkinglanguage
 # With SQLite support
-cargo install tl-cli --features sqlite
+cargo install thinkinglanguage --features sqlite
 ```
 
 ### From source

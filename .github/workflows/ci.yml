@@ -41,4 +41,4 @@ jobs:
         run: cargo test --workspace --exclude tl-llvm --exclude tl-wasm --exclude tl-gpu
 
       - name: Run tests with SQLite
-        run: cargo test --package tl-data --package tl-compiler --package tl-interpreter --package tl-cli --features sqlite
+        run: cargo test --package tl-data --package tl-compiler --package tl-interpreter --package thinkinglanguage --features sqlite
