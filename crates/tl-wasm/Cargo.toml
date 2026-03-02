@@ -6,6 +6,9 @@ license.workspace = true
 publish = false
 description = "WASM build of ThinkingLanguage for browser execution"
 
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
