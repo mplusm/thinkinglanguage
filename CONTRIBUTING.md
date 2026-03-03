@@ -185,4 +185,4 @@ Follow the pattern established by MySQL and SQLite connectors:
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the MIT OR Apache-2.0 dual license.
+By contributing, you agree that your contributions will be licensed under the Apache-2.0 license.

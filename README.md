@@ -270,4 +270,4 @@ cargo test --workspace --exclude tl-llvm --exclude tl-wasm --exclude tl-gpu --fe
 
 ## License
 
-MIT OR Apache-2.0
+Apache-2.0

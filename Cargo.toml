@@ -25,7 +25,7 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 authors = ["Mallesh Madapathi <mallesh@thinkingdbx.com>"]
 repository = "https://github.com/mplusm/thinkinglanguage"
 homepage = "https://github.com/mplusm/thinkinglanguage"

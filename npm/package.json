@@ -2,7 +2,7 @@
   "name": "thinkinglanguage",
   "version": "0.1.1",
   "description": "A purpose-built language for Data Engineering & AI",
-  "license": "MIT OR Apache-2.0",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/mplusm/thinkinglanguage"
