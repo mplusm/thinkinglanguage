@@ -126,6 +126,7 @@ pub fn chat_with_tools(
     tools: &[serde_json::Value],
     base_url: Option<&str>,
     api_key: Option<&str>,
+    output_format: Option<&str>,
 ) -> Result<LlmResponse, String> {
     let provider = detect_provider(model);
 
@@ -145,13 +146,35 @@ pub fn chat_with_tools(
     // If base_url is set, always use OpenAI-compatible protocol
     let use_anthropic = provider == "anthropic" && effective_base_url.is_none();
 
-    if use_anthropic {
-        call_anthropic(&http, model, system, messages, tools, &resolved_key)
-    } else {
-        let url = effective_base_url
-            .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
-        call_openai(&http, model, system, messages, tools, &resolved_key, &url)
+    // Retry with exponential backoff for transient errors
+    let max_retries = 3u32;
+    let mut last_err = String::new();
+    for attempt in 0..=max_retries {
+        let result = if use_anthropic {
+            call_anthropic(&http, model, system, messages, tools, &resolved_key)
+        } else {
+            let url = effective_base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+            call_openai(&http, model, system, messages, tools, &resolved_key, &url, output_format)
+        };
+        match result {
+            Ok(resp) => return Ok(resp),
+            Err(e) => {
+                let is_transient = e.contains("429") || e.contains("500")
+                    || e.contains("502") || e.contains("503")
+                    || e.contains("rate limit") || e.contains("overloaded");
+                if is_transient && attempt < max_retries {
+                    let delay_ms = 1000 * 2u64.pow(attempt); // 1s, 2s, 4s
+                    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                    last_err = e;
+                    continue;
+                }
+                return Err(e);
+            }
+        }
     }
+    Err(last_err)
 }
 
 /// Format tool results back into messages for the next turn.
@@ -293,6 +316,7 @@ fn call_openai(
     tools: &[serde_json::Value],
     api_key: &str,
     base_url: &str,
+    output_format: Option<&str>,
 ) -> Result<LlmResponse, String> {
     let mut msgs: Vec<serde_json::Value> = Vec::new();
     if let Some(sys) = system {
@@ -307,6 +331,11 @@ fn call_openai(
 
     if !tools.is_empty() {
         body["tools"] = json!(tools);
+    }
+
+    // JSON mode: request structured output
+    if output_format == Some("json") {
+        body["response_format"] = json!({"type": "json_object"});
     }
 
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
@@ -362,6 +391,174 @@ fn parse_openai_response(json: &serde_json::Value) -> Result<LlmResponse, String
         .as_str()
         .map(|s| LlmResponse::Text(s.to_string()))
         .ok_or_else(|| "No content in OpenAI response".to_string())
+}
+
+/// Streaming chat completion. Calls `on_chunk` with each text delta.
+/// Returns the full accumulated text.
+pub fn stream_chat(
+    model: &str,
+    system: Option<&str>,
+    messages: &[serde_json::Value],
+    base_url: Option<&str>,
+    api_key: Option<&str>,
+) -> Result<StreamReader, String> {
+    let provider = detect_provider(model);
+    let resolved_key = match api_key {
+        Some(k) if !k.is_empty() => k.to_string(),
+        _ => resolve_api_key(provider)?,
+    };
+    let effective_base_url = base_url
+        .map(|s| s.to_string())
+        .or_else(|| std::env::var("TL_LLM_BASE_URL").ok());
+
+    let http = reqwest::blocking::Client::new();
+    let use_anthropic = provider == "anthropic" && effective_base_url.is_none();
+
+    if use_anthropic {
+        stream_anthropic(&http, model, system, messages, &resolved_key)
+    } else {
+        let url = effective_base_url
+            .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+        stream_openai(&http, model, system, messages, &resolved_key, &url)
+    }
+}
+
+/// A streaming response reader that yields text chunks.
+pub struct StreamReader {
+    lines: std::io::BufReader<reqwest::blocking::Response>,
+    is_anthropic: bool,
+    done: bool,
+}
+
+impl StreamReader {
+    /// Read the next text chunk. Returns None when stream is done.
+    pub fn next_chunk(&mut self) -> Result<Option<String>, String> {
+        use std::io::BufRead;
+        if self.done {
+            return Ok(None);
+        }
+        loop {
+            let mut line = String::new();
+            match self.lines.read_line(&mut line) {
+                Ok(0) => { self.done = true; return Ok(None); }
+                Ok(_) => {}
+                Err(e) => return Err(format!("Stream read error: {e}")),
+            }
+            let line = line.trim();
+            if line.is_empty() { continue; }
+            if !line.starts_with("data: ") { continue; }
+            let data = &line[6..];
+            if data == "[DONE]" { self.done = true; return Ok(None); }
+
+            let json: serde_json::Value = match serde_json::from_str(data) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            if self.is_anthropic {
+                // Anthropic SSE: {"type":"content_block_delta","delta":{"type":"text_delta","text":"..."}}
+                if json["type"].as_str() == Some("content_block_delta") {
+                    if let Some(text) = json["delta"]["text"].as_str() {
+                        if !text.is_empty() { return Ok(Some(text.to_string())); }
+                    }
+                } else if json["type"].as_str() == Some("message_stop") {
+                    self.done = true;
+                    return Ok(None);
+                }
+            } else {
+                // OpenAI SSE: {"choices":[{"delta":{"content":"..."}}]}
+                if let Some(content) = json["choices"][0]["delta"]["content"].as_str() {
+                    if !content.is_empty() { return Ok(Some(content.to_string())); }
+                }
+                // Check for finish_reason
+                if json["choices"][0]["finish_reason"].as_str().is_some() {
+                    self.done = true;
+                    return Ok(None);
+                }
+            }
+        }
+    }
+}
+
+fn stream_openai(
+    http: &reqwest::blocking::Client,
+    model: &str,
+    system: Option<&str>,
+    messages: &[serde_json::Value],
+    api_key: &str,
+    base_url: &str,
+) -> Result<StreamReader, String> {
+    let mut msgs: Vec<serde_json::Value> = Vec::new();
+    if let Some(sys) = system {
+        msgs.push(json!({"role": "system", "content": sys}));
+    }
+    msgs.extend_from_slice(messages);
+
+    let body = json!({
+        "model": model,
+        "messages": msgs,
+        "stream": true,
+    });
+
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let resp = http
+        .post(&url)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .map_err(|e| format!("Stream request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        return Err(format!("OpenAI streaming API error ({status}): {body}"));
+    }
+
+    Ok(StreamReader {
+        lines: std::io::BufReader::new(resp),
+        is_anthropic: false,
+        done: false,
+    })
+}
+
+fn stream_anthropic(
+    http: &reqwest::blocking::Client,
+    model: &str,
+    system: Option<&str>,
+    messages: &[serde_json::Value],
+    api_key: &str,
+) -> Result<StreamReader, String> {
+    let mut body = json!({
+        "model": model,
+        "max_tokens": 4096,
+        "messages": messages,
+        "stream": true,
+    });
+    if let Some(sys) = system {
+        body["system"] = json!(sys);
+    }
+
+    let resp = http
+        .post("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .map_err(|e| format!("Stream request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        return Err(format!("Anthropic streaming API error ({status}): {body}"));
+    }
+
+    Ok(StreamReader {
+        lines: std::io::BufReader::new(resp),
+        is_anthropic: true,
+        done: false,
+    })
 }
 
 // --- Backward-compatible internal helpers ---

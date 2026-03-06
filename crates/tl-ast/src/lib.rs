@@ -194,11 +194,12 @@ pub enum StmtKind {
         methods: Vec<Stmt>,
     },
 
-    /// `try { ... } catch e { ... }`
+    /// `try { ... } catch e { ... } finally { ... }`
     TryCatch {
         try_body: Vec<Stmt>,
         catch_var: String,
         catch_body: Vec<Stmt>,
+        finally_body: Option<Vec<Stmt>>,
     },
 
     /// `throw expr`
@@ -259,6 +260,7 @@ pub enum StmtKind {
         max_tokens: Option<i64>,
         base_url: Option<String>,
         api_key: Option<String>,
+        output_format: Option<String>,
         on_tool_call: Option<Vec<Stmt>>,
         on_complete: Option<Vec<Stmt>>,
     },

@@ -1,5 +1,7 @@
 // ThinkingLanguage — Error types and diagnostics
-// Licensed under MIT OR Apache-2.0
+// Licensed under Apache-2.0
+
+pub mod security;
 
 use ariadne::{Color, Label, Report, ReportKind, Source};
 use std::fmt;

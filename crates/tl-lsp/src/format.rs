@@ -449,6 +449,7 @@ impl Formatter {
                 try_body,
                 catch_var,
                 catch_body,
+                finally_body,
             } => {
                 self.push_indent();
                 self.output.push_str("try {\n");
@@ -463,7 +464,16 @@ impl Formatter {
                 self.format_body(catch_body);
                 self.indent -= 1;
                 self.push_indent();
-                self.output.push_str("}\n");
+                self.output.push_str("}");
+                if let Some(finally_stmts) = finally_body {
+                    self.output.push_str(" finally {\n");
+                    self.indent += 1;
+                    self.format_body(finally_stmts);
+                    self.indent -= 1;
+                    self.push_indent();
+                    self.output.push_str("}");
+                }
+                self.output.push('\n');
             }
             StmtKind::Throw(expr) => {
                 self.push_indent();
@@ -737,6 +747,7 @@ impl Formatter {
                 max_tokens,
                 base_url,
                 api_key,
+                output_format: _,
                 on_tool_call,
                 on_complete,
             } => {

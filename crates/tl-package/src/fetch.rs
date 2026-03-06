@@ -270,7 +270,42 @@ fn fetch_registry_impl(
         use tar::Archive;
         let decoder = GzDecoder::new(tarball.as_slice());
         let mut archive = Archive::new(decoder);
-        archive
+
+        // Validate that all entries stay within cache_dir to prevent path traversal
+        let canonical_cache = cache_dir
+            .canonicalize()
+            .map_err(|e| format!("Failed to canonicalize cache dir: {e}"))?;
+        for entry in archive
+            .entries()
+            .map_err(|e| format!("Failed to read archive entries: {e}"))?
+        {
+            let entry = entry.map_err(|e| format!("Failed to read archive entry: {e}"))?;
+            let entry_path = entry
+                .path()
+                .map_err(|e| format!("Failed to read entry path: {e}"))?;
+            // Reject entries with '..' components
+            for component in entry_path.components() {
+                if let std::path::Component::ParentDir = component {
+                    return Err(format!(
+                        "Malicious archive: entry '{}' contains path traversal",
+                        entry_path.display()
+                    ));
+                }
+            }
+            // Verify resolved path stays within cache_dir
+            let full_path = canonical_cache.join(&entry_path);
+            if !full_path.starts_with(&canonical_cache) {
+                return Err(format!(
+                    "Malicious archive: entry '{}' escapes cache directory",
+                    entry_path.display()
+                ));
+            }
+        }
+
+        // Re-extract now that validation passed
+        let decoder2 = GzDecoder::new(tarball.as_slice());
+        let mut archive2 = Archive::new(decoder2);
+        archive2
             .unpack(&cache_dir)
             .map_err(|e| format!("Failed to extract package: {e}"))?;
     }

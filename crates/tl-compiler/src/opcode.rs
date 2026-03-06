@@ -291,10 +291,87 @@ pub fn encode_abx(op: Op, a: u8, bx: u16) -> u32 {
     ((op as u32) << 24) | ((a as u32) << 16) | (bx as u32)
 }
 
+impl TryFrom<u8> for Op {
+    type Error = u8;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Op::LoadConst),
+            1 => Ok(Op::LoadNone),
+            2 => Ok(Op::LoadTrue),
+            3 => Ok(Op::LoadFalse),
+            4 => Ok(Op::Move),
+            5 => Ok(Op::GetLocal),
+            6 => Ok(Op::SetLocal),
+            7 => Ok(Op::GetGlobal),
+            8 => Ok(Op::SetGlobal),
+            9 => Ok(Op::GetUpvalue),
+            10 => Ok(Op::SetUpvalue),
+            11 => Ok(Op::Add),
+            12 => Ok(Op::Sub),
+            13 => Ok(Op::Mul),
+            14 => Ok(Op::Div),
+            15 => Ok(Op::Mod),
+            16 => Ok(Op::Pow),
+            17 => Ok(Op::Neg),
+            18 => Ok(Op::Eq),
+            19 => Ok(Op::Neq),
+            20 => Ok(Op::Lt),
+            21 => Ok(Op::Gt),
+            22 => Ok(Op::Lte),
+            23 => Ok(Op::Gte),
+            24 => Ok(Op::And),
+            25 => Ok(Op::Or),
+            26 => Ok(Op::Not),
+            27 => Ok(Op::Concat),
+            28 => Ok(Op::Jump),
+            29 => Ok(Op::JumpIfFalse),
+            30 => Ok(Op::JumpIfTrue),
+            31 => Ok(Op::Call),
+            32 => Ok(Op::Return),
+            33 => Ok(Op::Closure),
+            34 => Ok(Op::NewList),
+            35 => Ok(Op::GetIndex),
+            36 => Ok(Op::SetIndex),
+            37 => Ok(Op::NewMap),
+            38 => Ok(Op::TablePipe),
+            39 => Ok(Op::CallBuiltin),
+            40 => Ok(Op::ForIter),
+            41 => Ok(Op::ForPrep),
+            42 => Ok(Op::TestMatch),
+            43 => Ok(Op::NullCoalesce),
+            44 => Ok(Op::GetMember),
+            45 => Ok(Op::Interpolate),
+            46 => Ok(Op::Train),
+            47 => Ok(Op::PipelineExec),
+            48 => Ok(Op::StreamExec),
+            49 => Ok(Op::ConnectorDecl),
+            50 => Ok(Op::NewStruct),
+            51 => Ok(Op::SetMember),
+            52 => Ok(Op::NewEnum),
+            53 => Ok(Op::MatchEnum),
+            54 => Ok(Op::MethodCall),
+            55 => Ok(Op::Throw),
+            56 => Ok(Op::TryBegin),
+            57 => Ok(Op::TryEnd),
+            58 => Ok(Op::Import),
+            59 => Ok(Op::Await),
+            60 => Ok(Op::Yield),
+            61 => Ok(Op::TryPropagate),
+            62 => Ok(Op::ExtractField),
+            63 => Ok(Op::ExtractNamedField),
+            64 => Ok(Op::LoadMoved),
+            65 => Ok(Op::MakeRef),
+            66 => Ok(Op::ParallelFor),
+            67 => Ok(Op::AgentExec),
+            _ => Err(value),
+        }
+    }
+}
+
 /// Decode opcode from instruction
 pub fn decode_op(inst: u32) -> Op {
-    // Safety: we control all encoded values
-    unsafe { std::mem::transmute((inst >> 24) as u8) }
+    Op::try_from((inst >> 24) as u8).expect("valid opcode in instruction")
 }
 
 /// Decode A field
@@ -361,5 +438,21 @@ mod tests {
 
         let inst = encode_abx(Op::LoadConst, 0, 0xFFFF);
         assert_eq!(decode_bx(inst), 0xFFFF);
+    }
+
+    #[test]
+    fn test_op_try_from_valid() {
+        for v in 0..=67u8 {
+            assert!(Op::try_from(v).is_ok(), "Op::try_from({v}) should succeed");
+        }
+        // Round-trip: value matches discriminant
+        assert_eq!(Op::try_from(0).unwrap(), Op::LoadConst);
+        assert_eq!(Op::try_from(67).unwrap(), Op::AgentExec);
+    }
+
+    #[test]
+    fn test_op_try_from_invalid() {
+        assert_eq!(Op::try_from(68), Err(68));
+        assert_eq!(Op::try_from(255), Err(255));
     }
 }

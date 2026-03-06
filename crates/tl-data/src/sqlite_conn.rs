@@ -13,6 +13,15 @@ use crate::engine::DataEngine;
 
 impl DataEngine {
     /// Read from SQLite using a database file path and SQL query.
+    ///
+    /// # Security
+    ///
+    /// The `query` parameter is executed directly against the SQLite database.
+    /// Callers must ensure that user-supplied input is not interpolated into
+    /// the query string without proper sanitization. When exposing this to
+    /// end users, prefer parameterized queries or restrict the query to
+    /// known-safe patterns. The `write_sqlite` method quotes table names
+    /// to prevent injection in write operations.
     pub fn read_sqlite(
         &self,
         db_path: &str,
@@ -187,13 +196,13 @@ impl DataEngine {
                     DataType::Binary | DataType::LargeBinary => "BLOB",
                     _ => "TEXT",
                 };
-                format!("\"{}\" {}", f.name(), sql_type)
+                format!("\"{}\" {}", f.name().replace('"', "\"\""), sql_type)
             })
             .collect();
 
         let create_sql = format!(
             "CREATE TABLE IF NOT EXISTS \"{}\" ({})",
-            table_name,
+            table_name.replace('"', "\"\""),
             col_defs.join(", ")
         );
         conn.execute(&create_sql, [])
@@ -205,7 +214,7 @@ impl DataEngine {
             .collect();
         let insert_sql = format!(
             "INSERT INTO \"{}\" VALUES ({})",
-            table_name,
+            table_name.replace('"', "\"\""),
             placeholders.join(", ")
         );
 

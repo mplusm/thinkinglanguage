@@ -24,6 +24,7 @@ chrono = "0.4"
 rust_decimal = "1"
 sha2 = "0.10"
 md-5 = "0.10"
+rand = "0.8"
 
 # Native-only (excluded in WASM builds)
 tl-data = { path = "../tl-data", version = "0.1.0", optional = true }

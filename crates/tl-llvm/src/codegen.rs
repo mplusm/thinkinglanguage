@@ -560,10 +560,13 @@ impl<'ctx> LlvmCodegen<'ctx> {
                 }
 
                 Op::CallBuiltin => {
-                    // Next instruction has arg count in A field
+                    // ABx format: a=dest, bx=builtin_id (16-bit)
+                    // Next instruction: A=arg_count, B=first_arg_reg
+                    let builtin_id = decode_bx(proto.code[ip]) as usize;
                     let next_inst = proto.code[ip + 1];
                     let arg_count = decode_a(next_inst) as usize;
-                    self.emit_call_builtin(a, b, c, arg_count, &reg_slots, ctx_param, error_block)?;
+                    let first_arg = decode_b(next_inst) as usize;
+                    self.emit_call_builtin(a, builtin_id, first_arg, arg_count, &reg_slots, ctx_param, error_block)?;
                     ip += 1; // skip extra instruction word
                 }
 

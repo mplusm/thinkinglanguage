@@ -32,7 +32,7 @@ impl DataEngine {
         let mut client = Client::connect(conn_str, NoTls)
             .map_err(|e| format!("PostgreSQL connection error: {e}"))?;
 
-        let query = format!("SELECT * FROM {table_name}");
+        let query = format!("SELECT * FROM \"{}\"", table_name.replace('"', "\"\""));
         let rows = client
             .query(&query, &[])
             .map_err(|e| format!("PostgreSQL query error: {e}"))?;

@@ -12,7 +12,7 @@ const KEYWORDS: &[&str] = &[
     "let", "fn", "if", "else", "while", "for", "in", "return", "true", "false", "none", "struct",
     "enum", "impl", "try", "catch", "throw", "import", "test", "break", "continue", "and", "or",
     "not", "mut", "await", "yield", "match", "schema", "pipeline", "stream", "source", "sink",
-    "use", "pub", "mod", "trait", "where",
+    "use", "pub", "mod", "trait", "where", "agent", "finally", "async",
 ];
 
 /// Builtin functions in TL
@@ -108,6 +108,26 @@ pub const BUILTINS: &[&str] = &[
     "set_union",
     "set_intersection",
     "set_difference",
+    "random",
+    "random_int",
+    "sample",
+    "exp",
+    "is_nan",
+    "is_infinite",
+    "sign",
+    "clamp",
+    "today",
+    "date_add",
+    "date_diff",
+    "date_trunc",
+    "date_extract",
+    "assert_table_eq",
+    "run_agent",
+    "stream_agent",
+    "http_get",
+    "http_post",
+    "http_request",
+    "embed",
 ];
 
 /// String methods for dot-completion
@@ -115,6 +135,8 @@ const STRING_METHODS: &[&str] = &[
     "len",
     "split",
     "trim",
+    "trim_start",
+    "trim_end",
     "contains",
     "replace",
     "to_upper",
@@ -127,16 +149,26 @@ const STRING_METHODS: &[&str] = &[
     "substring",
     "pad_left",
     "pad_right",
+    "count",
+    "is_empty",
+    "is_numeric",
+    "is_alpha",
+    "strip_prefix",
+    "strip_suffix",
 ];
 
 /// List methods for dot-completion
 const LIST_METHODS: &[&str] = &[
     "len", "push", "map", "filter", "sort", "reverse", "contains", "index_of", "slice", "flat_map",
-    "reduce", "sum", "any", "all",
+    "reduce", "sum", "min", "max", "any", "all", "find", "sort_by", "group_by", "unique",
+    "flatten", "chunk", "insert", "remove_at", "is_empty", "each", "zip", "join",
 ];
 
 /// Map methods for dot-completion
-const MAP_METHODS: &[&str] = &["keys", "values", "contains_key", "remove", "len"];
+const MAP_METHODS: &[&str] = &[
+    "keys", "values", "contains_key", "remove", "len", "get", "merge", "entries",
+    "map_values", "filter", "set", "is_empty",
+];
 
 /// Set methods for dot-completion
 const SET_METHODS: &[&str] = &[

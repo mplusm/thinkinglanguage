@@ -557,6 +557,11 @@ enum Commands {
         #[arg(long)]
         emit_ir: bool,
     },
+    /// Debug a .tl file with interactive step debugger
+    Debug {
+        /// Path to the .tl file
+        file: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -742,6 +747,7 @@ fn main() {
             output,
             emit_ir,
         }) => run_compile(&file, output.as_deref(), emit_ir),
+        Some(Commands::Debug { file }) => run_debug(&file),
         None => run_repl("vm"), // Default to REPL with VM backend
     }
 }
@@ -1886,6 +1892,209 @@ fn run_compile(path: &str, output: Option<&str>, emit_ir: bool) {
                 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// tl debug — Interactive step debugger
+// ---------------------------------------------------------------------------
+
+fn run_debug(path: &str) {
+    let source = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Cannot read '{path}': {e}");
+            process::exit(1);
+        }
+    };
+
+    let source_lines: Vec<&str> = source.lines().collect();
+
+    // Parse
+    let ast = match parse(&source) {
+        Ok(program) => program,
+        Err(e) => {
+            eprintln!("Parse error: {e}");
+            process::exit(1);
+        }
+    };
+
+    // Compile
+    let proto = match compile_with_source(&ast, &source) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Compile error: {e}");
+            process::exit(1);
+        }
+    };
+
+    // Set up VM
+    let mut vm = Vm::new();
+    vm.file_path = Some(path.to_string());
+    vm.debug_load(&proto);
+
+    let mut breakpoints: Vec<u32> = Vec::new();
+
+    println!("TL Debugger — {} ({} lines)", path, source_lines.len());
+    println!("Commands: s(tep), n(ext), c(ontinue), b <line>, d <line>, p <var>, l(ist), q(uit)");
+
+    // Show initial position
+    let line = vm.debug_current_line();
+    if line > 0 && (line as usize) <= source_lines.len() {
+        println!("=> {:>4} | {}", line, source_lines[line as usize - 1]);
+    }
+
+    let mut rl = rustyline::DefaultEditor::new().unwrap_or_else(|_| {
+        eprintln!("Failed to create readline editor");
+        process::exit(1);
+    });
+
+    loop {
+        let readline = rl.readline("debug> ");
+        match readline {
+            Ok(input) => {
+                let input = input.trim();
+                if input.is_empty() { continue; }
+                let _ = rl.add_history_entry(input);
+
+                let parts: Vec<&str> = input.splitn(2, ' ').collect();
+                match parts[0] {
+                    "s" | "step" => {
+                        // Single instruction step
+                        match vm.debug_step() {
+                            Ok(Some(val)) => {
+                                println!("Program finished with: {val}");
+                                break;
+                            }
+                            Ok(None) => {
+                                show_current_line(&vm, &source_lines);
+                            }
+                            Err(e) => {
+                                eprintln!("Runtime error: {e}");
+                                break;
+                            }
+                        }
+                    }
+                    "n" | "next" => {
+                        // Step to next source line
+                        match vm.debug_step_line() {
+                            Ok(Some(val)) => {
+                                println!("Program finished with: {val}");
+                                break;
+                            }
+                            Ok(None) => {
+                                show_current_line(&vm, &source_lines);
+                            }
+                            Err(e) => {
+                                eprintln!("Runtime error: {e}");
+                                break;
+                            }
+                        }
+                    }
+                    "c" | "continue" => {
+                        match vm.debug_continue(&breakpoints) {
+                            Ok(Some(val)) => {
+                                println!("Program finished with: {val}");
+                                break;
+                            }
+                            Ok(None) => {
+                                let line = vm.debug_current_line();
+                                println!("Hit breakpoint at line {line}");
+                                show_current_line(&vm, &source_lines);
+                            }
+                            Err(e) => {
+                                eprintln!("Runtime error: {e}");
+                                break;
+                            }
+                        }
+                    }
+                    "b" | "break" => {
+                        if let Some(line_str) = parts.get(1) {
+                            if let Ok(line) = line_str.parse::<u32>() {
+                                if !breakpoints.contains(&line) {
+                                    breakpoints.push(line);
+                                    println!("Breakpoint set at line {line}");
+                                } else {
+                                    println!("Breakpoint already exists at line {line}");
+                                }
+                            } else {
+                                println!("Usage: b <line_number>");
+                            }
+                        } else {
+                            println!("Breakpoints: {:?}", breakpoints);
+                        }
+                    }
+                    "d" | "delete" => {
+                        if let Some(line_str) = parts.get(1) {
+                            if let Ok(line) = line_str.parse::<u32>() {
+                                breakpoints.retain(|&l| l != line);
+                                println!("Breakpoint removed at line {line}");
+                            }
+                        }
+                    }
+                    "p" | "print" => {
+                        if let Some(var_name) = parts.get(1) {
+                            if let Some(val) = vm.debug_get_local(var_name) {
+                                println!("{var_name} = {val}");
+                            } else if let Some(val) = vm.debug_get_global(var_name) {
+                                println!("{var_name} = {val}");
+                            } else {
+                                println!("{var_name} = (not found)");
+                            }
+                        } else {
+                            // Print locals first
+                            let locals = vm.debug_locals();
+                            if !locals.is_empty() {
+                                println!("Locals:");
+                                for (name, val) in &locals {
+                                    println!("  {name} = {val}");
+                                }
+                            }
+                        }
+                    }
+                    "l" | "list" => {
+                        let current = vm.debug_current_line() as usize;
+                        let start = if current > 3 { current - 3 } else { 1 };
+                        let end = (current + 4).min(source_lines.len() + 1);
+                        for i in start..end {
+                            if i <= source_lines.len() {
+                                let marker = if i == current { "=>" } else { "  " };
+                                let bp = if breakpoints.contains(&(i as u32)) { "*" } else { " " };
+                                println!("{marker}{bp}{:>4} | {}", i, source_lines[i - 1]);
+                            }
+                        }
+                    }
+                    "w" | "where" => {
+                        let func = vm.debug_current_function();
+                        let line = vm.debug_current_line();
+                        let ip = vm.debug_current_ip();
+                        println!("  in {} at line {}, ip={}", if func.is_empty() { "<top>" } else { &func }, line, ip);
+                    }
+                    "q" | "quit" => {
+                        println!("Debugger exited.");
+                        break;
+                    }
+                    _ => {
+                        println!("Unknown command: '{}'. Commands: s(tep), n(ext), c(ontinue), b <line>, d <line>, p <var>, l(ist), w(here), q(uit)", parts[0]);
+                    }
+                }
+            }
+            Err(rustyline::error::ReadlineError::Eof) | Err(rustyline::error::ReadlineError::Interrupted) => {
+                println!("Debugger exited.");
+                break;
+            }
+            Err(e) => {
+                eprintln!("Input error: {e}");
+                break;
+            }
+        }
+    }
+}
+
+fn show_current_line(vm: &Vm, source_lines: &[&str]) {
+    let line = vm.debug_current_line();
+    if line > 0 && (line as usize) <= source_lines.len() {
+        println!("=> {:>4} | {}", line, source_lines[line as usize - 1]);
     }
 }
 

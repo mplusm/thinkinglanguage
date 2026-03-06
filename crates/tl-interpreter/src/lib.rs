@@ -11,9 +11,10 @@ use std::fmt;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 use tl_ast::*;
-use tl_compiler::security::SecurityPolicy;
+use tl_errors::security::SecurityPolicy;
 use tl_data::translate::{LocalValue, TranslateContext, translate_expr};
-use tl_data::{ArrowDataType, ArrowField, ArrowSchema, DataEngine, DataFrame, JoinType, col};
+use tl_data::datafusion::execution::FunctionRegistry;
+use tl_data::{ArrowDataType, ArrowField, ArrowSchema, DataEngine, DataFrame, JoinType, col, lit};
 use tl_errors::{RuntimeError, TlError};
 use tl_stream::{ConnectorConfig, PipelineDef, PipelineRunner, PipelineStatus, StreamDef};
 
@@ -733,6 +734,16 @@ impl Environment {
             "assert_eq".to_string(),
             Value::Builtin("assert_eq".to_string()),
         );
+        global.insert(
+            "assert_table_eq".to_string(),
+            Value::Builtin("assert_table_eq".to_string()),
+        );
+        global.insert("today".to_string(), Value::Builtin("today".to_string()));
+        global.insert("date_add".to_string(), Value::Builtin("date_add".to_string()));
+        global.insert("date_diff".to_string(), Value::Builtin("date_diff".to_string()));
+        global.insert("date_trunc".to_string(), Value::Builtin("date_trunc".to_string()));
+        global.insert("date_extract".to_string(), Value::Builtin("date_extract".to_string()));
+        global.insert("extract".to_string(), Value::Builtin("date_extract".to_string()));
         // HTTP builtins
         global.insert(
             "http_get".to_string(),
@@ -749,6 +760,10 @@ impl Environment {
         global.insert(
             "run_agent".to_string(),
             Value::Builtin("run_agent".to_string()),
+        );
+        global.insert(
+            "stream_agent".to_string(),
+            Value::Builtin("stream_agent".to_string()),
         );
         // Concurrency builtins
         global.insert("spawn".to_string(), Value::Builtin("spawn".to_string()));
@@ -833,6 +848,13 @@ impl Environment {
         );
         global.insert("dedup".to_string(), Value::Builtin("dedup".to_string()));
         global.insert("clamp".to_string(), Value::Builtin("clamp".to_string()));
+        global.insert("random".to_string(), Value::Builtin("random".to_string()));
+        global.insert("random_int".to_string(), Value::Builtin("random_int".to_string()));
+        global.insert("sample".to_string(), Value::Builtin("sample".to_string()));
+        global.insert("exp".to_string(), Value::Builtin("exp".to_string()));
+        global.insert("is_nan".to_string(), Value::Builtin("is_nan".to_string()));
+        global.insert("is_infinite".to_string(), Value::Builtin("is_infinite".to_string()));
+        global.insert("sign".to_string(), Value::Builtin("sign".to_string()));
         global.insert(
             "data_profile".to_string(),
             Value::Builtin("data_profile".to_string()),
@@ -1456,9 +1478,10 @@ impl Interpreter {
                 max_tokens,
                 base_url,
                 api_key,
+                output_format,
                 on_tool_call,
                 on_complete,
-            } => self.exec_agent(name, model, system_prompt, tools, max_turns, temperature, max_tokens, base_url, api_key, on_tool_call, on_complete),
+            } => self.exec_agent(name, model, system_prompt, tools, max_turns, temperature, max_tokens, base_url, api_key, output_format, on_tool_call, on_complete),
             StmtKind::SourceDecl {
                 name,
                 connector_type,
@@ -1525,6 +1548,7 @@ impl Interpreter {
                 try_body,
                 catch_var,
                 catch_body,
+                finally_body,
             } => {
                 self.env.push_scope();
                 let mut result = Signal::None;
@@ -1537,6 +1561,12 @@ impl Interpreter {
                         }
                         Ok(Signal::Return(v)) => {
                             self.env.pop_scope();
+                            // Run finally before returning
+                            if let Some(finally_stmts) = finally_body {
+                                self.env.push_scope();
+                                for fs in finally_stmts { let _ = self.exec_stmt(fs); }
+                                self.env.pop_scope();
+                            }
                             return Ok(Signal::Return(v));
                         }
                         Ok(sig) => {
@@ -1551,6 +1581,12 @@ impl Interpreter {
                         }
                         Err(e) => {
                             self.env.pop_scope();
+                            // Run finally before propagating error
+                            if let Some(finally_stmts) = finally_body {
+                                self.env.push_scope();
+                                for fs in finally_stmts { let _ = self.exec_stmt(fs); }
+                                self.env.pop_scope();
+                            }
                             return Err(e);
                         }
                     }
@@ -1563,12 +1599,37 @@ impl Interpreter {
                         match self.exec_stmt(stmt)? {
                             Signal::Return(v) => {
                                 self.env.pop_scope();
+                                // Run finally before returning
+                                if let Some(finally_stmts) = finally_body {
+                                    self.env.push_scope();
+                                    for fs in finally_stmts { let _ = self.exec_stmt(fs); }
+                                    self.env.pop_scope();
+                                }
                                 return Ok(Signal::Return(v));
                             }
                             Signal::Break | Signal::Continue => {
                                 let sig = self.exec_stmt(stmt)?;
                                 self.env.pop_scope();
+                                if let Some(finally_stmts) = finally_body {
+                                    self.env.push_scope();
+                                    for fs in finally_stmts { let _ = self.exec_stmt(fs); }
+                                    self.env.pop_scope();
+                                }
                                 return Ok(sig);
+                            }
+                            _ => {}
+                        }
+                    }
+                    self.env.pop_scope();
+                }
+                // Run finally in normal flow
+                if let Some(finally_stmts) = finally_body {
+                    self.env.push_scope();
+                    for fs in finally_stmts {
+                        match self.exec_stmt(fs)? {
+                            Signal::Return(v) => {
+                                self.env.pop_scope();
+                                return Ok(Signal::Return(v));
                             }
                             _ => {}
                         }
@@ -2051,11 +2112,22 @@ impl Interpreter {
                 let idx = self.eval_expr(index)?;
                 match (&obj, &idx) {
                     (Value::List(items), Value::Int(i)) => {
-                        let i = *i as usize;
-                        items.get(i).cloned().ok_or_else(|| {
+                        let idx = if *i < 0 {
+                            let adjusted = items.len() as i64 + *i;
+                            if adjusted < 0 {
+                                return Err(runtime_err(format!(
+                                    "Index {} out of bounds for list of length {}",
+                                    i, items.len()
+                                )));
+                            }
+                            adjusted as usize
+                        } else {
+                            *i as usize
+                        };
+                        items.get(idx).cloned().ok_or_else(|| {
                             runtime_err(format!(
-                                "Index {i} out of bounds for list of length {}",
-                                items.len()
+                                "Index {} out of bounds for list of length {}",
+                                i, items.len()
                             ))
                         })
                     }
@@ -2185,13 +2257,27 @@ impl Interpreter {
                                     Ok(val)
                                 }
                                 (Some(Value::List(mut items)), Value::Int(i)) => {
-                                    let i = i as usize;
-                                    if i < items.len() {
-                                        items[i] = val.clone();
+                                    let idx = if i < 0 {
+                                        let adjusted = items.len() as i64 + i;
+                                        if adjusted < 0 {
+                                            return Err(runtime_err(format!(
+                                                "Index {} out of bounds for list of length {}",
+                                                i, items.len()
+                                            )));
+                                        }
+                                        adjusted as usize
+                                    } else {
+                                        i as usize
+                                    };
+                                    if idx < items.len() {
+                                        items[idx] = val.clone();
                                         self.env.update(name, Value::List(items));
                                         Ok(val)
                                     } else {
-                                        Err(runtime_err(format!("Index {i} out of bounds")))
+                                        Err(runtime_err(format!(
+                                            "Index {} out of bounds for list of length {}",
+                                            i, items.len()
+                                        )))
                                     }
                                 }
                                 _ => {
@@ -2287,7 +2373,7 @@ impl Interpreter {
                 match val {
                     Value::Task(task) => {
                         let rx = {
-                            let mut guard = task.receiver.lock().unwrap();
+                            let mut guard = task.receiver.lock().unwrap_or_else(|e| e.into_inner());
                             guard.take()
                         };
                         match rx {
@@ -2363,9 +2449,15 @@ impl Interpreter {
         match (left, right) {
             // Int operations
             (Value::Int(a), Value::Int(b)) => match op {
-                BinOp::Add => Ok(Value::Int(a + b)),
-                BinOp::Sub => Ok(Value::Int(a - b)),
-                BinOp::Mul => Ok(Value::Int(a * b)),
+                BinOp::Add => Ok(a.checked_add(*b)
+                    .map(Value::Int)
+                    .unwrap_or_else(|| Value::Float(*a as f64 + *b as f64))),
+                BinOp::Sub => Ok(a.checked_sub(*b)
+                    .map(Value::Int)
+                    .unwrap_or_else(|| Value::Float(*a as f64 - *b as f64))),
+                BinOp::Mul => Ok(a.checked_mul(*b)
+                    .map(Value::Int)
+                    .unwrap_or_else(|| Value::Float(*a as f64 * *b as f64))),
                 BinOp::Div => {
                     if *b == 0 {
                         Err(runtime_err("Division by zero".to_string()))
@@ -2380,7 +2472,16 @@ impl Interpreter {
                         Ok(Value::Int(a % b))
                     }
                 }
-                BinOp::Pow => Ok(Value::Int(a.pow(*b as u32))),
+                BinOp::Pow => {
+                    if *b < 0 {
+                        Ok(Value::Float((*a as f64).powi(*b as i32)))
+                    } else {
+                        match a.checked_pow(*b as u32) {
+                            Some(result) => Ok(Value::Int(result)),
+                            None => Ok(Value::Float((*a as f64).powf(*b as f64))),
+                        }
+                    }
+                }
                 BinOp::Eq => Ok(Value::Bool(a == b)),
                 BinOp::Neq => Ok(Value::Bool(a != b)),
                 BinOp::Lt => Ok(Value::Bool(a < b)),
@@ -2396,8 +2497,20 @@ impl Interpreter {
                 BinOp::Add => Ok(Value::Float(a + b)),
                 BinOp::Sub => Ok(Value::Float(a - b)),
                 BinOp::Mul => Ok(Value::Float(a * b)),
-                BinOp::Div => Ok(Value::Float(a / b)),
-                BinOp::Mod => Ok(Value::Float(a % b)),
+                BinOp::Div => {
+                    if *b == 0.0 {
+                        Err(runtime_err("Division by zero".to_string()))
+                    } else {
+                        Ok(Value::Float(a / b))
+                    }
+                }
+                BinOp::Mod => {
+                    if *b == 0.0 {
+                        Err(runtime_err("Modulo by zero".to_string()))
+                    } else {
+                        Ok(Value::Float(a % b))
+                    }
+                }
                 BinOp::Pow => Ok(Value::Float(a.powf(*b))),
                 BinOp::Eq => Ok(Value::Bool(a == b)),
                 BinOp::Neq => Ok(Value::Bool(a != b)),
@@ -2423,6 +2536,12 @@ impl Interpreter {
 
             // String repeat
             (Value::String(a), Value::Int(b)) if *op == BinOp::Mul => {
+                if *b < 0 {
+                    return Err(runtime_err("Cannot repeat string a negative number of times".to_string()));
+                }
+                if *b > 10_000_000 {
+                    return Err(runtime_err("String repeat count too large (max 10,000,000)".to_string()));
+                }
                 Ok(Value::String(a.repeat(*b as usize)))
             }
 
@@ -2706,7 +2825,7 @@ impl Interpreter {
 
     /// Advance a generator by one step.
     fn interpreter_next(&mut self, gen_arc: &Arc<TlGenerator>) -> Result<Value, TlError> {
-        let done = *gen_arc.done.lock().unwrap();
+        let done = *gen_arc.done.lock().unwrap_or_else(|e| e.into_inner());
         if done {
             return Ok(Value::None);
         }
@@ -2718,76 +2837,76 @@ impl Interpreter {
             } => {
                 // Signal the generator thread to continue
                 if resume_tx.send(()).is_err() {
-                    *gen_arc.done.lock().unwrap() = true;
+                    *gen_arc.done.lock().unwrap_or_else(|e| e.into_inner()) = true;
                     return Ok(Value::None);
                 }
                 // Wait for the next yielded value
-                let rx_guard = receiver.lock().unwrap();
+                let rx_guard = receiver.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(rx) = rx_guard.as_ref() {
                     match rx.recv() {
                         Ok(Ok(val)) => Ok(val),
                         Ok(Err(err_msg)) => {
-                            *gen_arc.done.lock().unwrap() = true;
+                            *gen_arc.done.lock().unwrap_or_else(|e| e.into_inner()) = true;
                             Err(runtime_err(err_msg))
                         }
                         Err(_) => {
                             // Channel closed — generator exhausted
-                            *gen_arc.done.lock().unwrap() = true;
+                            *gen_arc.done.lock().unwrap_or_else(|e| e.into_inner()) = true;
                             Ok(Value::None)
                         }
                     }
                 } else {
-                    *gen_arc.done.lock().unwrap() = true;
+                    *gen_arc.done.lock().unwrap_or_else(|e| e.into_inner()) = true;
                     Ok(Value::None)
                 }
             }
             TlGeneratorKind::ListIter { items, index } => {
-                let mut idx = index.lock().unwrap();
+                let mut idx = index.lock().unwrap_or_else(|e| e.into_inner());
                 if *idx < items.len() {
                     let val = items[*idx].clone();
                     *idx += 1;
                     Ok(val)
                 } else {
-                    *gen_arc.done.lock().unwrap() = true;
+                    *gen_arc.done.lock().unwrap_or_else(|e| e.into_inner()) = true;
                     Ok(Value::None)
                 }
             }
             TlGeneratorKind::Take { source, remaining } => {
-                let mut rem = remaining.lock().unwrap();
+                let mut rem = remaining.lock().unwrap_or_else(|e| e.into_inner());
                 if *rem == 0 {
-                    *gen_arc.done.lock().unwrap() = true;
+                    *gen_arc.done.lock().unwrap_or_else(|e| e.into_inner()) = true;
                     return Ok(Value::None);
                 }
                 *rem -= 1;
                 drop(rem);
                 let val = self.interpreter_next(source)?;
                 if matches!(val, Value::None) {
-                    *gen_arc.done.lock().unwrap() = true;
+                    *gen_arc.done.lock().unwrap_or_else(|e| e.into_inner()) = true;
                 }
                 Ok(val)
             }
             TlGeneratorKind::Skip { source, remaining } => {
-                let mut rem = remaining.lock().unwrap();
+                let mut rem = remaining.lock().unwrap_or_else(|e| e.into_inner());
                 let skip_n = *rem;
                 *rem = 0;
                 drop(rem);
                 for _ in 0..skip_n {
                     let val = self.interpreter_next(source)?;
                     if matches!(val, Value::None) {
-                        *gen_arc.done.lock().unwrap() = true;
+                        *gen_arc.done.lock().unwrap_or_else(|e| e.into_inner()) = true;
                         return Ok(Value::None);
                     }
                 }
                 let val = self.interpreter_next(source)?;
                 if matches!(val, Value::None) {
-                    *gen_arc.done.lock().unwrap() = true;
+                    *gen_arc.done.lock().unwrap_or_else(|e| e.into_inner()) = true;
                 }
                 Ok(val)
             }
             TlGeneratorKind::Map { source, func } => {
                 let val = self.interpreter_next(source)?;
                 if matches!(val, Value::None) {
-                    *gen_arc.done.lock().unwrap() = true;
+                    *gen_arc.done.lock().unwrap_or_else(|e| e.into_inner()) = true;
                     return Ok(Value::None);
                 }
                 self.call_function(func, &[val])
@@ -2795,7 +2914,7 @@ impl Interpreter {
             TlGeneratorKind::Filter { source, func } => loop {
                 let val = self.interpreter_next(source)?;
                 if matches!(val, Value::None) {
-                    *gen_arc.done.lock().unwrap() = true;
+                    *gen_arc.done.lock().unwrap_or_else(|e| e.into_inner()) = true;
                     return Ok(Value::None);
                 }
                 let test = self.call_function(func, std::slice::from_ref(&val))?;
@@ -2808,18 +2927,18 @@ impl Interpreter {
                 second,
                 on_second,
             } => {
-                let is_second = *on_second.lock().unwrap();
+                let is_second = *on_second.lock().unwrap_or_else(|e| e.into_inner());
                 if !is_second {
                     let val = self.interpreter_next(first)?;
                     if matches!(val, Value::None) {
-                        *on_second.lock().unwrap() = true;
+                        *on_second.lock().unwrap_or_else(|e| e.into_inner()) = true;
                         return self.interpreter_next(second);
                     }
                     Ok(val)
                 } else {
                     let val = self.interpreter_next(second)?;
                     if matches!(val, Value::None) {
-                        *gen_arc.done.lock().unwrap() = true;
+                        *gen_arc.done.lock().unwrap_or_else(|e| e.into_inner()) = true;
                     }
                     Ok(val)
                 }
@@ -2828,19 +2947,19 @@ impl Interpreter {
                 let val1 = self.interpreter_next(first)?;
                 let val2 = self.interpreter_next(second)?;
                 if matches!(val1, Value::None) || matches!(val2, Value::None) {
-                    *gen_arc.done.lock().unwrap() = true;
+                    *gen_arc.done.lock().unwrap_or_else(|e| e.into_inner()) = true;
                     return Ok(Value::None);
                 }
                 Ok(Value::List(vec![val1, val2]))
             }
             TlGeneratorKind::Enumerate { source, index } => {
-                let mut idx = index.lock().unwrap();
+                let mut idx = index.lock().unwrap_or_else(|e| e.into_inner());
                 let cur_idx = *idx;
                 *idx += 1;
                 drop(idx);
                 let val = self.interpreter_next(source)?;
                 if matches!(val, Value::None) {
-                    *gen_arc.done.lock().unwrap() = true;
+                    *gen_arc.done.lock().unwrap_or_else(|e| e.into_inner()) = true;
                     return Ok(Value::None);
                 }
                 Ok(Value::List(vec![Value::Int(cur_idx as i64), val]))
@@ -2936,12 +3055,22 @@ impl Interpreter {
             "range" => {
                 if args.len() == 1 {
                     if let Value::Int(n) = &args[0] {
+                        if *n > 10_000_000 {
+                            return Err(runtime_err("range() size too large (max 10,000,000)".to_string()));
+                        }
+                        if *n < 0 {
+                            return Ok(Value::List(vec![]));
+                        }
                         Ok(Value::List((0..*n).map(Value::Int).collect()))
                     } else {
                         Err(runtime_err("range() expects an integer".to_string()))
                     }
                 } else if args.len() == 2 {
                     if let (Value::Int(start), Value::Int(end)) = (&args[0], &args[1]) {
+                        let size = (*end - *start).max(0);
+                        if size > 10_000_000 {
+                            return Err(runtime_err("range() size too large (max 10,000,000)".to_string()));
+                        }
                         Ok(Value::List((*start..*end).map(Value::Int).collect()))
                     } else {
                         Err(runtime_err("range() expects integers".to_string()))
@@ -3513,6 +3642,10 @@ impl Interpreter {
                     Ok(Value::None)
                 }
             }
+            "assert_table_eq" => {
+                // Table comparison not available in interpreter (DataFusion is VM-only)
+                Err(runtime_err("assert_table_eq() is only available in the VM backend".to_string()))
+            }
             // HTTP builtins
             "http_get" => {
                 if args.is_empty() {
@@ -3591,7 +3724,7 @@ impl Interpreter {
             }
             "run_agent" => {
                 if args.len() < 2 {
-                    return Err(runtime_err_s("run_agent(agent, message) expects 2 arguments"));
+                    return Err(runtime_err_s("run_agent(agent, message, [history]) expects at least 2 arguments"));
                 }
                 let agent_def = match &args[0] {
                     Value::Agent(def) => def.clone(),
@@ -3601,7 +3734,73 @@ impl Interpreter {
                     Value::String(s) => s.clone(),
                     _ => return Err(runtime_err_s("run_agent() second arg must be a string")),
                 };
-                self.exec_agent_loop(&agent_def, &message)
+                // Optional 3rd arg: conversation history as list of [role, content] pairs
+                let history = if args.len() >= 3 {
+                    match &args[2] {
+                        Value::List(items) => {
+                            let mut hist = Vec::new();
+                            for item in items {
+                                if let Value::List(pair) = item {
+                                    if pair.len() >= 2 {
+                                        let role = match &pair[0] {
+                                            Value::String(s) => s.clone(),
+                                            _ => continue,
+                                        };
+                                        let content = match &pair[1] {
+                                            Value::String(s) => s.clone(),
+                                            _ => continue,
+                                        };
+                                        hist.push((role, content));
+                                    }
+                                }
+                            }
+                            Some(hist)
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                self.exec_agent_loop(&agent_def, &message, history.as_deref())
+            }
+            // Phase G4: Streaming agent responses
+            "stream_agent" => {
+                if args.len() < 3 {
+                    return Err(runtime_err_s("stream_agent(agent, message, callback) expects 3 arguments"));
+                }
+                let agent_def = match &args[0] {
+                    Value::Agent(def) => def.clone(),
+                    _ => return Err(runtime_err_s("stream_agent() first arg must be an agent")),
+                };
+                let message = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err_s("stream_agent() second arg must be a string")),
+                };
+                let callback = args[2].clone();
+
+                let model = &agent_def.model;
+                let system = agent_def.system_prompt.as_deref();
+                let base_url = agent_def.base_url.as_deref();
+                let api_key = agent_def.api_key.as_deref();
+
+                let messages = vec![serde_json::json!({"role": "user", "content": &message})];
+                let mut reader = tl_ai::stream_chat(model, system, &messages, base_url, api_key)
+                    .map_err(|e| runtime_err(format!("Stream error: {e}")))?;
+
+                let mut full_text = String::new();
+                loop {
+                    match reader.next_chunk() {
+                        Ok(Some(chunk)) => {
+                            full_text.push_str(&chunk);
+                            let chunk_val = Value::String(chunk);
+                            let _ = self.call_function_value(&callback, &[chunk_val]);
+                        }
+                        Ok(None) => break,
+                        Err(e) => return Err(runtime_err(format!("Stream error: {e}"))),
+                    }
+                }
+
+                Ok(Value::String(full_text))
             }
             // ── Phase 6: Stdlib & Ecosystem builtins ──
             "json_parse" => {
@@ -3989,7 +4188,7 @@ impl Interpreter {
                 }
                 match &args[0] {
                     Value::Channel(ch) => {
-                        let guard = ch.receiver.lock().unwrap();
+                        let guard = ch.receiver.lock().unwrap_or_else(|e| e.into_inner());
                         match guard.recv() {
                             Ok(val) => Ok(val),
                             Err(_) => Ok(Value::None),
@@ -4004,7 +4203,7 @@ impl Interpreter {
                 }
                 match &args[0] {
                     Value::Channel(ch) => {
-                        let guard = ch.receiver.lock().unwrap();
+                        let guard = ch.receiver.lock().unwrap_or_else(|e| e.into_inner());
                         match guard.try_recv() {
                             Ok(val) => Ok(val),
                             Err(_) => Ok(Value::None),
@@ -4024,7 +4223,7 @@ impl Interpreter {
                             match task {
                                 Value::Task(t) => {
                                     let rx = {
-                                        let mut guard = t.receiver.lock().unwrap();
+                                        let mut guard = t.receiver.lock().unwrap_or_else(|e| e.into_inner());
                                         guard.take()
                                     };
                                     match rx {
@@ -4172,7 +4371,7 @@ impl Interpreter {
                 match &args[0] {
                     Value::Task(task) => {
                         let rx = {
-                            let mut guard = task.receiver.lock().unwrap();
+                            let mut guard = task.receiver.lock().unwrap_or_else(|e| e.into_inner());
                             guard.take()
                         };
                         match rx {
@@ -5601,7 +5800,7 @@ impl Interpreter {
                 for (i, arg) in args.iter().enumerate() {
                     match arg {
                         Value::Task(task) => {
-                            let rx = task.receiver.lock().unwrap().take();
+                            let rx = task.receiver.lock().unwrap_or_else(|e| e.into_inner()).take();
                             match rx {
                                 Some(r) => receivers.push(r),
                                 None => {
@@ -5647,7 +5846,7 @@ impl Interpreter {
                 for (i, task_val) in tasks.iter().enumerate() {
                     match task_val {
                         Value::Task(task) => {
-                            let rx = task.receiver.lock().unwrap().take();
+                            let rx = task.receiver.lock().unwrap_or_else(|e| e.into_inner()).take();
                             match rx {
                                 Some(r) => receivers.push(r),
                                 None => {
@@ -5855,6 +6054,181 @@ impl Interpreter {
                 }
             }
 
+            "random" => {
+                let mut rng = rand::thread_rng();
+                let val: f64 = rand::Rng::r#gen(&mut rng);
+                Ok(Value::Float(val))
+            }
+            "random_int" => {
+                if args.len() < 2 {
+                    return Err(runtime_err("random_int() expects min and max".to_string()));
+                }
+                let a = match &args[0] {
+                    Value::Int(n) => *n,
+                    _ => return Err(runtime_err("random_int() expects integers".to_string())),
+                };
+                let b = match &args[1] {
+                    Value::Int(n) => *n,
+                    _ => return Err(runtime_err("random_int() expects integers".to_string())),
+                };
+                if a >= b {
+                    return Err(runtime_err("random_int() requires min < max".to_string()));
+                }
+                let mut rng = rand::thread_rng();
+                let val: i64 = rand::Rng::gen_range(&mut rng, a..b);
+                Ok(Value::Int(val))
+            }
+            "sample" => {
+                use rand::seq::SliceRandom;
+                if args.is_empty() {
+                    return Err(runtime_err("sample() expects a list and count".to_string()));
+                }
+                let items = match &args[0] {
+                    Value::List(items) => items,
+                    _ => return Err(runtime_err("sample() expects a list".to_string())),
+                };
+                let k = match args.get(1) {
+                    Some(Value::Int(n)) => *n as usize,
+                    _ => 1,
+                };
+                if k > items.len() {
+                    return Err(runtime_err("sample() count exceeds list length".to_string()));
+                }
+                let mut rng = rand::thread_rng();
+                let mut indices: Vec<usize> = (0..items.len()).collect();
+                indices.partial_shuffle(&mut rng, k);
+                let result: Vec<Value> = indices[..k].iter().map(|&i| items[i].clone()).collect();
+                if k == 1 && args.get(1).is_none() {
+                    Ok(result.into_iter().next().unwrap_or(Value::None))
+                } else {
+                    Ok(Value::List(result))
+                }
+            }
+            "exp" => {
+                let x = match args.first() {
+                    Some(Value::Float(f)) => *f,
+                    Some(Value::Int(n)) => *n as f64,
+                    _ => return Err(runtime_err("exp() expects a number".to_string())),
+                };
+                Ok(Value::Float(x.exp()))
+            }
+            "is_nan" => {
+                let result = match args.first() {
+                    Some(Value::Float(f)) => f.is_nan(),
+                    _ => false,
+                };
+                Ok(Value::Bool(result))
+            }
+            "is_infinite" => {
+                let result = match args.first() {
+                    Some(Value::Float(f)) => f.is_infinite(),
+                    _ => false,
+                };
+                Ok(Value::Bool(result))
+            }
+            "sign" => {
+                match args.first() {
+                    Some(Value::Int(n)) => {
+                        if *n > 0 { Ok(Value::Int(1)) }
+                        else if *n < 0 { Ok(Value::Int(-1)) }
+                        else { Ok(Value::Int(0)) }
+                    }
+                    Some(Value::Float(f)) => {
+                        if f.is_nan() { Ok(Value::Float(f64::NAN)) }
+                        else if *f > 0.0 { Ok(Value::Int(1)) }
+                        else if *f < 0.0 { Ok(Value::Int(-1)) }
+                        else { Ok(Value::Int(0)) }
+                    }
+                    _ => Err(runtime_err("sign() expects a number".to_string())),
+                }
+            }
+            "today" => {
+                use chrono::{Datelike, TimeZone};
+                let now = chrono::Utc::now();
+                let midnight = chrono::Utc.with_ymd_and_hms(now.year(), now.month(), now.day(), 0, 0, 0)
+                    .single()
+                    .ok_or_else(|| runtime_err("Failed to compute today".to_string()))?;
+                Ok(Value::Int(midnight.timestamp_millis()))
+            }
+            "date_add" => {
+                if args.len() < 3 {
+                    return Err(runtime_err("date_add() expects datetime, amount, unit".to_string()));
+                }
+                let ms = match &args[0] { Value::Int(n) => *n, _ => return Err(runtime_err("date_add() first arg must be int".to_string())) };
+                let amount = match &args[1] { Value::Int(n) => *n, _ => return Err(runtime_err("date_add() amount must be int".to_string())) };
+                let unit = match &args[2] { Value::String(s) => s.as_str(), _ => return Err(runtime_err("date_add() unit must be string".to_string())) };
+                let offset_ms = match unit {
+                    "second" | "seconds" => amount * 1000,
+                    "minute" | "minutes" => amount * 60 * 1000,
+                    "hour" | "hours" => amount * 3600 * 1000,
+                    "day" | "days" => amount * 86400 * 1000,
+                    "week" | "weeks" => amount * 7 * 86400 * 1000,
+                    _ => return Err(runtime_err(format!("Unknown time unit: {unit}"))),
+                };
+                Ok(Value::Int(ms + offset_ms))
+            }
+            "date_diff" => {
+                if args.len() < 3 {
+                    return Err(runtime_err("date_diff() expects datetime1, datetime2, unit".to_string()));
+                }
+                let ms1 = match &args[0] { Value::Int(n) => *n, _ => return Err(runtime_err("date_diff() args must be ints".to_string())) };
+                let ms2 = match &args[1] { Value::Int(n) => *n, _ => return Err(runtime_err("date_diff() args must be ints".to_string())) };
+                let unit = match &args[2] { Value::String(s) => s.as_str(), _ => return Err(runtime_err("date_diff() unit must be string".to_string())) };
+                let diff_ms = ms1 - ms2;
+                let result = match unit {
+                    "second" | "seconds" => diff_ms / 1000,
+                    "minute" | "minutes" => diff_ms / (60 * 1000),
+                    "hour" | "hours" => diff_ms / (3600 * 1000),
+                    "day" | "days" => diff_ms / (86400 * 1000),
+                    "week" | "weeks" => diff_ms / (7 * 86400 * 1000),
+                    _ => return Err(runtime_err(format!("Unknown time unit: {unit}"))),
+                };
+                Ok(Value::Int(result))
+            }
+            "date_trunc" => {
+                if args.len() < 2 {
+                    return Err(runtime_err("date_trunc() expects datetime and unit".to_string()));
+                }
+                let ms = match &args[0] { Value::Int(n) => *n, _ => return Err(runtime_err("date_trunc() first arg must be int".to_string())) };
+                let unit = match &args[1] { Value::String(s) => s.as_str(), _ => return Err(runtime_err("date_trunc() unit must be string".to_string())) };
+                use chrono::{Datelike, TimeZone, Timelike};
+                let secs = ms / 1000;
+                let dt = chrono::Utc.timestamp_opt(secs, 0).single()
+                    .ok_or_else(|| runtime_err("Invalid timestamp".to_string()))?;
+                let truncated = match unit {
+                    "second" => chrono::Utc.with_ymd_and_hms(dt.year(), dt.month(), dt.day(), dt.hour(), dt.minute(), dt.second()).single(),
+                    "minute" => chrono::Utc.with_ymd_and_hms(dt.year(), dt.month(), dt.day(), dt.hour(), dt.minute(), 0).single(),
+                    "hour" => chrono::Utc.with_ymd_and_hms(dt.year(), dt.month(), dt.day(), dt.hour(), 0, 0).single(),
+                    "day" => chrono::Utc.with_ymd_and_hms(dt.year(), dt.month(), dt.day(), 0, 0, 0).single(),
+                    "month" => chrono::Utc.with_ymd_and_hms(dt.year(), dt.month(), 1, 0, 0, 0).single(),
+                    "year" => chrono::Utc.with_ymd_and_hms(dt.year(), 1, 1, 0, 0, 0).single(),
+                    _ => return Err(runtime_err(format!("Unknown truncation unit: {unit}"))),
+                };
+                Ok(Value::Int(truncated.ok_or_else(|| runtime_err("Invalid truncation".to_string()))?.timestamp_millis()))
+            }
+            "date_extract" => {
+                if args.len() < 2 {
+                    return Err(runtime_err("extract() expects datetime and part".to_string()));
+                }
+                let ms = match &args[0] { Value::Int(n) => *n, _ => return Err(runtime_err("extract() first arg must be int".to_string())) };
+                let part = match &args[1] { Value::String(s) => s.as_str(), _ => return Err(runtime_err("extract() part must be string".to_string())) };
+                use chrono::{Datelike, TimeZone, Timelike};
+                let secs = ms / 1000;
+                let dt = chrono::Utc.timestamp_opt(secs, 0).single()
+                    .ok_or_else(|| runtime_err("Invalid timestamp".to_string()))?;
+                let val = match part {
+                    "year" => dt.year() as i64,
+                    "month" => dt.month() as i64,
+                    "day" => dt.day() as i64,
+                    "hour" => dt.hour() as i64,
+                    "minute" => dt.minute() as i64,
+                    "second" => dt.second() as i64,
+                    "weekday" | "dow" => dt.weekday().num_days_from_monday() as i64,
+                    "day_of_year" | "doy" => dt.ordinal() as i64,
+                    _ => return Err(runtime_err(format!("Unknown date part: {part}"))),
+                };
+                Ok(Value::Int(val))
+            }
             _ => Err(runtime_err(format!("Unknown builtin: {name}"))),
         }
     }
@@ -6064,6 +6438,38 @@ impl Interpreter {
                         Err(runtime_err_s("join() expects a list argument"))
                     }
                 }
+                "trim_start" => Ok(Value::String(s.trim_start().to_string())),
+                "trim_end" => Ok(Value::String(s.trim_end().to_string())),
+                "count" => {
+                    let needle = match args.first() {
+                        Some(Value::String(n)) => n.as_str(),
+                        _ => return Err(runtime_err_s("count() expects a string")),
+                    };
+                    Ok(Value::Int(s.matches(needle).count() as i64))
+                }
+                "is_empty" => Ok(Value::Bool(s.is_empty())),
+                "is_numeric" => Ok(Value::Bool(s.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-'))),
+                "is_alpha" => Ok(Value::Bool(!s.is_empty() && s.chars().all(|c| c.is_alphabetic()))),
+                "strip_prefix" => {
+                    let prefix = match args.first() {
+                        Some(Value::String(p)) => p.as_str(),
+                        _ => return Err(runtime_err_s("strip_prefix() expects a string")),
+                    };
+                    Ok(match s.strip_prefix(prefix) {
+                        Some(rest) => Value::String(rest.to_string()),
+                        None => Value::String(s.clone()),
+                    })
+                }
+                "strip_suffix" => {
+                    let suffix = match args.first() {
+                        Some(Value::String(su)) => su.as_str(),
+                        _ => return Err(runtime_err_s("strip_suffix() expects a string")),
+                    };
+                    Ok(match s.strip_suffix(suffix) {
+                        Some(rest) => Value::String(rest.to_string()),
+                        None => Value::String(s.clone()),
+                    })
+                }
                 _ => Err(runtime_err(format!("String has no method `{method}`"))),
             };
         }
@@ -6195,6 +6601,185 @@ impl Interpreter {
                     }
                     Ok(Value::List(result))
                 }
+                "find" => {
+                    if let Some(func) = args.first() {
+                        for item in items {
+                            let result = self.call_function(func, std::slice::from_ref(item))?;
+                            if result.is_truthy() {
+                                return Ok(item.clone());
+                            }
+                        }
+                        Ok(Value::None)
+                    } else {
+                        Err(runtime_err_s("find() expects a function"))
+                    }
+                }
+                "sort_by" => {
+                    if let Some(func) = args.first() {
+                        let mut indexed: Vec<(Value, Value)> = Vec::new();
+                        for item in items {
+                            let key = self.call_function(func, std::slice::from_ref(item))?;
+                            indexed.push((item.clone(), key));
+                        }
+                        indexed.sort_by(|(_, ka), (_, kb)| {
+                            match (ka, kb) {
+                                (Value::Int(a), Value::Int(b)) => a.cmp(b),
+                                (Value::Float(a), Value::Float(b)) => a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal),
+                                (Value::String(a), Value::String(b)) => a.cmp(b),
+                                _ => std::cmp::Ordering::Equal,
+                            }
+                        });
+                        Ok(Value::List(indexed.into_iter().map(|(v, _)| v).collect()))
+                    } else {
+                        Err(runtime_err_s("sort_by() expects a function"))
+                    }
+                }
+                "group_by" => {
+                    if let Some(func) = args.first() {
+                        let mut groups: Vec<(String, Value)> = Vec::new();
+                        for item in items {
+                            let key = self.call_function(func, std::slice::from_ref(item))?;
+                            let key_str = format!("{key}");
+                            if let Some(entry) = groups.iter_mut().find(|(k, _)| k == &key_str) {
+                                if let Value::List(ref mut list) = entry.1 {
+                                    list.push(item.clone());
+                                }
+                            } else {
+                                groups.push((key_str, Value::List(vec![item.clone()])));
+                            }
+                        }
+                        Ok(Value::Map(groups))
+                    } else {
+                        Err(runtime_err_s("group_by() expects a function"))
+                    }
+                }
+                "unique" => {
+                    let mut result: Vec<Value> = Vec::new();
+                    for item in items {
+                        let exists = result.iter().any(|x| values_equal(x, item));
+                        if !exists {
+                            result.push(item.clone());
+                        }
+                    }
+                    Ok(Value::List(result))
+                }
+                "flatten" => {
+                    let mut result = Vec::new();
+                    for item in items {
+                        match item {
+                            Value::List(sub) => result.extend(sub.clone()),
+                            other => result.push(other.clone()),
+                        }
+                    }
+                    Ok(Value::List(result))
+                }
+                "chunk" => {
+                    let n = match args.first() {
+                        Some(Value::Int(n)) => *n as usize,
+                        _ => return Err(runtime_err_s("chunk() expects an integer")),
+                    };
+                    if n == 0 {
+                        return Err(runtime_err_s("chunk() size must be > 0"));
+                    }
+                    let chunks: Vec<Value> = items.chunks(n).map(|c| Value::List(c.to_vec())).collect();
+                    Ok(Value::List(chunks))
+                }
+                "insert" => {
+                    if args.len() < 2 {
+                        return Err(runtime_err_s("insert() expects index and value"));
+                    }
+                    let idx = match &args[0] {
+                        Value::Int(n) => *n as usize,
+                        _ => return Err(runtime_err_s("insert() expects integer index")),
+                    };
+                    let mut new_items = items.clone();
+                    if idx > new_items.len() {
+                        return Err(runtime_err_s("insert() index out of bounds"));
+                    }
+                    new_items.insert(idx, args[1].clone());
+                    Ok(Value::List(new_items))
+                }
+                "remove_at" => {
+                    let idx = match args.first() {
+                        Some(Value::Int(n)) => *n as usize,
+                        _ => return Err(runtime_err_s("remove_at() expects an integer index")),
+                    };
+                    if idx >= items.len() {
+                        return Err(runtime_err_s("remove_at() index out of bounds"));
+                    }
+                    let mut new_items = items.clone();
+                    let removed = new_items.remove(idx);
+                    Ok(Value::List(vec![removed, Value::List(new_items)]))
+                }
+                "is_empty" => Ok(Value::Bool(items.is_empty())),
+                "sum" => {
+                    let mut int_sum: i64 = 0;
+                    let mut has_float = false;
+                    let mut float_sum: f64 = 0.0;
+                    for item in items {
+                        match item {
+                            Value::Int(n) => { int_sum += n; float_sum += *n as f64; }
+                            Value::Float(f) => { has_float = true; float_sum += f; }
+                            _ => return Err(runtime_err_s("sum() expects numeric list")),
+                        }
+                    }
+                    if has_float { Ok(Value::Float(float_sum)) } else { Ok(Value::Int(int_sum)) }
+                }
+                "min" => {
+                    if items.is_empty() { return Err(runtime_err_s("min() on empty list")); }
+                    let mut result = items[0].clone();
+                    for item in &items[1..] {
+                        match (&result, item) {
+                            (Value::Int(a), Value::Int(b)) => if b < a { result = item.clone(); },
+                            (Value::Float(a), Value::Float(b)) => if b < a { result = item.clone(); },
+                            _ => {}
+                        }
+                    }
+                    Ok(result)
+                }
+                "max" => {
+                    if items.is_empty() { return Err(runtime_err_s("max() on empty list")); }
+                    let mut result = items[0].clone();
+                    for item in &items[1..] {
+                        match (&result, item) {
+                            (Value::Int(a), Value::Int(b)) => if b > a { result = item.clone(); },
+                            (Value::Float(a), Value::Float(b)) => if b > a { result = item.clone(); },
+                            _ => {}
+                        }
+                    }
+                    Ok(result)
+                }
+                "each" => {
+                    if let Some(func) = args.first() {
+                        for item in items {
+                            self.call_function(func, std::slice::from_ref(item))?;
+                        }
+                        Ok(Value::None)
+                    } else {
+                        Err(runtime_err_s("each() expects a function"))
+                    }
+                }
+                "zip" => {
+                    if args.is_empty() {
+                        return Err(runtime_err_s("zip() expects a list"));
+                    }
+                    if let Value::List(other) = &args[0] {
+                        let result: Vec<Value> = items.iter().zip(other.iter())
+                            .map(|(a, b)| Value::List(vec![a.clone(), b.clone()]))
+                            .collect();
+                        Ok(Value::List(result))
+                    } else {
+                        Err(runtime_err_s("zip() expects a list"))
+                    }
+                }
+                "join" => {
+                    let sep = match args.first() {
+                        Some(Value::String(s)) => s.clone(),
+                        _ => ",".to_string(),
+                    };
+                    let parts: Vec<String> = items.iter().map(|v| format!("{v}")).collect();
+                    Ok(Value::String(parts.join(&sep)))
+                }
                 _ => Err(runtime_err(format!("List has no method `{method}`"))),
             };
         }
@@ -6232,6 +6817,84 @@ impl Interpreter {
                         Err(runtime_err_s("remove() expects a string key"))
                     }
                 }
+                "get" => {
+                    if args.is_empty() {
+                        return Err(runtime_err_s("get() expects a key"));
+                    }
+                    if let Value::String(key) = &args[0] {
+                        let val = pairs.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+                        Ok(val.unwrap_or_else(|| args.get(1).cloned().unwrap_or(Value::None)))
+                    } else {
+                        Err(runtime_err_s("get() expects a string key"))
+                    }
+                }
+                "merge" => {
+                    if args.is_empty() {
+                        return Err(runtime_err_s("merge() expects a map"));
+                    }
+                    if let Value::Map(other) = &args[0] {
+                        let mut result = pairs.clone();
+                        for (k, v) in other {
+                            if let Some(entry) = result.iter_mut().find(|(ek, _)| ek == k) {
+                                entry.1 = v.clone();
+                            } else {
+                                result.push((k.clone(), v.clone()));
+                            }
+                        }
+                        Ok(Value::Map(result))
+                    } else {
+                        Err(runtime_err_s("merge() expects a map"))
+                    }
+                }
+                "entries" => {
+                    let result: Vec<Value> = pairs.iter()
+                        .map(|(k, v)| Value::List(vec![Value::String(k.clone()), v.clone()]))
+                        .collect();
+                    Ok(Value::List(result))
+                }
+                "map_values" => {
+                    if let Some(func) = args.first() {
+                        let mut result = Vec::new();
+                        for (k, v) in pairs {
+                            let new_v = self.call_function(func, std::slice::from_ref(v))?;
+                            result.push((k.clone(), new_v));
+                        }
+                        Ok(Value::Map(result))
+                    } else {
+                        Err(runtime_err_s("map_values() expects a function"))
+                    }
+                }
+                "filter" => {
+                    if let Some(func) = args.first() {
+                        let mut result = Vec::new();
+                        for (k, v) in pairs {
+                            let pair = Value::List(vec![Value::String(k.clone()), v.clone()]);
+                            if self.call_function(func, std::slice::from_ref(&pair))?.is_truthy() {
+                                result.push((k.clone(), v.clone()));
+                            }
+                        }
+                        Ok(Value::Map(result))
+                    } else {
+                        Err(runtime_err_s("filter() expects a function"))
+                    }
+                }
+                "set" => {
+                    if args.len() < 2 {
+                        return Err(runtime_err_s("set() expects key and value"));
+                    }
+                    if let Value::String(key) = &args[0] {
+                        let mut result = pairs.clone();
+                        if let Some(entry) = result.iter_mut().find(|(k, _)| k == key) {
+                            entry.1 = args[1].clone();
+                        } else {
+                            result.push((key.clone(), args[1].clone()));
+                        }
+                        Ok(Value::Map(result))
+                    } else {
+                        Err(runtime_err_s("set() expects a string key"))
+                    }
+                }
+                "is_empty" => Ok(Value::Bool(pairs.is_empty())),
                 _ => Err(runtime_err(format!("Map has no method `{method}`"))),
             };
         }
@@ -6400,6 +7063,15 @@ impl Interpreter {
 
     /// Resolve a dot-path to a file path for use statements
     fn resolve_use_path(&self, segments: &[String]) -> Result<String, TlError> {
+        // Reject path traversal attempts
+        if segments.iter().any(|s| s == "..") {
+            return Err(TlError::Runtime(tl_errors::RuntimeError {
+                message: "Import paths cannot contain '..'".to_string(),
+                span: None,
+                stack_trace: vec![],
+            }));
+        }
+
         let base_dir = if let Some(ref fp) = self.file_path {
             std::path::Path::new(fp)
                 .parent()
@@ -6847,6 +7519,127 @@ impl Interpreter {
                         };
                         let unique = self.engine().is_unique(df, &column).map_err(runtime_err)?;
                         Ok(Value::Bool(unique))
+                    }
+                    // Phase F2: Window functions
+                    "window" => {
+                        use tl_data::datafusion::logical_expr::{
+                            expr::{WindowFunction as WinFunc, Sort as DfSort},
+                            WindowFunctionDefinition, WindowFrame,
+                        };
+                        if args.is_empty() {
+                            return Err(runtime_err("window() expects named arguments: fn, partition_by, order_by, alias".into()));
+                        }
+                        let mut win_fn_name = String::new();
+                        let mut partition_by_cols: Vec<String> = Vec::new();
+                        let mut order_by_cols: Vec<String> = Vec::new();
+                        let mut alias_name = String::new();
+                        let mut win_args: Vec<String> = Vec::new();
+                        let mut descending = false;
+
+                        for arg in args {
+                            if let Expr::NamedArg { name, value } = arg {
+                                match name.as_str() {
+                                    "fn" => { if let Value::String(s) = self.eval_expr(value)? { win_fn_name = s; } }
+                                    "partition_by" => match self.eval_expr(value)? {
+                                        Value::List(items) => {
+                                            for item in &items {
+                                                if let Value::String(s) = item { partition_by_cols.push(s.clone()); }
+                                            }
+                                        }
+                                        Value::String(s) => partition_by_cols.push(s),
+                                        _ => {}
+                                    },
+                                    "order_by" => match self.eval_expr(value)? {
+                                        Value::List(items) => {
+                                            for item in &items {
+                                                if let Value::String(s) = item { order_by_cols.push(s.clone()); }
+                                            }
+                                        }
+                                        Value::String(s) => order_by_cols.push(s),
+                                        _ => {}
+                                    },
+                                    "alias" | "as" => { if let Value::String(s) = self.eval_expr(value)? { alias_name = s; } }
+                                    "args" => match self.eval_expr(value)? {
+                                        Value::List(items) => {
+                                            for item in &items {
+                                                if let Value::String(s) = item { win_args.push(s.clone()); }
+                                                else { win_args.push(format!("{item}")); }
+                                            }
+                                        }
+                                        Value::String(s) => win_args.push(s),
+                                        _ => { let v = self.eval_expr(value)?; win_args.push(format!("{v}")); }
+                                    },
+                                    "desc" => {
+                                        if let Value::Bool(b) = self.eval_expr(value)? { descending = b; }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+
+                        if win_fn_name.is_empty() {
+                            return Err(runtime_err("window() requires fn: parameter".into()));
+                        }
+                        if alias_name.is_empty() { alias_name = win_fn_name.clone(); }
+
+                        let session = self.engine().session_ctx();
+                        let win_udf = match win_fn_name.as_str() {
+                            "rank" => session.udwf("rank"),
+                            "dense_rank" => session.udwf("dense_rank"),
+                            "row_number" => session.udwf("row_number"),
+                            "percent_rank" => session.udwf("percent_rank"),
+                            "cume_dist" => session.udwf("cume_dist"),
+                            "ntile" => session.udwf("ntile"),
+                            "lag" => session.udwf("lag"),
+                            "lead" => session.udwf("lead"),
+                            "first_value" => session.udwf("first_value"),
+                            "last_value" => session.udwf("last_value"),
+                            _ => return Err(runtime_err(format!("Unknown window function: {win_fn_name}"))),
+                        }.map_err(|e| runtime_err(format!("Window function '{win_fn_name}' not available: {e}")))?;
+
+                        let fun = WindowFunctionDefinition::WindowUDF(win_udf);
+                        let func_args: Vec<tl_data::datafusion::prelude::Expr> = win_args.iter().map(|a| {
+                            if let Ok(n) = a.parse::<i64>() { lit(n) } else { col(a.as_str()) }
+                        }).collect();
+
+                        let partition_exprs: Vec<tl_data::datafusion::prelude::Expr> =
+                            partition_by_cols.iter().map(|c| col(c.as_str())).collect();
+                        let order_exprs: Vec<DfSort> = order_by_cols.iter().map(|c| {
+                            DfSort::new(col(c.as_str()), !descending, true)
+                        }).collect();
+
+                        let has_order = !order_exprs.is_empty();
+                        let win_expr = tl_data::datafusion::prelude::Expr::WindowFunction(WinFunc {
+                            fun,
+                            args: func_args,
+                            partition_by: partition_exprs,
+                            order_by: order_exprs,
+                            window_frame: WindowFrame::new(if has_order { Some(true) } else { None }),
+                            null_treatment: None,
+                        }).alias(&alias_name);
+
+                        let schema = df.schema();
+                        let mut select_exprs: Vec<tl_data::datafusion::prelude::Expr> =
+                            schema.fields().iter().map(|f| col(f.name().as_str())).collect();
+                        select_exprs.push(win_expr);
+
+                        let result_df = df.select(select_exprs)
+                            .map_err(|e| runtime_err(format!("Window function error: {e}")))?;
+                        Ok(Value::Table(TlTable { df: result_df }))
+                    }
+                    // Phase F3: Union
+                    "union" => {
+                        if args.is_empty() {
+                            return Err(runtime_err("union() expects a table argument".into()));
+                        }
+                        let right_table = self.eval_expr(&args[0])?;
+                        let right_df = match right_table {
+                            Value::Table(t) => t.df,
+                            _ => return Err(runtime_err("union() argument must be a table".into())),
+                        };
+                        let result_df = df.union(right_df)
+                            .map_err(|e| runtime_err(format!("Union error: {e}")))?;
+                        Ok(Value::Table(TlTable { df: result_df }))
                     }
                     // Unknown table op: fall through to regular call
                     _ => {
@@ -8329,6 +9122,7 @@ impl Interpreter {
         max_tokens: &Option<i64>,
         base_url: &Option<String>,
         api_key: &Option<String>,
+        output_format: &Option<String>,
         on_tool_call: &Option<Vec<Stmt>>,
         on_complete: &Option<Vec<Stmt>>,
     ) -> Result<Signal, TlError> {
@@ -8352,6 +9146,7 @@ impl Interpreter {
             max_tokens: max_tokens.map(|n| n as u32),
             base_url: base_url.clone(),
             api_key: api_key.clone(),
+            output_format: output_format.clone(),
         };
         self.env.set(name.to_string(), Value::Agent(def));
 
@@ -8422,7 +9217,7 @@ impl Interpreter {
         }
     }
 
-    fn exec_agent_loop(&mut self, agent_def: &tl_stream::AgentDef, user_message: &str) -> Result<Value, TlError> {
+    fn exec_agent_loop(&mut self, agent_def: &tl_stream::AgentDef, user_message: &str, history: Option<&[(String, String)]>) -> Result<Value, TlError> {
         use tl_ai::{LlmResponse, chat_with_tools, format_tool_result_messages};
 
         let model = &agent_def.model;
@@ -8442,19 +9237,39 @@ impl Interpreter {
             })
         }).collect();
 
-        let mut messages: Vec<serde_json::Value> = vec![
-            serde_json::json!({"role": "user", "content": user_message})
-        ];
+        // Seed messages with history if provided
+        let mut messages: Vec<serde_json::Value> = Vec::new();
+        if let Some(hist) = history {
+            for (role, content) in hist {
+                messages.push(serde_json::json!({"role": role, "content": content}));
+            }
+        }
+        // Add the current user message
+        messages.push(serde_json::json!({"role": "user", "content": user_message}));
 
         for turn in 0..agent_def.max_turns {
-            let response = chat_with_tools(model, system, &messages, &tools_json, base_url, api_key)
+            let response = chat_with_tools(model, system, &messages, &tools_json, base_url, api_key, agent_def.output_format.as_deref())
                 .map_err(|e| runtime_err(format!("Agent LLM error: {e}")))?;
 
             match response {
                 LlmResponse::Text(text) => {
+                    // Add assistant response to history
+                    messages.push(serde_json::json!({"role": "assistant", "content": &text}));
+
+                    // Build conversation history as list of [role, content] pairs
+                    let history_list: Vec<Value> = messages.iter().filter_map(|m| {
+                        let role = m["role"].as_str()?;
+                        let content = m["content"].as_str()?;
+                        Some(Value::List(vec![
+                            Value::String(role.to_string()),
+                            Value::String(content.to_string()),
+                        ]))
+                    }).collect();
+
                     let result = Value::Map(vec![
                         ("response".to_string(), Value::String(text)),
                         ("turns".to_string(), Value::Int(turn as i64 + 1)),
+                        ("history".to_string(), Value::List(history_list)),
                     ]);
 
                     // Call on_complete lifecycle hook if defined
@@ -8478,8 +9293,13 @@ impl Interpreter {
                     }).collect();
                     messages.push(serde_json::json!({"role": "assistant", "tool_calls": tc_json}));
 
+                    let declared: Vec<&str> = agent_def.tools.iter().map(|t| t.name.as_str()).collect();
                     let mut results: Vec<(String, String)> = Vec::new();
                     for tc in &tool_calls {
+                        if !declared.contains(&tc.name.as_str()) {
+                            results.push((tc.name.clone(), format!("Error: '{}' not in declared tools", tc.name)));
+                            continue;
+                        }
                         let func = self.env.get(&tc.name).ok_or_else(|| {
                             runtime_err(format!("Agent tool function '{}' not found", tc.name))
                         })?.clone();

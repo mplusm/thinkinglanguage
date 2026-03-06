@@ -4,7 +4,13 @@
 use std::collections::HashMap;
 #[cfg(feature = "native")]
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// Global mutex for env_set/env_remove thread safety (std::env::set_var is not thread-safe).
+static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    ENV_MUTEX.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner())
+}
 #[cfg(feature = "native")]
 use std::time::Duration;
 
@@ -14,7 +20,9 @@ use tl_ast::Expr as AstExpr;
 #[cfg(feature = "native")]
 use tl_data::translate::{LocalValue, TranslateContext, translate_expr};
 #[cfg(feature = "native")]
-use tl_data::{DataEngine, JoinType, col};
+use tl_data::datafusion::execution::FunctionRegistry;
+#[cfg(feature = "native")]
+use tl_data::{DataEngine, JoinType, col, lit};
 use tl_errors::{RuntimeError, TlError};
 
 use crate::chunk::*;
@@ -125,12 +133,12 @@ fn vm_json_to_value(v: &serde_json::Value) -> VmValue {
             }
         }
         serde_json::Value::String(s) => VmValue::String(Arc::from(s.as_str())),
-        serde_json::Value::Array(arr) => VmValue::List(arr.iter().map(vm_json_to_value).collect()),
-        serde_json::Value::Object(obj) => VmValue::Map(
+        serde_json::Value::Array(arr) => VmValue::List(Box::new(arr.iter().map(vm_json_to_value).collect())),
+        serde_json::Value::Object(obj) => VmValue::Map(Box::new(
             obj.iter()
                 .map(|(k, v)| (Arc::from(k.as_str()), vm_json_to_value(v)))
                 .collect(),
-        ),
+        )),
     }
 }
 
@@ -152,6 +160,7 @@ fn vm_value_to_json(v: &VmValue) -> serde_json::Value {
                 .collect();
             serde_json::Value::Object(obj)
         }
+        VmValue::Secret(_) => serde_json::Value::String("***".to_string()),
         _ => serde_json::Value::String(format!("{v}")),
     }
 }
@@ -222,7 +231,9 @@ fn execute_pure_fn(proto: &Arc<Prototype>, args: &[VmValue]) -> Result<VmValue, 
             }
             Op::Add => {
                 let result = match (&stack[base + b as usize], &stack[base + c as usize]) {
-                    (VmValue::Int(x), VmValue::Int(y)) => VmValue::Int(x + y),
+                    (VmValue::Int(x), VmValue::Int(y)) => x.checked_add(*y)
+                        .map(VmValue::Int)
+                        .unwrap_or_else(|| VmValue::Float(*x as f64 + *y as f64)),
                     (VmValue::Float(x), VmValue::Float(y)) => VmValue::Float(x + y),
                     (VmValue::Int(x), VmValue::Float(y)) => VmValue::Float(*x as f64 + y),
                     (VmValue::Float(x), VmValue::Int(y)) => VmValue::Float(x + *y as f64),
@@ -232,7 +243,9 @@ fn execute_pure_fn(proto: &Arc<Prototype>, args: &[VmValue]) -> Result<VmValue, 
             }
             Op::Sub => {
                 let result = match (&stack[base + b as usize], &stack[base + c as usize]) {
-                    (VmValue::Int(x), VmValue::Int(y)) => VmValue::Int(x - y),
+                    (VmValue::Int(x), VmValue::Int(y)) => x.checked_sub(*y)
+                        .map(VmValue::Int)
+                        .unwrap_or_else(|| VmValue::Float(*x as f64 - *y as f64)),
                     (VmValue::Float(x), VmValue::Float(y)) => VmValue::Float(x - y),
                     (VmValue::Int(x), VmValue::Float(y)) => VmValue::Float(*x as f64 - y),
                     (VmValue::Float(x), VmValue::Int(y)) => VmValue::Float(x - *y as f64),
@@ -242,7 +255,9 @@ fn execute_pure_fn(proto: &Arc<Prototype>, args: &[VmValue]) -> Result<VmValue, 
             }
             Op::Mul => {
                 let result = match (&stack[base + b as usize], &stack[base + c as usize]) {
-                    (VmValue::Int(x), VmValue::Int(y)) => VmValue::Int(x * y),
+                    (VmValue::Int(x), VmValue::Int(y)) => x.checked_mul(*y)
+                        .map(VmValue::Int)
+                        .unwrap_or_else(|| VmValue::Float(*x as f64 * *y as f64)),
                     (VmValue::Float(x), VmValue::Float(y)) => VmValue::Float(x * y),
                     (VmValue::Int(x), VmValue::Float(y)) => VmValue::Float(*x as f64 * y),
                     (VmValue::Float(x), VmValue::Int(y)) => VmValue::Float(x * *y as f64),
@@ -267,8 +282,18 @@ fn execute_pure_fn(proto: &Arc<Prototype>, args: &[VmValue]) -> Result<VmValue, 
             }
             Op::Mod => {
                 let result = match (&stack[base + b as usize], &stack[base + c as usize]) {
-                    (VmValue::Int(x), VmValue::Int(y)) => VmValue::Int(x % y),
-                    (VmValue::Float(x), VmValue::Float(y)) => VmValue::Float(x % y),
+                    (VmValue::Int(x), VmValue::Int(y)) => {
+                        if *y == 0 {
+                            return Err(runtime_err("Modulo by zero"));
+                        }
+                        VmValue::Int(x % y)
+                    }
+                    (VmValue::Float(x), VmValue::Float(y)) => {
+                        if *y == 0.0 {
+                            return Err(runtime_err("Modulo by zero"));
+                        }
+                        VmValue::Float(x % y)
+                    }
                     _ => return Err(runtime_err("Cannot modulo in parallel fn")),
                 };
                 stack[base + a as usize] = result;
@@ -423,8 +448,8 @@ pub struct Vm {
     pub project_root: Option<std::path::PathBuf>,
     /// Schema registry for versioned schemas
     pub schema_registry: crate::schema::SchemaRegistry,
-    /// Secret vault for credential management
-    pub secret_vault: HashMap<String, String>,
+    /// Secret vault for credential management (zeroed on drop)
+    pub secret_vault: SecretVault,
     /// Security policy (optional, set via --sandbox)
     pub security_policy: Option<crate::security::SecurityPolicy>,
     /// Tokio runtime for async builtins (lazily initialized)
@@ -435,6 +460,32 @@ pub struct Vm {
     /// GPU operations dispatcher (lazily initialized)
     #[cfg(feature = "gpu")]
     gpu_ops: Option<tl_gpu::GpuOps>,
+}
+
+/// A secret vault that zeros entries on drop to reduce credential exposure in memory.
+#[derive(Debug, Clone, Default)]
+pub struct SecretVault(HashMap<String, String>);
+
+impl SecretVault {
+    pub fn new() -> Self { Self(HashMap::new()) }
+    pub fn get(&self, key: &str) -> Option<&String> { self.0.get(key) }
+    pub fn insert(&mut self, key: String, val: String) { self.0.insert(key, val); }
+    pub fn remove(&mut self, key: &str) { self.0.remove(key); }
+    pub fn keys(&self) -> impl Iterator<Item = &String> { self.0.keys() }
+}
+
+impl Drop for SecretVault {
+    fn drop(&mut self) {
+        for val in self.0.values_mut() {
+            // Overwrite the string's buffer with zeros before deallocation.
+            // SAFETY: we write zeros into the valid allocated range of the String.
+            unsafe {
+                let ptr = val.as_mut_vec().as_mut_ptr();
+                std::ptr::write_bytes(ptr, 0, val.len());
+            }
+        }
+        self.0.clear();
+    }
 }
 
 impl Vm {
@@ -456,7 +507,7 @@ impl Vm {
             package_roots: HashMap::new(),
             project_root: None,
             schema_registry: crate::schema::SchemaRegistry::new(),
-            secret_vault: HashMap::new(),
+            secret_vault: SecretVault::new(),
             security_policy: None,
             #[cfg(feature = "async-runtime")]
             runtime: None,
@@ -574,6 +625,128 @@ impl Vm {
         });
 
         self.run().map_err(|e| self.enrich_error(e))
+    }
+
+    // -- Debug API (Phase H5) --
+
+    /// Prepare the VM for debug execution by pushing a call frame without running.
+    pub fn debug_load(&mut self, proto: &Prototype) {
+        let proto = Arc::new(proto.clone());
+        let base = self.stack.len();
+        self.ensure_stack(base + proto.num_registers as usize + 1);
+        self.frames.push(CallFrame {
+            prototype: proto,
+            ip: 0,
+            base,
+            upvalues: Vec::new(),
+        });
+    }
+
+    /// Execute a single instruction in debug mode. Returns:
+    /// - Ok(None) → instruction executed, more to go
+    /// - Ok(Some(val)) → execution completed with return value
+    /// - Err → runtime error
+    pub fn debug_step(&mut self) -> Result<Option<VmValue>, TlError> {
+        let entry_depth = 1; // Always run at top level depth
+        self.run_step(entry_depth).map_err(|e| self.enrich_error(e))
+    }
+
+    /// Get the current source line number (1-based) or 0 if unknown.
+    pub fn debug_current_line(&self) -> u32 {
+        if let Some(frame) = self.frames.last() {
+            let ip = if frame.ip > 0 { frame.ip - 1 } else { 0 };
+            if ip < frame.prototype.lines.len() {
+                frame.prototype.lines[ip]
+            } else {
+                0
+            }
+        } else {
+            0
+        }
+    }
+
+    /// Get the current function name being executed.
+    pub fn debug_current_function(&self) -> String {
+        self.frames.last().map(|f| f.prototype.name.clone()).unwrap_or_default()
+    }
+
+    /// Check if the VM has finished executing (no more frames).
+    pub fn debug_is_done(&self) -> bool {
+        self.frames.is_empty() || self.frames.last().is_some_and(|f| f.ip >= f.prototype.code.len())
+    }
+
+    /// Get a global variable by name.
+    pub fn debug_get_global(&self, name: &str) -> Option<&VmValue> {
+        self.globals.get(name)
+    }
+
+    /// Get a local variable by name (looks in top_level_locals of current frame).
+    pub fn debug_get_local(&self, name: &str) -> Option<&VmValue> {
+        if let Some(frame) = self.frames.last() {
+            for (local_name, reg) in &frame.prototype.top_level_locals {
+                if local_name == name {
+                    let idx = frame.base + *reg as usize;
+                    if idx < self.stack.len() {
+                        return Some(&self.stack[idx]);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Get all local variables in the current frame.
+    pub fn debug_locals(&self) -> Vec<(String, &VmValue)> {
+        let mut result = Vec::new();
+        if let Some(frame) = self.frames.last() {
+            for (name, reg) in &frame.prototype.top_level_locals {
+                let idx = frame.base + *reg as usize;
+                if idx < self.stack.len() {
+                    result.push((name.clone(), &self.stack[idx]));
+                }
+            }
+        }
+        result
+    }
+
+    /// Get the current IP (instruction pointer).
+    pub fn debug_current_ip(&self) -> usize {
+        self.frames.last().map(|f| f.ip).unwrap_or(0)
+    }
+
+    /// Run until the next source line changes (step over).
+    pub fn debug_step_line(&mut self) -> Result<Option<VmValue>, TlError> {
+        let start_line = self.debug_current_line();
+        loop {
+            if self.debug_is_done() {
+                return Ok(Some(VmValue::None));
+            }
+            let result = self.debug_step()?;
+            if result.is_some() {
+                return Ok(result);
+            }
+            let new_line = self.debug_current_line();
+            if new_line != start_line && new_line != 0 {
+                return Ok(None);
+            }
+        }
+    }
+
+    /// Continue execution until a breakpoint line is hit or execution completes.
+    pub fn debug_continue(&mut self, breakpoints: &[u32]) -> Result<Option<VmValue>, TlError> {
+        loop {
+            if self.debug_is_done() {
+                return Ok(Some(VmValue::None));
+            }
+            let result = self.debug_step()?;
+            if result.is_some() {
+                return Ok(result);
+            }
+            let line = self.debug_current_line();
+            if breakpoints.contains(&line) {
+                return Ok(None);
+            }
+        }
     }
 
     /// Enrich a runtime error with line number and stack trace from the current call frames.
@@ -813,19 +986,19 @@ impl Vm {
             }
             Op::Lt => {
                 let result = self.vm_cmp(base, b, c)?;
-                self.stack[base + a as usize] = VmValue::Bool(result < 0);
+                self.stack[base + a as usize] = VmValue::Bool(result == Some(-1));
             }
             Op::Gt => {
                 let result = self.vm_cmp(base, b, c)?;
-                self.stack[base + a as usize] = VmValue::Bool(result > 0);
+                self.stack[base + a as usize] = VmValue::Bool(result == Some(1));
             }
             Op::Lte => {
                 let result = self.vm_cmp(base, b, c)?;
-                self.stack[base + a as usize] = VmValue::Bool(result <= 0);
+                self.stack[base + a as usize] = VmValue::Bool(matches!(result, Some(-1) | Some(0)));
             }
             Op::Gte => {
                 let result = self.vm_cmp(base, b, c)?;
-                self.stack[base + a as usize] = VmValue::Bool(result >= 0);
+                self.stack[base + a as usize] = VmValue::Bool(matches!(result, Some(0) | Some(1)));
             }
             Op::And => {
                 let left = self.stack[base + b as usize].is_truthy();
@@ -904,7 +1077,7 @@ impl Vm {
                 for i in 0..c as usize {
                     items.push(self.stack[base + b as usize + i].clone());
                 }
-                self.stack[base + a as usize] = VmValue::List(items);
+                self.stack[base + a as usize] = VmValue::List(Box::new(items));
             }
             Op::GetIndex => {
                 let raw_obj = &self.stack[base + b as usize];
@@ -915,11 +1088,22 @@ impl Vm {
                 let idx = &self.stack[base + c as usize];
                 let result = match (obj, idx) {
                     (VmValue::List(items), VmValue::Int(i)) => {
-                        let i = *i as usize;
-                        items.get(i).cloned().ok_or_else(|| {
+                        let idx = if *i < 0 {
+                            let adjusted = items.len() as i64 + *i;
+                            if adjusted < 0 {
+                                return Err(runtime_err(format!(
+                                    "Index {} out of bounds for list of length {}",
+                                    i, items.len()
+                                )));
+                            }
+                            adjusted as usize
+                        } else {
+                            *i as usize
+                        };
+                        items.get(idx).cloned().ok_or_else(|| {
                             runtime_err(format!(
-                                "Index {i} out of bounds for list of length {}",
-                                items.len()
+                                "Index {} out of bounds for list of length {}",
+                                i, items.len()
                             ))
                         })?
                     }
@@ -949,9 +1133,25 @@ impl Vm {
                 match idx_val {
                     VmValue::Int(i) => {
                         if let VmValue::List(ref mut items) = self.stack[base + b as usize] {
-                            let i = i as usize;
-                            if i < items.len() {
-                                items[i] = val;
+                            let idx = if i < 0 {
+                                let adjusted = items.len() as i64 + i;
+                                if adjusted < 0 {
+                                    return Err(runtime_err(format!(
+                                        "Index {} out of bounds for list of length {}",
+                                        i, items.len()
+                                    )));
+                                }
+                                adjusted as usize
+                            } else {
+                                i as usize
+                            };
+                            if idx < items.len() {
+                                items[idx] = val;
+                            } else {
+                                return Err(runtime_err(format!(
+                                    "Index {} out of bounds for list of length {}",
+                                    i, items.len()
+                                )));
                             }
                         }
                     }
@@ -982,7 +1182,7 @@ impl Vm {
                     };
                     pairs.push((key, val));
                 }
-                self.stack[base + a as usize] = VmValue::Map(pairs);
+                self.stack[base + a as usize] = VmValue::Map(Box::new(pairs));
             }
             Op::TablePipe => {
                 #[cfg(feature = "native")]
@@ -999,13 +1199,15 @@ impl Vm {
                 }
             }
             Op::CallBuiltin => {
-                // a = dest, b = builtin id, c = first arg reg
-                // Next instruction: arg count in A field
+                // ABx format: a = dest, bx = builtin id (16-bit)
+                // Next instruction: A = arg count, B = first arg reg
+                let builtin_id = decode_bx(inst);
                 let next_inst = self.frames[frame_idx].prototype.code[self.frames[frame_idx].ip];
                 self.frames[frame_idx].ip += 1;
                 let arg_count = decode_a(next_inst) as usize;
+                let first_arg = decode_b(next_inst) as usize;
 
-                let result = self.call_builtin(b, base + c as usize, arg_count)?;
+                let result = self.call_builtin(builtin_id, base + first_arg, arg_count)?;
                 self.stack[base + a as usize] = result;
             }
             Op::ForIter => {
@@ -1029,7 +1231,7 @@ impl Vm {
                     VmValue::Map(pairs) => {
                         if idx < pairs.len() {
                             let (k, v) = &pairs[idx];
-                            let pair = VmValue::List(vec![VmValue::String(k.clone()), v.clone()]);
+                            let pair = VmValue::List(Box::new(vec![VmValue::String(k.clone()), v.clone()]));
                             self.stack[base + c as usize] = pair;
                             self.stack[base + a as usize] = VmValue::Int((idx + 1) as i64);
                             false
@@ -1446,7 +1648,7 @@ impl Vm {
                 match val {
                     VmValue::Task(task) => {
                         let rx = {
-                            let mut guard = task.receiver.lock().unwrap();
+                            let mut guard = task.receiver.lock().unwrap_or_else(|e| e.into_inner());
                             guard.take()
                         };
                         match rx {
@@ -1524,12 +1726,12 @@ impl Vm {
                     match &source {
                         VmValue::List(l) => {
                             if idx < l.len() {
-                                VmValue::List(l[idx..].to_vec())
+                                VmValue::List(Box::new(l[idx..].to_vec()))
                             } else {
-                                VmValue::List(vec![])
+                                VmValue::List(Box::new(vec![]))
                             }
                         }
-                        _ => VmValue::List(vec![]),
+                        _ => VmValue::List(Box::new(vec![])),
                     }
                 } else {
                     match &source {
@@ -1603,6 +1805,12 @@ impl Vm {
         args_start: u8,
         arg_count: u8,
     ) -> Result<(), TlError> {
+        const MAX_CALL_DEPTH: usize = 512;
+        if self.frames.len() >= MAX_CALL_DEPTH {
+            return Err(runtime_err(
+                "Stack overflow: maximum recursion depth (512) exceeded",
+            ));
+        }
         match func {
             VmValue::Function(closure) => {
                 let proto = closure.prototype.clone();
@@ -1682,7 +1890,7 @@ impl Vm {
             }
             VmValue::Builtin(builtin_id) => {
                 let result = self.call_builtin(
-                    builtin_id as u8,
+                    builtin_id as u16,
                     caller_base + args_start as usize,
                     arg_count as usize,
                 )?;
@@ -1696,6 +1904,16 @@ impl Vm {
     /// Walk a VmValue and promote any Open upvalues pointing at or above `frame_base`
     /// to Closed. This is called on return values before the caller's stack is truncated,
     /// so that closures escaping their defining function retain correct captured values.
+    /// Check if a value may contain functions with open upvalues (recursive).
+    fn value_may_need_closing(val: &VmValue) -> bool {
+        match val {
+            VmValue::Function(_) => true,
+            VmValue::List(items) => items.iter().any(|v| Self::value_may_need_closing(v)),
+            VmValue::Map(entries) => entries.iter().any(|(_, v)| Self::value_may_need_closing(v)),
+            _ => false,
+        }
+    }
+
     fn close_upvalues_in_value(&self, val: VmValue, frame_base: usize) -> VmValue {
         match val {
             VmValue::Function(ref closure) => {
@@ -1722,30 +1940,26 @@ impl Vm {
                 }))
             }
             VmValue::List(items) => {
-                let needs_closing = items.iter().any(|v| matches!(v, VmValue::Function(_)));
-                if !needs_closing {
+                if !items.iter().any(|v| Self::value_may_need_closing(v)) {
                     return VmValue::List(items);
                 }
-                VmValue::List(
-                    items
+                VmValue::List(Box::new(
+                    (*items)
                         .into_iter()
                         .map(|v| self.close_upvalues_in_value(v, frame_base))
                         .collect(),
-                )
+                ))
             }
             VmValue::Map(entries) => {
-                let needs_closing = entries
-                    .iter()
-                    .any(|(_, v)| matches!(v, VmValue::Function(_)));
-                if !needs_closing {
+                if !entries.iter().any(|(_, v)| Self::value_may_need_closing(v)) {
                     return VmValue::Map(entries);
                 }
-                VmValue::Map(
-                    entries
+                VmValue::Map(Box::new(
+                    (*entries)
                         .into_iter()
                         .map(|(k, v)| (k, self.close_upvalues_in_value(v, frame_base)))
                         .collect(),
-                )
+                ))
             }
             other => other,
         }
@@ -1826,7 +2040,9 @@ impl Vm {
         let left = &self.stack[base + b as usize];
         let right = &self.stack[base + c as usize];
         match (left, right) {
-            (VmValue::Int(a), VmValue::Int(b)) => Ok(VmValue::Int(a + b)),
+            (VmValue::Int(a), VmValue::Int(b)) => Ok(a.checked_add(*b)
+                .map(VmValue::Int)
+                .unwrap_or_else(|| VmValue::Float(*a as f64 + *b as f64))),
             (VmValue::Float(a), VmValue::Float(b)) => Ok(VmValue::Float(a + b)),
             (VmValue::Int(a), VmValue::Float(b)) => Ok(VmValue::Float(*a as f64 + b)),
             (VmValue::Float(a), VmValue::Int(b)) => Ok(VmValue::Float(a + *b as f64)),
@@ -1879,7 +2095,9 @@ impl Vm {
         let left = &self.stack[base + b as usize];
         let right = &self.stack[base + c as usize];
         match (left, right) {
-            (VmValue::Int(a), VmValue::Int(b)) => Ok(VmValue::Int(a - b)),
+            (VmValue::Int(a), VmValue::Int(b)) => Ok(a.checked_sub(*b)
+                .map(VmValue::Int)
+                .unwrap_or_else(|| VmValue::Float(*a as f64 - *b as f64))),
             (VmValue::Float(a), VmValue::Float(b)) => Ok(VmValue::Float(a - b)),
             (VmValue::Int(a), VmValue::Float(b)) => Ok(VmValue::Float(*a as f64 - b)),
             (VmValue::Float(a), VmValue::Int(b)) => Ok(VmValue::Float(a - *b as f64)),
@@ -1928,11 +2146,19 @@ impl Vm {
         let left = &self.stack[base + b as usize];
         let right = &self.stack[base + c as usize];
         match (left, right) {
-            (VmValue::Int(a), VmValue::Int(b)) => Ok(VmValue::Int(a * b)),
+            (VmValue::Int(a), VmValue::Int(b)) => Ok(a.checked_mul(*b)
+                .map(VmValue::Int)
+                .unwrap_or_else(|| VmValue::Float(*a as f64 * *b as f64))),
             (VmValue::Float(a), VmValue::Float(b)) => Ok(VmValue::Float(a * b)),
             (VmValue::Int(a), VmValue::Float(b)) => Ok(VmValue::Float(*a as f64 * b)),
             (VmValue::Float(a), VmValue::Int(b)) => Ok(VmValue::Float(a * *b as f64)),
             (VmValue::String(a), VmValue::Int(b)) => {
+                if *b < 0 {
+                    return Err(runtime_err("Cannot repeat string a negative number of times"));
+                }
+                if *b > 10_000_000 {
+                    return Err(runtime_err("String repeat count too large (max 10,000,000)"));
+                }
                 Ok(VmValue::String(Arc::from(a.repeat(*b as usize).as_str())))
             }
             #[cfg(feature = "gpu")]
@@ -2000,8 +2226,18 @@ impl Vm {
                 }
                 Ok(VmValue::Int(a / b))
             }
-            (VmValue::Float(a), VmValue::Float(b)) => Ok(VmValue::Float(a / b)),
-            (VmValue::Int(a), VmValue::Float(b)) => Ok(VmValue::Float(*a as f64 / b)),
+            (VmValue::Float(a), VmValue::Float(b)) => {
+                if *b == 0.0 {
+                    return Err(runtime_err("Division by zero"));
+                }
+                Ok(VmValue::Float(a / b))
+            }
+            (VmValue::Int(a), VmValue::Float(b)) => {
+                if *b == 0.0 {
+                    return Err(runtime_err("Division by zero"));
+                }
+                Ok(VmValue::Float(*a as f64 / b))
+            }
             (VmValue::Float(a), VmValue::Int(b)) => {
                 if *b == 0 {
                     return Err(runtime_err("Division by zero"));
@@ -2050,8 +2286,18 @@ impl Vm {
                 }
                 Ok(VmValue::Decimal(rust_decimal::Decimal::from(*a) / b))
             }
-            (VmValue::Decimal(a), VmValue::Float(b)) => Ok(VmValue::Float(decimal_to_f64(a) / b)),
-            (VmValue::Float(a), VmValue::Decimal(b)) => Ok(VmValue::Float(a / decimal_to_f64(b))),
+            (VmValue::Decimal(a), VmValue::Float(b)) => {
+                if *b == 0.0 {
+                    return Err(runtime_err("Division by zero"));
+                }
+                Ok(VmValue::Float(decimal_to_f64(a) / b))
+            }
+            (VmValue::Float(a), VmValue::Decimal(b)) => {
+                if b.is_zero() {
+                    return Err(runtime_err("Division by zero"));
+                }
+                Ok(VmValue::Float(a / decimal_to_f64(b)))
+            }
             _ => Err(runtime_err(format!(
                 "Cannot apply `/` to {} and {}",
                 left.type_name(),
@@ -2070,9 +2316,24 @@ impl Vm {
                 }
                 Ok(VmValue::Int(a % b))
             }
-            (VmValue::Float(a), VmValue::Float(b)) => Ok(VmValue::Float(a % b)),
-            (VmValue::Int(a), VmValue::Float(b)) => Ok(VmValue::Float(*a as f64 % b)),
-            (VmValue::Float(a), VmValue::Int(b)) => Ok(VmValue::Float(a % *b as f64)),
+            (VmValue::Float(a), VmValue::Float(b)) => {
+                if *b == 0.0 {
+                    return Err(runtime_err("Modulo by zero"));
+                }
+                Ok(VmValue::Float(a % b))
+            }
+            (VmValue::Int(a), VmValue::Float(b)) => {
+                if *b == 0.0 {
+                    return Err(runtime_err("Modulo by zero"));
+                }
+                Ok(VmValue::Float(*a as f64 % b))
+            }
+            (VmValue::Float(a), VmValue::Int(b)) => {
+                if *b == 0 {
+                    return Err(runtime_err("Modulo by zero"));
+                }
+                Ok(VmValue::Float(a % *b as f64))
+            }
             _ => Err(runtime_err(format!(
                 "Cannot apply `%` to {} and {}",
                 left.type_name(),
@@ -2085,7 +2346,15 @@ impl Vm {
         let left = &self.stack[base + b as usize];
         let right = &self.stack[base + c as usize];
         match (left, right) {
-            (VmValue::Int(a), VmValue::Int(b)) => Ok(VmValue::Int(a.pow(*b as u32))),
+            (VmValue::Int(a), VmValue::Int(b)) => {
+                if *b < 0 {
+                    return Ok(VmValue::Float((*a as f64).powi(*b as i32)));
+                }
+                match a.checked_pow(*b as u32) {
+                    Some(result) => Ok(VmValue::Int(result)),
+                    None => Ok(VmValue::Float((*a as f64).powf(*b as f64))),
+                }
+            }
             (VmValue::Float(a), VmValue::Float(b)) => Ok(VmValue::Float(a.powf(*b))),
             (VmValue::Int(a), VmValue::Float(b)) => Ok(VmValue::Float((*a as f64).powf(*b))),
             (VmValue::Float(a), VmValue::Int(b)) => Ok(VmValue::Float(a.powf(*b as f64))),
@@ -2098,43 +2367,36 @@ impl Vm {
     }
 
     fn vm_eq(&self, base: usize, b: u8, c: u8) -> bool {
-        let left = &self.stack[base + b as usize];
-        let right = &self.stack[base + c as usize];
-        match (left, right) {
-            (VmValue::Int(a), VmValue::Int(b)) => a == b,
-            (VmValue::Float(a), VmValue::Float(b)) => a == b,
-            (VmValue::String(a), VmValue::String(b)) => a == b,
-            (VmValue::Bool(a), VmValue::Bool(b)) => a == b,
-            (VmValue::None, VmValue::None) => true,
-            (VmValue::Decimal(a), VmValue::Decimal(b)) => a == b,
-            _ => false,
-        }
+        self.stack[base + b as usize] == self.stack[base + c as usize]
     }
 
-    fn vm_cmp(&self, base: usize, b: u8, c: u8) -> Result<i8, TlError> {
+    fn vm_cmp(&self, base: usize, b: u8, c: u8) -> Result<Option<i8>, TlError> {
         let left = &self.stack[base + b as usize];
         let right = &self.stack[base + c as usize];
         match (left, right) {
-            (VmValue::Int(a), VmValue::Int(b)) => Ok(a.cmp(b) as i8),
+            (VmValue::Int(a), VmValue::Int(b)) => Ok(Some(a.cmp(b) as i8)),
             (VmValue::Float(a), VmValue::Float(b)) => {
-                Ok(a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal) as i8)
+                Ok(a.partial_cmp(b).map(|o| o as i8))
             }
             (VmValue::Int(a), VmValue::Float(b)) => {
                 let fa = *a as f64;
-                Ok(fa.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal) as i8)
+                Ok(fa.partial_cmp(b).map(|o| o as i8))
             }
             (VmValue::Float(a), VmValue::Int(b)) => {
                 let fb = *b as f64;
-                Ok(a.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal) as i8)
+                Ok(a.partial_cmp(&fb).map(|o| o as i8))
             }
-            (VmValue::String(a), VmValue::String(b)) => Ok(a.cmp(b) as i8),
-            (VmValue::Decimal(a), VmValue::Decimal(b)) => Ok(a.cmp(b) as i8),
+            (VmValue::String(a), VmValue::String(b)) => Ok(Some(a.cmp(b) as i8)),
+            (VmValue::Decimal(a), VmValue::Decimal(b)) => Ok(Some(a.cmp(b) as i8)),
             (VmValue::Decimal(a), VmValue::Int(b)) => {
-                Ok(a.cmp(&rust_decimal::Decimal::from(*b)) as i8)
+                Ok(Some(a.cmp(&rust_decimal::Decimal::from(*b)) as i8))
             }
             (VmValue::Int(a), VmValue::Decimal(b)) => {
-                Ok(rust_decimal::Decimal::from(*a).cmp(b) as i8)
+                Ok(Some(rust_decimal::Decimal::from(*a).cmp(b) as i8))
             }
+            (VmValue::DateTime(a), VmValue::DateTime(b)) => Ok(Some(a.cmp(b) as i8)),
+            (VmValue::DateTime(a), VmValue::Int(b)) => Ok(Some(a.cmp(b) as i8)),
+            (VmValue::Int(a), VmValue::DateTime(b)) => Ok(Some(a.cmp(b) as i8)),
             _ => Err(runtime_err(format!(
                 "Cannot compare {} and {}",
                 left.type_name(),
@@ -2143,11 +2405,24 @@ impl Vm {
         }
     }
 
+    // ── Security helpers ──
+
+    fn check_permission(&self, perm: &str) -> Result<(), TlError> {
+        if let Some(ref policy) = self.security_policy {
+            if !policy.check(perm) {
+                return Err(runtime_err(format!(
+                    "{perm} blocked by security policy"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     // ── Builtin dispatch ──
 
     pub fn call_builtin(
         &mut self,
-        id: u8,
+        id: u16,
         args_base: usize,
         arg_count: usize,
     ) -> Result<VmValue, TlError> {
@@ -2162,7 +2437,8 @@ impl Vm {
             })
             .collect();
 
-        let builtin_id: BuiltinId = unsafe { std::mem::transmute(id) };
+        let builtin_id: BuiltinId = BuiltinId::try_from(id)
+            .map_err(|v| runtime_err(format!("Invalid builtin id: {v}")))?;
 
         match builtin_id {
             BuiltinId::Print | BuiltinId::Println => {
@@ -2250,13 +2526,23 @@ impl Vm {
             BuiltinId::Range => {
                 if args.len() == 1 {
                     if let VmValue::Int(n) = &args[0] {
-                        Ok(VmValue::List((0..*n).map(VmValue::Int).collect()))
+                        if *n > 10_000_000 {
+                            return Err(runtime_err("range() size too large (max 10,000,000)"));
+                        }
+                        if *n < 0 {
+                            return Ok(VmValue::List(Box::new(vec![])));
+                        }
+                        Ok(VmValue::List(Box::new((0..*n).map(VmValue::Int).collect())))
                     } else {
                         Err(runtime_err("range() expects an integer"))
                     }
                 } else if args.len() == 2 {
                     if let (VmValue::Int(start), VmValue::Int(end)) = (&args[0], &args[1]) {
-                        Ok(VmValue::List((*start..*end).map(VmValue::Int).collect()))
+                        let size = (*end - *start).max(0);
+                        if size > 10_000_000 {
+                            return Err(runtime_err("range() size too large (max 10,000,000)"));
+                        }
+                        Ok(VmValue::List(Box::new((*start..*end).map(VmValue::Int).collect())))
                     } else {
                         Err(runtime_err("range() expects integers"))
                     }
@@ -2280,7 +2566,7 @@ impl Vm {
                                 i += step;
                             }
                         }
-                        Ok(VmValue::List(result))
+                        Ok(VmValue::List(Box::new(result)))
                     } else {
                         Err(runtime_err("range() expects integers"))
                     }
@@ -2308,7 +2594,7 @@ impl Vm {
                     return Err(runtime_err("map() expects 2 arguments (list, fn)"));
                 }
                 let items = match &args[0] {
-                    VmValue::List(items) => items.clone(),
+                    VmValue::List(items) => (**items).clone(),
                     _ => return Err(runtime_err("map() first arg must be a list")),
                 };
                 let func = args[1].clone();
@@ -2323,21 +2609,21 @@ impl Vm {
                         .into_par_iter()
                         .map(|item| execute_pure_fn(&proto, &[item]))
                         .collect();
-                    return Ok(VmValue::List(result?));
+                    return Ok(VmValue::List(Box::new(result?)));
                 }
                 let mut result = Vec::new();
                 for item in items {
                     let val = self.call_vm_function(&func, &[item])?;
                     result.push(val);
                 }
-                Ok(VmValue::List(result))
+                Ok(VmValue::List(Box::new(result)))
             }
             BuiltinId::Filter => {
                 if args.len() != 2 {
                     return Err(runtime_err("filter() expects 2 arguments (list, fn)"));
                 }
                 let items = match &args[0] {
-                    VmValue::List(items) => items.clone(),
+                    VmValue::List(items) => (**items).clone(),
                     _ => return Err(runtime_err("filter() first arg must be a list")),
                 };
                 let func = args[1].clone();
@@ -2363,7 +2649,7 @@ impl Vm {
                             }
                         })
                         .collect();
-                    return Ok(VmValue::List(result?));
+                    return Ok(VmValue::List(Box::new(result?)));
                 }
                 let mut result = Vec::new();
                 for item in items {
@@ -2372,14 +2658,14 @@ impl Vm {
                         result.push(item);
                     }
                 }
-                Ok(VmValue::List(result))
+                Ok(VmValue::List(Box::new(result)))
             }
             BuiltinId::Reduce => {
                 if args.len() != 3 {
                     return Err(runtime_err("reduce() expects 3 arguments (list, init, fn)"));
                 }
                 let items = match &args[0] {
-                    VmValue::List(items) => items.clone(),
+                    VmValue::List(items) => (**items).clone(),
                     _ => return Err(runtime_err("reduce() first arg must be a list")),
                 };
                 let mut acc = args[1].clone();
@@ -2427,7 +2713,7 @@ impl Vm {
                 let mut total: i64 = 0;
                 let mut is_float = false;
                 let mut total_f: f64 = 0.0;
-                for item in items {
+                for item in items.iter() {
                     match item {
                         VmValue::Int(n) => {
                             if is_float {
@@ -2457,7 +2743,7 @@ impl Vm {
                     return Err(runtime_err("any() expects 2 arguments (list, fn)"));
                 }
                 let items = match &args[0] {
-                    VmValue::List(items) => items.clone(),
+                    VmValue::List(items) => (**items).clone(),
                     _ => return Err(runtime_err("any() first arg must be a list")),
                 };
                 let func = args[1].clone();
@@ -2474,7 +2760,7 @@ impl Vm {
                     return Err(runtime_err("all() expects 2 arguments (list, fn)"));
                 }
                 let items = match &args[0] {
-                    VmValue::List(items) => items.clone(),
+                    VmValue::List(items) => (**items).clone(),
                     _ => return Err(runtime_err("all() first arg must be a list")),
                 };
                 let func = args[1].clone();
@@ -2758,7 +3044,7 @@ impl Vm {
                 Some(VmValue::Tensor(t)) => {
                     let shape: Vec<VmValue> =
                         t.shape().iter().map(|&d| VmValue::Int(d as i64)).collect();
-                    Ok(VmValue::List(shape))
+                    Ok(VmValue::List(Box::new(shape)))
                 }
                 _ => Err(runtime_err("tensor_shape() expects a tensor")),
             },
@@ -2960,7 +3246,7 @@ impl Vm {
                     .into_iter()
                     .map(|n: String| VmValue::String(Arc::from(n.as_str())))
                     .collect();
-                Ok(VmValue::List(items))
+                Ok(VmValue::List(Box::new(items)))
             }
             #[cfg(feature = "native")]
             BuiltinId::ModelGet => {
@@ -3140,6 +3426,7 @@ impl Vm {
             }
             #[cfg(feature = "native")]
             BuiltinId::HttpGet => {
+                self.check_permission("network")?;
                 if args.is_empty() {
                     return Err(runtime_err("http_get() expects a URL"));
                 }
@@ -3166,6 +3453,7 @@ impl Vm {
             }
             #[cfg(feature = "native")]
             BuiltinId::HttpPost => {
+                self.check_permission("network")?;
                 if args.len() < 2 {
                     return Err(runtime_err("http_post() expects URL and body"));
                 }
@@ -3271,10 +3559,11 @@ impl Vm {
                     };
                     pairs.push((key, chunk[1].clone()));
                 }
-                Ok(VmValue::Map(pairs))
+                Ok(VmValue::Map(Box::new(pairs)))
             }
             #[cfg(feature = "native")]
             BuiltinId::ReadFile => {
+                self.check_permission("file_read")?;
                 if args.is_empty() {
                     return Err(runtime_err("read_file() expects a path"));
                 }
@@ -3288,6 +3577,7 @@ impl Vm {
             }
             #[cfg(feature = "native")]
             BuiltinId::WriteFile => {
+                self.check_permission("file_write")?;
                 if args.len() < 2 {
                     return Err(runtime_err("write_file() expects path and content"));
                 }
@@ -3301,6 +3591,7 @@ impl Vm {
             }
             #[cfg(feature = "native")]
             BuiltinId::AppendFile => {
+                self.check_permission("file_write")?;
                 if args.len() < 2 {
                     return Err(runtime_err("append_file() expects path and content"));
                 }
@@ -3320,6 +3611,7 @@ impl Vm {
             }
             #[cfg(feature = "native")]
             BuiltinId::FileExists => {
+                self.check_permission("file_read")?;
                 if args.is_empty() {
                     return Err(runtime_err("file_exists() expects a path"));
                 }
@@ -3331,6 +3623,7 @@ impl Vm {
             }
             #[cfg(feature = "native")]
             BuiltinId::ListDir => {
+                self.check_permission("file_read")?;
                 if args.is_empty() {
                     return Err(runtime_err("list_dir() expects a path"));
                 }
@@ -3342,7 +3635,7 @@ impl Vm {
                             VmValue::String(Arc::from(e.file_name().to_string_lossy().as_ref()))
                         })
                         .collect();
-                    Ok(VmValue::List(entries))
+                    Ok(VmValue::List(Box::new(entries)))
                 } else {
                     Err(runtime_err("list_dir() expects a string path"))
                 }
@@ -3369,10 +3662,12 @@ impl Vm {
             }
             #[cfg(feature = "native")]
             BuiltinId::EnvSet => {
+                self.check_permission("env_write")?;
                 if args.len() < 2 {
                     return Err(runtime_err("env_set() expects name and value"));
                 }
                 if let (VmValue::String(name), VmValue::String(val)) = (&args[0], &args[1]) {
+                    let _guard = env_lock();
                     unsafe {
                         std::env::set_var(name.as_ref(), val.as_ref());
                     }
@@ -3390,7 +3685,12 @@ impl Vm {
                     return Err(runtime_err("regex_match() expects pattern and string"));
                 }
                 if let (VmValue::String(pattern), VmValue::String(text)) = (&args[0], &args[1]) {
-                    let re = regex::Regex::new(pattern)
+                    if pattern.len() > 10_000 {
+                        return Err(runtime_err("Regex pattern too large (max 10,000 chars)"));
+                    }
+                    let re = regex::RegexBuilder::new(pattern)
+                        .size_limit(10_000_000)
+                        .build()
                         .map_err(|e| runtime_err(format!("Invalid regex: {e}")))?;
                     Ok(VmValue::Bool(re.is_match(text)))
                 } else {
@@ -3404,13 +3704,18 @@ impl Vm {
                     return Err(runtime_err("regex_find() expects pattern and string"));
                 }
                 if let (VmValue::String(pattern), VmValue::String(text)) = (&args[0], &args[1]) {
-                    let re = regex::Regex::new(pattern)
+                    if pattern.len() > 10_000 {
+                        return Err(runtime_err("Regex pattern too large (max 10,000 chars)"));
+                    }
+                    let re = regex::RegexBuilder::new(pattern)
+                        .size_limit(10_000_000)
+                        .build()
                         .map_err(|e| runtime_err(format!("Invalid regex: {e}")))?;
                     let matches: Vec<VmValue> = re
                         .find_iter(text)
                         .map(|m| VmValue::String(Arc::from(m.as_str())))
                         .collect();
-                    Ok(VmValue::List(matches))
+                    Ok(VmValue::List(Box::new(matches)))
                 } else {
                     Err(runtime_err(
                         "regex_find() expects string pattern and string",
@@ -3429,7 +3734,12 @@ impl Vm {
                     VmValue::String(replacement),
                 ) = (&args[0], &args[1], &args[2])
                 {
-                    let re = regex::Regex::new(pattern)
+                    if pattern.len() > 10_000 {
+                        return Err(runtime_err("Regex pattern too large (max 10,000 chars)"));
+                    }
+                    let re = regex::RegexBuilder::new(pattern)
+                        .size_limit(10_000_000)
+                        .build()
                         .map_err(|e| runtime_err(format!("Invalid regex: {e}")))?;
                     Ok(VmValue::String(Arc::from(
                         re.replace_all(text, replacement.as_ref()).as_ref(),
@@ -3440,28 +3750,31 @@ impl Vm {
             }
             BuiltinId::Now => {
                 let ts = chrono::Utc::now().timestamp_millis();
-                Ok(VmValue::Int(ts))
+                Ok(VmValue::DateTime(ts))
             }
             BuiltinId::DateFormat => {
                 if args.len() < 2 {
-                    return Err(runtime_err("date_format() expects timestamp_ms and format"));
+                    return Err(runtime_err("date_format() expects datetime/timestamp and format"));
                 }
-                if let (VmValue::Int(ts), VmValue::String(fmt)) = (&args[0], &args[1]) {
-                    use chrono::TimeZone;
-                    let secs = *ts / 1000;
-                    let nsecs = ((*ts % 1000) * 1_000_000) as u32;
-                    let dt = chrono::Utc
-                        .timestamp_opt(secs, nsecs)
-                        .single()
-                        .ok_or_else(|| runtime_err("Invalid timestamp"))?;
-                    Ok(VmValue::String(Arc::from(
-                        dt.format(fmt.as_ref()).to_string().as_str(),
-                    )))
-                } else {
-                    Err(runtime_err(
-                        "date_format() expects int timestamp and string format",
-                    ))
-                }
+                let ts = match &args[0] {
+                    VmValue::DateTime(ms) => *ms,
+                    VmValue::Int(ms) => *ms,
+                    _ => return Err(runtime_err("date_format() expects a datetime or int timestamp")),
+                };
+                let fmt = match &args[1] {
+                    VmValue::String(s) => s,
+                    _ => return Err(runtime_err("date_format() expects a string format")),
+                };
+                use chrono::TimeZone;
+                let secs = ts / 1000;
+                let nsecs = ((ts % 1000) * 1_000_000) as u32;
+                let dt = chrono::Utc
+                    .timestamp_opt(secs, nsecs)
+                    .single()
+                    .ok_or_else(|| runtime_err("Invalid timestamp"))?;
+                Ok(VmValue::String(Arc::from(
+                    dt.format(fmt.as_ref()).to_string().as_str(),
+                )))
             }
             BuiltinId::DateParse => {
                 if args.len() < 2 {
@@ -3471,7 +3784,7 @@ impl Vm {
                     let dt = chrono::NaiveDateTime::parse_from_str(s, fmt)
                         .map_err(|e| runtime_err(format!("date_parse error: {e}")))?;
                     let ts = dt.and_utc().timestamp_millis();
-                    Ok(VmValue::Int(ts))
+                    Ok(VmValue::DateTime(ts))
                 } else {
                     Err(runtime_err("date_parse() expects two strings"))
                 }
@@ -3484,9 +3797,9 @@ impl Vm {
                     let pairs: Vec<VmValue> = a
                         .iter()
                         .zip(b.iter())
-                        .map(|(x, y)| VmValue::List(vec![x.clone(), y.clone()]))
+                        .map(|(x, y)| VmValue::List(Box::new(vec![x.clone(), y.clone()])))
                         .collect();
-                    Ok(VmValue::List(pairs))
+                    Ok(VmValue::List(Box::new(pairs)))
                 } else {
                     Err(runtime_err("zip() expects two lists"))
                 }
@@ -3499,9 +3812,9 @@ impl Vm {
                     let pairs: Vec<VmValue> = items
                         .iter()
                         .enumerate()
-                        .map(|(i, v)| VmValue::List(vec![VmValue::Int(i as i64), v.clone()]))
+                        .map(|(i, v)| VmValue::List(Box::new(vec![VmValue::Int(i as i64), v.clone()])))
                         .collect();
-                    Ok(VmValue::List(pairs))
+                    Ok(VmValue::List(Box::new(pairs)))
                 } else {
                     Err(runtime_err("enumerate() expects a list"))
                 }
@@ -3601,7 +3914,7 @@ impl Vm {
                 }
                 match &args[0] {
                     VmValue::Channel(ch) => {
-                        let guard = ch.receiver.lock().unwrap();
+                        let guard = ch.receiver.lock().unwrap_or_else(|e| e.into_inner());
                         match guard.recv() {
                             Ok(val) => Ok(val),
                             Err(_) => Ok(VmValue::None),
@@ -3617,7 +3930,7 @@ impl Vm {
                 }
                 match &args[0] {
                     VmValue::Channel(ch) => {
-                        let guard = ch.receiver.lock().unwrap();
+                        let guard = ch.receiver.lock().unwrap_or_else(|e| e.into_inner());
                         match guard.try_recv() {
                             Ok(val) => Ok(val),
                             Err(_) => Ok(VmValue::None),
@@ -3634,11 +3947,11 @@ impl Vm {
                 match &args[0] {
                     VmValue::List(tasks) => {
                         let mut results = Vec::with_capacity(tasks.len());
-                        for task in tasks {
+                        for task in tasks.iter() {
                             match task {
                                 VmValue::Task(t) => {
                                     let rx = {
-                                        let mut guard = t.receiver.lock().unwrap();
+                                        let mut guard = t.receiver.lock().unwrap_or_else(|e| e.into_inner());
                                         guard.take()
                                     };
                                     match rx {
@@ -3657,7 +3970,7 @@ impl Vm {
                                 other => results.push(other.clone()),
                             }
                         }
-                        Ok(VmValue::List(results))
+                        Ok(VmValue::List(Box::new(results)))
                     }
                     _ => Err(runtime_err("await_all() expects a list")),
                 }
@@ -3668,7 +3981,7 @@ impl Vm {
                     return Err(runtime_err("pmap() expects a list and a function"));
                 }
                 let items = match &args[0] {
-                    VmValue::List(items) => items.clone(),
+                    VmValue::List(items) => (**items).clone(),
                     _ => return Err(runtime_err("pmap() expects a list as first argument")),
                 };
                 let closure = match &args[1] {
@@ -3719,7 +4032,7 @@ impl Vm {
                         Err(_) => return Err(runtime_err("pmap() thread panicked")),
                     }
                 }
-                Ok(VmValue::List(results))
+                Ok(VmValue::List(Box::new(results)))
             }
             #[cfg(feature = "native")]
             BuiltinId::Timeout => {
@@ -3735,7 +4048,7 @@ impl Vm {
                 match &args[0] {
                     VmValue::Task(task) => {
                         let rx = {
-                            let mut guard = task.receiver.lock().unwrap();
+                            let mut guard = task.receiver.lock().unwrap_or_else(|e| e.into_inner());
                             guard.take()
                         };
                         match rx {
@@ -3791,7 +4104,7 @@ impl Vm {
                 match &args[0] {
                     VmValue::List(items) => {
                         let gn = VmGenerator::new(GeneratorKind::ListIter {
-                            items: items.clone(),
+                            items: (**items).clone(),
                             index: 0,
                         });
                         Ok(VmValue::Generator(Arc::new(Mutex::new(gn))))
@@ -3850,7 +4163,7 @@ impl Vm {
                             }
                             items.push(val);
                         }
-                        Ok(VmValue::List(items))
+                        Ok(VmValue::List(Box::new(items)))
                     }
                     _ => Err(runtime_err("gen_collect() expects a generator")),
                 }
@@ -4019,15 +4332,15 @@ impl Vm {
                     _ => return Err(runtime_err("set_from() expects a list")),
                 };
                 if list.is_empty() {
-                    return Ok(VmValue::Set(Vec::new()));
+                    return Ok(VmValue::Set(Box::new(Vec::new())));
                 }
                 let mut result = Vec::new();
-                for item in list {
+                for item in list.iter() {
                     if !result.iter().any(|x| vm_values_equal(x, item)) {
                         result.push(item.clone());
                     }
                 }
-                Ok(VmValue::Set(result))
+                Ok(VmValue::Set(Box::new(result)))
             }
             BuiltinId::SetAdd => {
                 if args.len() < 2 {
@@ -4057,7 +4370,7 @@ impl Vm {
                             .filter(|x| !vm_values_equal(x, val))
                             .cloned()
                             .collect();
-                        Ok(VmValue::Set(new_items))
+                        Ok(VmValue::Set(Box::new(new_items)))
                     }
                     _ => Err(runtime_err("set_remove() first argument must be a set")),
                 }
@@ -4081,7 +4394,7 @@ impl Vm {
                 match (&args[0], &args[1]) {
                     (VmValue::Set(a), VmValue::Set(b)) => {
                         let mut result = a.clone();
-                        for item in b {
+                        for item in b.iter() {
                             if !result.iter().any(|x| vm_values_equal(x, item)) {
                                 result.push(item.clone());
                             }
@@ -4102,7 +4415,7 @@ impl Vm {
                             .filter(|x| b.iter().any(|y| vm_values_equal(x, y)))
                             .cloned()
                             .collect();
-                        Ok(VmValue::Set(result))
+                        Ok(VmValue::Set(Box::new(result)))
                     }
                     _ => Err(runtime_err("set_intersection() expects two sets")),
                 }
@@ -4118,7 +4431,7 @@ impl Vm {
                             .filter(|x| !b.iter().any(|y| vm_values_equal(x, y)))
                             .cloned()
                             .collect();
-                        Ok(VmValue::Set(result))
+                        Ok(VmValue::Set(Box::new(result)))
                     }
                     _ => Err(runtime_err("set_difference() expects two sets")),
                 }
@@ -4674,6 +4987,7 @@ impl Vm {
             | BuiltinId::RegisterS3 => Err(runtime_err("Connectors not available in WASM")),
             // Phase 20: Python FFI
             BuiltinId::PyImport => {
+                self.check_permission("python")?;
                 #[cfg(feature = "python")]
                 {
                     crate::python::py_import_impl(&args)
@@ -4682,6 +4996,7 @@ impl Vm {
                 Err(runtime_err("py_import() requires the 'python' feature"))
             }
             BuiltinId::PyCall => {
+                self.check_permission("python")?;
                 #[cfg(feature = "python")]
                 {
                     crate::python::py_call_impl(&args)
@@ -4690,6 +5005,7 @@ impl Vm {
                 Err(runtime_err("py_call() requires the 'python' feature"))
             }
             BuiltinId::PyEval => {
+                self.check_permission("python")?;
                 #[cfg(feature = "python")]
                 {
                     crate::python::py_eval_impl(&args)
@@ -4698,6 +5014,7 @@ impl Vm {
                 Err(runtime_err("py_eval() requires the 'python' feature"))
             }
             BuiltinId::PyGetAttr => {
+                self.check_permission("python")?;
                 #[cfg(feature = "python")]
                 {
                     crate::python::py_getattr_impl(&args)
@@ -4706,6 +5023,7 @@ impl Vm {
                 Err(runtime_err("py_getattr() requires the 'python' feature"))
             }
             BuiltinId::PySetAttr => {
+                self.check_permission("python")?;
                 #[cfg(feature = "python")]
                 {
                     crate::python::py_setattr_impl(&args)
@@ -4744,7 +5062,7 @@ impl Vm {
                 let fields = match args.get(2) {
                     Some(VmValue::Map(pairs)) => {
                         let mut arrow_fields = Vec::new();
-                        for (k, v) in pairs {
+                        for (k, v) in pairs.iter() {
                             let fname = k.to_string();
                             let ftype = match v {
                                 VmValue::String(s) => s.to_string(),
@@ -4795,7 +5113,7 @@ impl Vm {
                                 )))
                             })
                             .collect();
-                        Ok(VmValue::List(fields))
+                        Ok(VmValue::List(Box::new(fields)))
                     }
                     None => Ok(VmValue::None),
                 }
@@ -4818,9 +5136,9 @@ impl Vm {
                     _ => return Err(runtime_err("schema_history: need name")),
                 };
                 let versions = self.schema_registry.versions(&name);
-                Ok(VmValue::List(
+                Ok(VmValue::List(Box::new(
                     versions.into_iter().map(VmValue::Int).collect(),
-                ))
+                )))
             }
             #[cfg(feature = "native")]
             BuiltinId::SchemaCheck => {
@@ -4844,12 +5162,12 @@ impl Vm {
                 let issues = self
                     .schema_registry
                     .check_compatibility(&name, v1, v2, mode);
-                Ok(VmValue::List(
+                Ok(VmValue::List(Box::new(
                     issues
                         .into_iter()
                         .map(|i| VmValue::String(std::sync::Arc::from(i.to_string())))
                         .collect(),
-                ))
+                )))
             }
             #[cfg(feature = "native")]
             BuiltinId::SchemaDiff => {
@@ -4866,12 +5184,12 @@ impl Vm {
                     _ => return Err(runtime_err("schema_diff: need v2")),
                 };
                 let diffs = self.schema_registry.diff(&name, v1, v2);
-                Ok(VmValue::List(
+                Ok(VmValue::List(Box::new(
                     diffs
                         .into_iter()
                         .map(|d| VmValue::String(std::sync::Arc::from(d.to_string())))
                         .collect(),
-                ))
+                )))
             }
             #[cfg(feature = "native")]
             BuiltinId::SchemaApplyMigration => {
@@ -4899,9 +5217,9 @@ impl Vm {
                     _ => return Err(runtime_err("schema_versions: need name")),
                 };
                 let versions = self.schema_registry.versions(&name);
-                Ok(VmValue::List(
+                Ok(VmValue::List(Box::new(
                     versions.into_iter().map(VmValue::Int).collect(),
-                ))
+                )))
             }
             #[cfg(feature = "native")]
             BuiltinId::SchemaFields => {
@@ -4914,14 +5232,14 @@ impl Vm {
                     _ => return Err(runtime_err("schema_fields: need version")),
                 };
                 let fields = self.schema_registry.fields(&name, version);
-                Ok(VmValue::List(
+                Ok(VmValue::List(Box::new(
                     fields
                         .into_iter()
                         .map(|(n, t)| {
                             VmValue::String(std::sync::Arc::from(format!("{}: {}", n, t)))
                         })
                         .collect(),
-                ))
+                )))
             }
             #[cfg(not(feature = "native"))]
             BuiltinId::SchemaRegister
@@ -4995,7 +5313,7 @@ impl Vm {
                     .keys()
                     .map(|k| VmValue::String(Arc::from(k.as_str())))
                     .collect();
-                Ok(VmValue::List(keys))
+                Ok(VmValue::List(Box::new(keys)))
             }
             BuiltinId::CheckPermission => {
                 let perm = match args.first() {
@@ -5310,6 +5628,7 @@ impl Vm {
             BuiltinId::Embed => Err(runtime_err("embed() not available in WASM")),
             #[cfg(feature = "native")]
             BuiltinId::HttpRequest => {
+                self.check_permission("network")?;
                 if args.len() < 2 {
                     return Err(runtime_err(
                         "http_request(method, url, headers?, body?) expects at least 2 args",
@@ -5335,7 +5654,7 @@ impl Vm {
                 };
                 // Set headers if provided
                 if let Some(VmValue::Map(headers)) = args.get(2) {
-                    for (key, val) in headers {
+                    for (key, val) in headers.iter() {
                         if let VmValue::String(v) = val {
                             builder = builder.header(key.as_ref(), v.as_ref());
                         }
@@ -5352,18 +5671,19 @@ impl Vm {
                 let body = resp
                     .text()
                     .map_err(|e| runtime_err(format!("HTTP response error: {e}")))?;
-                Ok(VmValue::Map(vec![
+                Ok(VmValue::Map(Box::new(vec![
                     (Arc::from("status"), VmValue::Int(status)),
                     (Arc::from("body"), VmValue::String(Arc::from(body.as_str()))),
-                ]))
+                ])))
             }
             #[cfg(not(feature = "native"))]
             BuiltinId::HttpRequest => Err(runtime_err("http_request() not available in WASM")),
             #[cfg(feature = "native")]
             BuiltinId::RunAgent => {
+                self.check_permission("network")?;
                 if args.len() < 2 {
                     return Err(runtime_err(
-                        "run_agent(agent, message) expects 2 arguments",
+                        "run_agent(agent, message, [history]) expects at least 2 arguments",
                     ));
                 }
                 let agent_def = match &args[0] {
@@ -5374,10 +5694,352 @@ impl Vm {
                     VmValue::String(s) => s.to_string(),
                     _ => return Err(runtime_err("run_agent() second arg must be a string")),
                 };
-                self.exec_agent_loop(&agent_def, &message)
+                // Optional 3rd arg: conversation history as list of [role, content] pairs
+                let history = if args.len() >= 3 {
+                    match &args[2] {
+                        VmValue::List(items) => {
+                            let mut hist = Vec::new();
+                            for item in items.iter() {
+                                if let VmValue::List(pair) = item {
+                                    if pair.len() >= 2 {
+                                        let role = match &pair[0] {
+                                            VmValue::String(s) => s.to_string(),
+                                            _ => continue,
+                                        };
+                                        let content = match &pair[1] {
+                                            VmValue::String(s) => s.to_string(),
+                                            _ => continue,
+                                        };
+                                        hist.push((role, content));
+                                    }
+                                }
+                            }
+                            Some(hist)
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                self.exec_agent_loop(&agent_def, &message, history.as_deref())
             }
             #[cfg(not(feature = "native"))]
             BuiltinId::RunAgent => Err(runtime_err("run_agent() not available in WASM")),
+
+            // Phase G4: Streaming agent responses
+            #[cfg(feature = "native")]
+            BuiltinId::StreamAgent => {
+                self.check_permission("network")?;
+                if args.len() < 3 {
+                    return Err(runtime_err(
+                        "stream_agent(agent, message, callback) expects 3 arguments",
+                    ));
+                }
+                let agent_def = match &args[0] {
+                    VmValue::AgentDef(def) => def.clone(),
+                    _ => return Err(runtime_err("stream_agent() first arg must be an agent")),
+                };
+                let message = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("stream_agent() second arg must be a string")),
+                };
+                let callback = args[2].clone();
+
+                let model = &agent_def.model;
+                let system = agent_def.system_prompt.as_deref();
+                let base_url = agent_def.base_url.as_deref();
+                let api_key = agent_def.api_key.as_deref();
+
+                let messages = vec![serde_json::json!({"role": "user", "content": &message})];
+                let mut reader = tl_ai::stream_chat(model, system, &messages, base_url, api_key)
+                    .map_err(|e| runtime_err(format!("Stream error: {e}")))?;
+
+                let mut full_text = String::new();
+                loop {
+                    match reader.next_chunk() {
+                        Ok(Some(chunk)) => {
+                            full_text.push_str(&chunk);
+                            let chunk_val = VmValue::String(Arc::from(&*chunk));
+                            let _ = self.call_value(callback.clone(), &[chunk_val]);
+                        }
+                        Ok(None) => break,
+                        Err(e) => return Err(runtime_err(format!("Stream error: {e}"))),
+                    }
+                }
+
+                Ok(VmValue::String(Arc::from(&*full_text)))
+            }
+            #[cfg(not(feature = "native"))]
+            BuiltinId::StreamAgent => Err(runtime_err("stream_agent() not available in WASM")),
+
+            // Phase E5: Random & Sampling
+            BuiltinId::Random => {
+                let mut rng = rand::thread_rng();
+                let val: f64 = rand::Rng::r#gen(&mut rng);
+                Ok(VmValue::Float(val))
+            }
+            BuiltinId::RandomInt => {
+                if args.len() < 2 {
+                    return Err(runtime_err("random_int() expects min and max"));
+                }
+                let a = match &args[0] {
+                    VmValue::Int(n) => *n,
+                    _ => return Err(runtime_err("random_int() expects integers")),
+                };
+                let b = match &args[1] {
+                    VmValue::Int(n) => *n,
+                    _ => return Err(runtime_err("random_int() expects integers")),
+                };
+                if a >= b {
+                    return Err(runtime_err("random_int() requires min < max"));
+                }
+                let mut rng = rand::thread_rng();
+                let val: i64 = rand::Rng::gen_range(&mut rng, a..b);
+                Ok(VmValue::Int(val))
+            }
+            BuiltinId::Sample => {
+                use rand::seq::SliceRandom;
+                if args.is_empty() {
+                    return Err(runtime_err("sample() expects a list and count"));
+                }
+                let items = match &args[0] {
+                    VmValue::List(items) => items,
+                    _ => return Err(runtime_err("sample() expects a list")),
+                };
+                let k = match args.get(1) {
+                    Some(VmValue::Int(n)) => *n as usize,
+                    _ => 1,
+                };
+                if k > items.len() {
+                    return Err(runtime_err("sample() count exceeds list length"));
+                }
+                let mut rng = rand::thread_rng();
+                let mut indices: Vec<usize> = (0..items.len()).collect();
+                indices.partial_shuffle(&mut rng, k);
+                let result: Vec<VmValue> = indices[..k].iter().map(|&i| items[i].clone()).collect();
+                if k == 1 && args.get(1).is_none() {
+                    Ok(result.into_iter().next().unwrap_or(VmValue::None))
+                } else {
+                    Ok(VmValue::List(Box::new(result)))
+                }
+            }
+
+            // Phase E6: Math builtins
+            BuiltinId::Exp => {
+                let x = match args.first() {
+                    Some(VmValue::Float(f)) => *f,
+                    Some(VmValue::Int(n)) => *n as f64,
+                    _ => return Err(runtime_err("exp() expects a number")),
+                };
+                Ok(VmValue::Float(x.exp()))
+            }
+            BuiltinId::IsNan => {
+                let result = match args.first() {
+                    Some(VmValue::Float(f)) => f.is_nan(),
+                    _ => false,
+                };
+                Ok(VmValue::Bool(result))
+            }
+            BuiltinId::IsInfinite => {
+                let result = match args.first() {
+                    Some(VmValue::Float(f)) => f.is_infinite(),
+                    _ => false,
+                };
+                Ok(VmValue::Bool(result))
+            }
+            BuiltinId::Sign => {
+                match args.first() {
+                    Some(VmValue::Int(n)) => Ok(VmValue::Int(if *n > 0 { 1 } else if *n < 0 { -1 } else { 0 })),
+                    Some(VmValue::Float(f)) => {
+                        if f.is_nan() { Ok(VmValue::Float(f64::NAN)) }
+                        else if *f > 0.0 { Ok(VmValue::Int(1)) }
+                        else if *f < 0.0 { Ok(VmValue::Int(-1)) }
+                        else { Ok(VmValue::Int(0)) }
+                    }
+                    _ => Err(runtime_err("sign() expects a number")),
+                }
+            }
+            // Phase E8: Table assertion
+            #[cfg(feature = "native")]
+            BuiltinId::AssertTableEq => {
+                if args.len() < 2 {
+                    return Err(runtime_err("assert_table_eq() expects 2 table arguments"));
+                }
+                let t1 = match &args[0] {
+                    VmValue::Table(t) => t,
+                    _ => return Err(runtime_err("assert_table_eq() first argument must be a table")),
+                };
+                let t2 = match &args[1] {
+                    VmValue::Table(t) => t,
+                    _ => return Err(runtime_err("assert_table_eq() second argument must be a table")),
+                };
+                // Compare schemas
+                if t1.df.schema() != t2.df.schema() {
+                    return Err(runtime_err(format!(
+                        "assert_table_eq: schemas differ\n  left:  {:?}\n  right: {:?}",
+                        t1.df.schema(), t2.df.schema()
+                    )));
+                }
+                // Collect both DataFrames
+                let batches1 = self.engine().collect(t1.df.clone()).map_err(runtime_err)?;
+                let batches2 = self.engine().collect(t2.df.clone()).map_err(runtime_err)?;
+                // Flatten into rows and compare
+                let rows1: Vec<String> = batches1.iter()
+                    .flat_map(|b| (0..b.num_rows()).map(move |r| {
+                        (0..b.num_columns()).map(|c| {
+                            let col = b.column(c);
+                            format!("{:?}", col.slice(r, 1))
+                        }).collect::<Vec<_>>().join(",")
+                    }))
+                    .collect();
+                let rows2: Vec<String> = batches2.iter()
+                    .flat_map(|b| (0..b.num_rows()).map(move |r| {
+                        (0..b.num_columns()).map(|c| {
+                            let col = b.column(c);
+                            format!("{:?}", col.slice(r, 1))
+                        }).collect::<Vec<_>>().join(",")
+                    }))
+                    .collect();
+                if rows1.len() != rows2.len() {
+                    return Err(runtime_err(format!(
+                        "assert_table_eq: row count differs ({} vs {})", rows1.len(), rows2.len()
+                    )));
+                }
+                for (i, (r1, r2)) in rows1.iter().zip(rows2.iter()).enumerate() {
+                    if r1 != r2 {
+                        return Err(runtime_err(format!(
+                            "assert_table_eq: row {} differs\n  left:  {}\n  right: {}", i, r1, r2
+                        )));
+                    }
+                }
+                Ok(VmValue::None)
+            }
+            #[cfg(not(feature = "native"))]
+            BuiltinId::AssertTableEq => Err(runtime_err("assert_table_eq() not available in WASM")),
+
+            // Phase F1: Date/Time builtins
+            BuiltinId::Today => {
+                use chrono::{Datelike, TimeZone};
+                let now = chrono::Utc::now();
+                let midnight = chrono::Utc.with_ymd_and_hms(now.year(), now.month(), now.day(), 0, 0, 0)
+                    .single()
+                    .ok_or_else(|| runtime_err("Failed to compute today"))?;
+                Ok(VmValue::DateTime(midnight.timestamp_millis()))
+            }
+            BuiltinId::DateAdd => {
+                if args.len() < 3 {
+                    return Err(runtime_err("date_add() expects datetime, amount, unit"));
+                }
+                let ms = match &args[0] {
+                    VmValue::DateTime(ms) => *ms,
+                    VmValue::Int(ms) => *ms,
+                    _ => return Err(runtime_err("date_add() first arg must be datetime")),
+                };
+                let amount = match &args[1] {
+                    VmValue::Int(n) => *n,
+                    _ => return Err(runtime_err("date_add() amount must be an integer")),
+                };
+                let unit = match &args[2] {
+                    VmValue::String(s) => s.as_ref(),
+                    _ => return Err(runtime_err("date_add() unit must be a string")),
+                };
+                let offset_ms = match unit {
+                    "second" | "seconds" => amount * 1000,
+                    "minute" | "minutes" => amount * 60 * 1000,
+                    "hour" | "hours" => amount * 3600 * 1000,
+                    "day" | "days" => amount * 86400 * 1000,
+                    "week" | "weeks" => amount * 7 * 86400 * 1000,
+                    _ => return Err(runtime_err(format!("Unknown time unit: {unit}"))),
+                };
+                Ok(VmValue::DateTime(ms + offset_ms))
+            }
+            BuiltinId::DateDiff => {
+                if args.len() < 3 {
+                    return Err(runtime_err("date_diff() expects datetime1, datetime2, unit"));
+                }
+                let ms1 = match &args[0] {
+                    VmValue::DateTime(ms) => *ms,
+                    VmValue::Int(ms) => *ms,
+                    _ => return Err(runtime_err("date_diff() args must be datetimes")),
+                };
+                let ms2 = match &args[1] {
+                    VmValue::DateTime(ms) => *ms,
+                    VmValue::Int(ms) => *ms,
+                    _ => return Err(runtime_err("date_diff() args must be datetimes")),
+                };
+                let unit = match &args[2] {
+                    VmValue::String(s) => s.as_ref(),
+                    _ => return Err(runtime_err("date_diff() unit must be a string")),
+                };
+                let diff_ms = ms1 - ms2;
+                let result = match unit {
+                    "second" | "seconds" => diff_ms / 1000,
+                    "minute" | "minutes" => diff_ms / (60 * 1000),
+                    "hour" | "hours" => diff_ms / (3600 * 1000),
+                    "day" | "days" => diff_ms / (86400 * 1000),
+                    "week" | "weeks" => diff_ms / (7 * 86400 * 1000),
+                    _ => return Err(runtime_err(format!("Unknown time unit: {unit}"))),
+                };
+                Ok(VmValue::Int(result))
+            }
+            BuiltinId::DateTrunc => {
+                if args.len() < 2 {
+                    return Err(runtime_err("date_trunc() expects datetime and unit"));
+                }
+                let ms = match &args[0] {
+                    VmValue::DateTime(ms) => *ms,
+                    VmValue::Int(ms) => *ms,
+                    _ => return Err(runtime_err("date_trunc() first arg must be datetime")),
+                };
+                let unit = match &args[1] {
+                    VmValue::String(s) => s.as_ref(),
+                    _ => return Err(runtime_err("date_trunc() unit must be a string")),
+                };
+                use chrono::{Datelike, TimeZone, Timelike};
+                let secs = ms / 1000;
+                let dt = chrono::Utc.timestamp_opt(secs, 0).single()
+                    .ok_or_else(|| runtime_err("Invalid timestamp"))?;
+                let truncated = match unit {
+                    "second" => chrono::Utc.with_ymd_and_hms(dt.year(), dt.month(), dt.day(), dt.hour(), dt.minute(), dt.second()).single(),
+                    "minute" => chrono::Utc.with_ymd_and_hms(dt.year(), dt.month(), dt.day(), dt.hour(), dt.minute(), 0).single(),
+                    "hour" => chrono::Utc.with_ymd_and_hms(dt.year(), dt.month(), dt.day(), dt.hour(), 0, 0).single(),
+                    "day" => chrono::Utc.with_ymd_and_hms(dt.year(), dt.month(), dt.day(), 0, 0, 0).single(),
+                    "month" => chrono::Utc.with_ymd_and_hms(dt.year(), dt.month(), 1, 0, 0, 0).single(),
+                    "year" => chrono::Utc.with_ymd_and_hms(dt.year(), 1, 1, 0, 0, 0).single(),
+                    _ => return Err(runtime_err(format!("Unknown truncation unit: {unit}"))),
+                };
+                Ok(VmValue::DateTime(truncated.ok_or_else(|| runtime_err("Invalid truncation"))?.timestamp_millis()))
+            }
+            BuiltinId::DateExtract => {
+                if args.len() < 2 {
+                    return Err(runtime_err("extract() expects datetime and part"));
+                }
+                let ms = match &args[0] {
+                    VmValue::DateTime(ms) => *ms,
+                    VmValue::Int(ms) => *ms,
+                    _ => return Err(runtime_err("extract() first arg must be datetime")),
+                };
+                let part = match &args[1] {
+                    VmValue::String(s) => s.as_ref(),
+                    _ => return Err(runtime_err("extract() part must be a string")),
+                };
+                use chrono::{Datelike, TimeZone, Timelike};
+                let secs = ms / 1000;
+                let dt = chrono::Utc.timestamp_opt(secs, 0).single()
+                    .ok_or_else(|| runtime_err("Invalid timestamp"))?;
+                let val = match part {
+                    "year" => dt.year() as i64,
+                    "month" => dt.month() as i64,
+                    "day" => dt.day() as i64,
+                    "hour" => dt.hour() as i64,
+                    "minute" => dt.minute() as i64,
+                    "second" => dt.second() as i64,
+                    "weekday" | "dow" => dt.weekday().num_days_from_monday() as i64,
+                    "day_of_year" | "doy" => dt.ordinal() as i64,
+                    _ => return Err(runtime_err(format!("Unknown date part: {part}"))),
+                };
+                Ok(VmValue::Int(val))
+            }
         }
     }
 
@@ -5701,6 +6363,7 @@ impl Vm {
         let mut max_tokens = None;
         let mut base_url = None;
         let mut api_key = None;
+        let mut output_format = None;
         let mut tools = Vec::new();
 
         if let Constant::AstExprList(args) =
@@ -5757,6 +6420,11 @@ impl Vm {
                                     api_key = Some(s.clone());
                                 }
                             }
+                            "output_format" => {
+                                if let AstExpr::String(s) = value.as_ref() {
+                                    output_format = Some(s.clone());
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -5774,6 +6442,7 @@ impl Vm {
             max_tokens,
             base_url,
             api_key,
+            output_format,
         };
 
         Ok(VmValue::AgentDef(Arc::new(def)))
@@ -5834,6 +6503,7 @@ impl Vm {
         &mut self,
         agent_def: &tl_stream::AgentDef,
         user_message: &str,
+        history: Option<&[(String, String)]>,
     ) -> Result<VmValue, TlError> {
         use tl_ai::{LlmResponse, chat_with_tools, format_tool_result_messages};
 
@@ -5864,10 +6534,18 @@ impl Vm {
             })
             .collect();
 
-        let mut messages: Vec<serde_json::Value> = vec![serde_json::json!({
+        // Seed messages with history if provided
+        let mut messages: Vec<serde_json::Value> = Vec::new();
+        if let Some(hist) = history {
+            for (role, content) in hist {
+                messages.push(serde_json::json!({"role": role, "content": content}));
+            }
+        }
+        // Add the current user message
+        messages.push(serde_json::json!({
             "role": "user",
             "content": user_message
-        })];
+        }));
 
         for turn in 0..agent_def.max_turns {
             let response = chat_with_tools(
@@ -5877,16 +6555,31 @@ impl Vm {
                 &tools_json,
                 base_url,
                 api_key,
+                agent_def.output_format.as_deref(),
             )
             .map_err(|e| runtime_err(format!("Agent LLM error: {e}")))?;
 
             match response {
                 LlmResponse::Text(text) => {
-                    // Agent completed — return result map
-                    let result = VmValue::Map(vec![
+                    // Add assistant response to history
+                    messages.push(serde_json::json!({"role": "assistant", "content": &text}));
+
+                    // Build conversation history as list of [role, content] pairs
+                    let history_list: Vec<VmValue> = messages.iter().filter_map(|m| {
+                        let role = m["role"].as_str()?;
+                        let content = m["content"].as_str()?;
+                        Some(VmValue::List(Box::new(vec![
+                            VmValue::String(Arc::from(role)),
+                            VmValue::String(Arc::from(content)),
+                        ])))
+                    }).collect();
+
+                    // Agent completed — return result map with history
+                    let result = VmValue::Map(Box::new(vec![
                         (Arc::from("response"), VmValue::String(Arc::from(text.as_str()))),
                         (Arc::from("turns"), VmValue::Int(turn as i64 + 1)),
-                    ]);
+                        (Arc::from("history"), VmValue::List(Box::new(history_list))),
+                    ]));
 
                     // Call on_complete lifecycle hook if defined
                     let hook_name = format!("__agent_{}_on_complete__", agent_def.name);
@@ -5917,8 +6610,13 @@ impl Vm {
                     }));
 
                     // Execute each tool call
+                    let declared: Vec<&str> = agent_def.tools.iter().map(|t| t.name.as_str()).collect();
                     let mut results: Vec<(String, String)> = Vec::new();
                     for tc in &tool_calls {
+                        if !declared.contains(&tc.name.as_str()) {
+                            results.push((tc.name.clone(), format!("Error: '{}' not in declared tools", tc.name)));
+                            continue;
+                        }
                         let result_str = self.execute_tool_call(&tc.name, &tc.input)?;
 
                         // Call on_tool_call lifecycle hook if defined
@@ -6004,14 +6702,14 @@ impl Vm {
             serde_json::Value::Bool(b) => VmValue::Bool(*b),
             serde_json::Value::Null => VmValue::None,
             serde_json::Value::Array(arr) => {
-                VmValue::List(arr.iter().map(|v| self.json_value_to_vm(v)).collect())
+                VmValue::List(Box::new(arr.iter().map(|v| self.json_value_to_vm(v)).collect()))
             }
             serde_json::Value::Object(map) => {
                 let pairs: Vec<(Arc<str>, VmValue)> = map
                     .iter()
                     .map(|(k, v)| (Arc::from(k.as_str()), self.json_value_to_vm(v)))
                     .collect();
-                VmValue::Map(pairs)
+                VmValue::Map(Box::new(pairs))
             }
         }
     }
@@ -6056,12 +6754,12 @@ impl Vm {
                 Ok(result)
             }
             VmValue::Builtin(id) => {
-                let id_u8 = *id as u8;
+                let id_u16 = *id as u16;
                 let save_len = self.stack.len();
                 for arg in args {
                     self.stack.push(arg.clone());
                 }
-                let result = self.call_builtin(id_u8, save_len, args.len())?;
+                let result = self.call_builtin(id_u16, save_len, args.len())?;
                 self.stack.truncate(save_len);
                 Ok(result)
             }
@@ -6151,7 +6849,7 @@ impl Vm {
 
     /// Advance a generator by one step, returning the next value or None if done.
     fn generator_next(&mut self, gen_arc: &Arc<Mutex<VmGenerator>>) -> Result<VmValue, TlError> {
-        let mut gn = gen_arc.lock().unwrap();
+        let mut gn = gen_arc.lock().unwrap_or_else(|e| e.into_inner());
         if gn.done {
             return Ok(VmValue::None);
         }
@@ -6189,7 +6887,7 @@ impl Vm {
 
                 if let Some(yielded) = self.yielded_value.take() {
                     // Generator yielded — save state back
-                    let mut gn = gen_arc.lock().unwrap();
+                    let mut gn = gen_arc.lock().unwrap_or_else(|e| e.into_inner());
                     if let GeneratorKind::UserDefined {
                         saved_stack, ip, ..
                     } = &mut gn.kind
@@ -6208,7 +6906,7 @@ impl Vm {
                     Ok(yielded)
                 } else {
                     // Generator returned (no yield) — mark done
-                    let mut gn = gen_arc.lock().unwrap();
+                    let mut gn = gen_arc.lock().unwrap_or_else(|e| e.into_inner());
                     gn.done = true;
                     self.stack.truncate(new_base);
                     Ok(VmValue::None)
@@ -6234,7 +6932,7 @@ impl Vm {
                 drop(gn);
                 let val = self.generator_next(&src)?;
                 if matches!(val, VmValue::None) {
-                    let mut gn = gen_arc.lock().unwrap();
+                    let mut gn = gen_arc.lock().unwrap_or_else(|e| e.into_inner());
                     gn.done = true;
                 }
                 Ok(val)
@@ -6248,14 +6946,14 @@ impl Vm {
                 for _ in 0..skip_n {
                     let val = self.generator_next(&src)?;
                     if matches!(val, VmValue::None) {
-                        let mut gn = gen_arc.lock().unwrap();
+                        let mut gn = gen_arc.lock().unwrap_or_else(|e| e.into_inner());
                         gn.done = true;
                         return Ok(VmValue::None);
                     }
                 }
                 let val = self.generator_next(&src)?;
                 if matches!(val, VmValue::None) {
-                    let mut gn = gen_arc.lock().unwrap();
+                    let mut gn = gen_arc.lock().unwrap_or_else(|e| e.into_inner());
                     gn.done = true;
                 }
                 Ok(val)
@@ -6266,7 +6964,7 @@ impl Vm {
                 drop(gn);
                 let val = self.generator_next(&src)?;
                 if matches!(val, VmValue::None) {
-                    let mut gn = gen_arc.lock().unwrap();
+                    let mut gn = gen_arc.lock().unwrap_or_else(|e| e.into_inner());
                     gn.done = true;
                     return Ok(VmValue::None);
                 }
@@ -6279,7 +6977,7 @@ impl Vm {
                 loop {
                     let val = self.generator_next(&src)?;
                     if matches!(val, VmValue::None) {
-                        let mut gn = gen_arc.lock().unwrap();
+                        let mut gn = gen_arc.lock().unwrap_or_else(|e| e.into_inner());
                         gn.done = true;
                         return Ok(VmValue::None);
                     }
@@ -6299,7 +6997,7 @@ impl Vm {
                     drop(gn);
                     let val = self.generator_next(&src)?;
                     if matches!(val, VmValue::None) {
-                        let mut gn = gen_arc.lock().unwrap();
+                        let mut gn = gen_arc.lock().unwrap_or_else(|e| e.into_inner());
                         if let GeneratorKind::Chain {
                             on_second, second, ..
                         } = &mut gn.kind
@@ -6316,7 +7014,7 @@ impl Vm {
                     drop(gn);
                     let val = self.generator_next(&src)?;
                     if matches!(val, VmValue::None) {
-                        let mut gn = gen_arc.lock().unwrap();
+                        let mut gn = gen_arc.lock().unwrap_or_else(|e| e.into_inner());
                         gn.done = true;
                     }
                     Ok(val)
@@ -6329,11 +7027,11 @@ impl Vm {
                 let val1 = self.generator_next(&src1)?;
                 let val2 = self.generator_next(&src2)?;
                 if matches!(val1, VmValue::None) || matches!(val2, VmValue::None) {
-                    let mut gn = gen_arc.lock().unwrap();
+                    let mut gn = gen_arc.lock().unwrap_or_else(|e| e.into_inner());
                     gn.done = true;
                     return Ok(VmValue::None);
                 }
-                Ok(VmValue::List(vec![val1, val2]))
+                Ok(VmValue::List(Box::new(vec![val1, val2])))
             }
             GeneratorKind::Enumerate { source, index } => {
                 let src = source.clone();
@@ -6342,11 +7040,11 @@ impl Vm {
                 drop(gn);
                 let val = self.generator_next(&src)?;
                 if matches!(val, VmValue::None) {
-                    let mut gn = gen_arc.lock().unwrap();
+                    let mut gn = gen_arc.lock().unwrap_or_else(|e| e.into_inner());
                     gn.done = true;
                     return Ok(VmValue::None);
                 }
-                Ok(VmValue::List(vec![VmValue::Int(idx as i64), val]))
+                Ok(VmValue::List(Box::new(vec![VmValue::Int(idx as i64), val])))
             }
         }
     }
@@ -6495,19 +7193,19 @@ impl Vm {
             VmValue::List(items) => {
                 let cloned: Result<Vec<_>, _> =
                     items.iter().map(|v| self.deep_clone_value(v)).collect();
-                Ok(VmValue::List(cloned?))
+                Ok(VmValue::List(Box::new(cloned?)))
             }
             VmValue::Map(pairs) => {
                 let cloned: Result<Vec<_>, _> = pairs
                     .iter()
                     .map(|(k, v)| Ok((k.clone(), self.deep_clone_value(v)?)))
                     .collect();
-                Ok(VmValue::Map(cloned?))
+                Ok(VmValue::Map(Box::new(cloned?)))
             }
             VmValue::Set(items) => {
                 let cloned: Result<Vec<_>, _> =
                     items.iter().map(|v| self.deep_clone_value(v)).collect();
-                Ok(VmValue::Set(cloned?))
+                Ok(VmValue::Set(Box::new(cloned?)))
             }
             VmValue::StructInstance(inst) => {
                 let cloned_fields: Result<Vec<_>, _> = inst
@@ -6560,9 +7258,9 @@ impl Vm {
         };
         match &obj {
             VmValue::String(s) => self.dispatch_string_method(s.clone(), method, args),
-            VmValue::List(items) => self.dispatch_list_method(items.clone(), method, args),
-            VmValue::Map(pairs) => self.dispatch_map_method(pairs.clone(), method, args),
-            VmValue::Set(items) => self.dispatch_set_method(items.clone(), method, args),
+            VmValue::List(items) => self.dispatch_list_method((**items).clone(), method, args),
+            VmValue::Map(pairs) => self.dispatch_map_method((**pairs).clone(), method, args),
+            VmValue::Set(items) => self.dispatch_set_method((**items).clone(), method, args),
             VmValue::Module(m) => {
                 if let Some(func) = m.exports.get(method).cloned() {
                     self.call_vm_function(&func, args)
@@ -6638,7 +7336,7 @@ impl Vm {
                     .split(&sep)
                     .map(|p| VmValue::String(Arc::from(p)))
                     .collect();
-                Ok(VmValue::List(parts))
+                Ok(VmValue::List(Box::new(parts)))
             }
             "trim" => Ok(VmValue::String(Arc::from(s.trim()))),
             "contains" => {
@@ -6683,7 +7381,7 @@ impl Vm {
                     .chars()
                     .map(|c| VmValue::String(Arc::from(c.to_string().as_str())))
                     .collect();
-                Ok(VmValue::List(chars))
+                Ok(VmValue::List(Box::new(chars)))
             }
             "repeat" => {
                 let n = match args.first() {
@@ -6776,6 +7474,47 @@ impl Vm {
                 let parts: Vec<String> = items.iter().map(|v| format!("{v}")).collect();
                 Ok(VmValue::String(Arc::from(parts.join(s.as_ref()).as_str())))
             }
+            "trim_start" => Ok(VmValue::String(Arc::from(s.trim_start()))),
+            "trim_end" => Ok(VmValue::String(Arc::from(s.trim_end()))),
+            "count" => {
+                if args.is_empty() {
+                    return Err(runtime_err("count() expects a substring"));
+                }
+                if let VmValue::String(sub) = &args[0] {
+                    Ok(VmValue::Int(s.matches(sub.as_ref()).count() as i64))
+                } else {
+                    Err(runtime_err("count() expects a string"))
+                }
+            }
+            "is_empty" => Ok(VmValue::Bool(s.is_empty())),
+            "is_numeric" => Ok(VmValue::Bool(s.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-'))),
+            "is_alpha" => Ok(VmValue::Bool(!s.is_empty() && s.chars().all(|c| c.is_alphabetic()))),
+            "strip_prefix" => {
+                if args.is_empty() {
+                    return Err(runtime_err("strip_prefix() expects a string"));
+                }
+                if let VmValue::String(prefix) = &args[0] {
+                    match s.strip_prefix(prefix.as_ref()) {
+                        Some(rest) => Ok(VmValue::String(Arc::from(rest))),
+                        None => Ok(VmValue::String(Arc::from(s.as_ref()))),
+                    }
+                } else {
+                    Err(runtime_err("strip_prefix() expects a string"))
+                }
+            }
+            "strip_suffix" => {
+                if args.is_empty() {
+                    return Err(runtime_err("strip_suffix() expects a string"));
+                }
+                if let VmValue::String(suffix) = &args[0] {
+                    match s.strip_suffix(suffix.as_ref()) {
+                        Some(rest) => Ok(VmValue::String(Arc::from(rest))),
+                        None => Ok(VmValue::String(Arc::from(s.as_ref()))),
+                    }
+                } else {
+                    Err(runtime_err("strip_suffix() expects a string"))
+                }
+            }
             _ => Err(runtime_err(format!("No method '{}' on string", method))),
         }
     }
@@ -6795,7 +7534,7 @@ impl Vm {
                 }
                 let mut new_items = items;
                 new_items.push(args[0].clone());
-                Ok(VmValue::List(new_items))
+                Ok(VmValue::List(Box::new(new_items)))
             }
             "map" => {
                 if args.is_empty() {
@@ -6807,7 +7546,7 @@ impl Vm {
                     let val = self.call_vm_function(func, &[item])?;
                     result.push(val);
                 }
-                Ok(VmValue::List(result))
+                Ok(VmValue::List(Box::new(result)))
             }
             "filter" => {
                 if args.is_empty() {
@@ -6821,7 +7560,7 @@ impl Vm {
                         result.push(item);
                     }
                 }
-                Ok(VmValue::List(result))
+                Ok(VmValue::List(Box::new(result)))
             }
             "reduce" => {
                 if args.len() < 2 {
@@ -6844,12 +7583,12 @@ impl Vm {
                     (VmValue::String(x), VmValue::String(y)) => x.cmp(y),
                     _ => std::cmp::Ordering::Equal,
                 });
-                Ok(VmValue::List(sorted))
+                Ok(VmValue::List(Box::new(sorted)))
             }
             "reverse" => {
                 let mut reversed = items;
                 reversed.reverse();
-                Ok(VmValue::List(reversed))
+                Ok(VmValue::List(Box::new(reversed)))
             }
             "contains" => {
                 if args.is_empty() {
@@ -6895,7 +7634,7 @@ impl Vm {
                 };
                 let end = end.min(items.len());
                 let start = start.min(end);
-                Ok(VmValue::List(items[start..end].to_vec()))
+                Ok(VmValue::List(Box::new(items[start..end].to_vec())))
             }
             "flat_map" => {
                 if args.is_empty() {
@@ -6906,11 +7645,230 @@ impl Vm {
                 for item in items {
                     let val = self.call_vm_function(func, &[item])?;
                     match val {
-                        VmValue::List(sub) => result.extend(sub),
+                        VmValue::List(sub) => result.extend(*sub),
                         other => result.push(other),
                     }
                 }
-                Ok(VmValue::List(result))
+                Ok(VmValue::List(Box::new(result)))
+            }
+            "find" => {
+                if args.is_empty() {
+                    return Err(runtime_err("find() expects a predicate function"));
+                }
+                let func = &args[0];
+                for item in items {
+                    let val = self.call_vm_function(func, std::slice::from_ref(&item))?;
+                    if val.is_truthy() {
+                        return Ok(item);
+                    }
+                }
+                Ok(VmValue::None)
+            }
+            "sort_by" => {
+                if args.is_empty() {
+                    return Err(runtime_err("sort_by() expects a key function"));
+                }
+                let func = &args[0];
+                let mut keyed: Vec<(VmValue, VmValue)> = Vec::with_capacity(items.len());
+                for item in items {
+                    let key = self.call_vm_function(func, std::slice::from_ref(&item))?;
+                    keyed.push((key, item));
+                }
+                keyed.sort_by(|(a, _), (b, _)| match (a, b) {
+                    (VmValue::Int(x), VmValue::Int(y)) => x.cmp(y),
+                    (VmValue::Float(x), VmValue::Float(y)) => {
+                        x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal)
+                    }
+                    (VmValue::String(x), VmValue::String(y)) => x.cmp(y),
+                    _ => std::cmp::Ordering::Equal,
+                });
+                Ok(VmValue::List(Box::new(keyed.into_iter().map(|(_, v)| v).collect())))
+            }
+            "group_by" => {
+                if args.is_empty() {
+                    return Err(runtime_err("group_by() expects a key function"));
+                }
+                let func = &args[0];
+                let mut groups: Vec<(Arc<str>, Vec<VmValue>)> = Vec::new();
+                for item in items {
+                    let key = self.call_vm_function(func, std::slice::from_ref(&item))?;
+                    let key_str: Arc<str> = match &key {
+                        VmValue::String(s) => s.clone(),
+                        other => Arc::from(format!("{other}").as_str()),
+                    };
+                    if let Some(group) = groups.iter_mut().find(|(k, _)| *k == key_str) {
+                        group.1.push(item);
+                    } else {
+                        groups.push((key_str, vec![item]));
+                    }
+                }
+                let map_pairs: Vec<(Arc<str>, VmValue)> = groups
+                    .into_iter()
+                    .map(|(k, v)| (k, VmValue::List(Box::new(v))))
+                    .collect();
+                Ok(VmValue::Map(Box::new(map_pairs)))
+            }
+            "unique" => {
+                let mut seen = Vec::new();
+                let mut result = Vec::new();
+                for item in &items {
+                    let is_dup = seen.iter().any(|s| vm_values_equal(s, item));
+                    if !is_dup {
+                        seen.push(item.clone());
+                        result.push(item.clone());
+                    }
+                }
+                Ok(VmValue::List(Box::new(result)))
+            }
+            "flatten" => {
+                let mut result = Vec::new();
+                for item in items {
+                    match item {
+                        VmValue::List(sub) => result.extend(*sub),
+                        other => result.push(other),
+                    }
+                }
+                Ok(VmValue::List(Box::new(result)))
+            }
+            "chunk" => {
+                if args.is_empty() {
+                    return Err(runtime_err("chunk() expects a size"));
+                }
+                let n = match &args[0] {
+                    VmValue::Int(n) if *n > 0 => *n as usize,
+                    _ => return Err(runtime_err("chunk() expects a positive integer")),
+                };
+                let chunks: Vec<VmValue> = items
+                    .chunks(n)
+                    .map(|c| VmValue::List(Box::new(c.to_vec())))
+                    .collect();
+                Ok(VmValue::List(Box::new(chunks)))
+            }
+            "insert" => {
+                if args.len() < 2 {
+                    return Err(runtime_err("insert() expects index and value"));
+                }
+                let idx = match &args[0] {
+                    VmValue::Int(n) => *n as usize,
+                    _ => return Err(runtime_err("insert() expects integer index")),
+                };
+                let mut new_items = items;
+                if idx > new_items.len() {
+                    return Err(runtime_err("insert() index out of bounds"));
+                }
+                new_items.insert(idx, args[1].clone());
+                Ok(VmValue::List(Box::new(new_items)))
+            }
+            "remove_at" => {
+                if args.is_empty() {
+                    return Err(runtime_err("remove_at() expects an index"));
+                }
+                let idx = match &args[0] {
+                    VmValue::Int(n) => *n as usize,
+                    _ => return Err(runtime_err("remove_at() expects integer index")),
+                };
+                let mut new_items = items;
+                if idx >= new_items.len() {
+                    return Err(runtime_err("remove_at() index out of bounds"));
+                }
+                let removed = new_items.remove(idx);
+                Ok(removed)
+            }
+            "is_empty" => Ok(VmValue::Bool(items.is_empty())),
+            "sum" => {
+                let mut int_sum: i64 = 0;
+                let mut has_float = false;
+                let mut float_sum: f64 = 0.0;
+                for item in &items {
+                    match item {
+                        VmValue::Int(n) => {
+                            if has_float {
+                                float_sum += *n as f64;
+                            } else {
+                                int_sum += n;
+                            }
+                        }
+                        VmValue::Float(f) => {
+                            if !has_float {
+                                has_float = true;
+                                float_sum = int_sum as f64;
+                            }
+                            float_sum += f;
+                        }
+                        _ => return Err(runtime_err("sum() requires numeric list")),
+                    }
+                }
+                if has_float {
+                    Ok(VmValue::Float(float_sum))
+                } else {
+                    Ok(VmValue::Int(int_sum))
+                }
+            }
+            "min" => {
+                if items.is_empty() {
+                    return Ok(VmValue::None);
+                }
+                let mut min_val = items[0].clone();
+                for item in &items[1..] {
+                    match (&min_val, item) {
+                        (VmValue::Int(a), VmValue::Int(b)) if b < a => min_val = item.clone(),
+                        (VmValue::Float(a), VmValue::Float(b)) if b < a => min_val = item.clone(),
+                        _ => {}
+                    }
+                }
+                Ok(min_val)
+            }
+            "max" => {
+                if items.is_empty() {
+                    return Ok(VmValue::None);
+                }
+                let mut max_val = items[0].clone();
+                for item in &items[1..] {
+                    match (&max_val, item) {
+                        (VmValue::Int(a), VmValue::Int(b)) if b > a => max_val = item.clone(),
+                        (VmValue::Float(a), VmValue::Float(b)) if b > a => max_val = item.clone(),
+                        _ => {}
+                    }
+                }
+                Ok(max_val)
+            }
+            "each" => {
+                if args.is_empty() {
+                    return Err(runtime_err("each() expects a function"));
+                }
+                let func = &args[0];
+                for item in items {
+                    self.call_vm_function(func, &[item])?;
+                }
+                Ok(VmValue::None)
+            }
+            "zip" => {
+                if args.is_empty() {
+                    return Err(runtime_err("zip() expects a list"));
+                }
+                let other = match &args[0] {
+                    VmValue::List(other) => other.as_slice(),
+                    _ => return Err(runtime_err("zip() expects a list")),
+                };
+                let len = items.len().min(other.len());
+                let zipped: Vec<VmValue> = items[..len]
+                    .iter()
+                    .zip(other[..len].iter())
+                    .map(|(a, b)| VmValue::List(Box::new(vec![a.clone(), b.clone()])))
+                    .collect();
+                Ok(VmValue::List(Box::new(zipped)))
+            }
+            "join" => {
+                let sep = match args.first() {
+                    Some(VmValue::String(s)) => s.as_ref(),
+                    _ => "",
+                };
+                let s: String = items
+                    .iter()
+                    .map(|v| format!("{v}"))
+                    .collect::<Vec<_>>()
+                    .join(sep);
+                Ok(VmValue::String(Arc::from(s.as_str())))
             }
             _ => Err(runtime_err(format!("No method '{}' on list", method))),
         }
@@ -6918,22 +7876,22 @@ impl Vm {
 
     /// Dispatch map methods.
     fn dispatch_map_method(
-        &self,
+        &mut self,
         pairs: Vec<(Arc<str>, VmValue)>,
         method: &str,
         args: &[VmValue],
     ) -> Result<VmValue, TlError> {
         match method {
             "len" => Ok(VmValue::Int(pairs.len() as i64)),
-            "keys" => Ok(VmValue::List(
+            "keys" => Ok(VmValue::List(Box::new(
                 pairs
                     .iter()
                     .map(|(k, _)| VmValue::String(k.clone()))
                     .collect(),
-            )),
-            "values" => Ok(VmValue::List(
+            ))),
+            "values" => Ok(VmValue::List(Box::new(
                 pairs.iter().map(|(_, v)| v.clone()).collect(),
-            )),
+            ))),
             "contains_key" => {
                 if args.is_empty() {
                     return Err(runtime_err("contains_key() expects a key"));
@@ -6955,11 +7913,91 @@ impl Vm {
                         .into_iter()
                         .filter(|(k, _)| k.as_ref() != key.as_ref())
                         .collect();
-                    Ok(VmValue::Map(new_pairs))
+                    Ok(VmValue::Map(Box::new(new_pairs)))
                 } else {
                     Err(runtime_err("remove() expects a string key"))
                 }
             }
+            "get" => {
+                if args.is_empty() {
+                    return Err(runtime_err("get() expects a key"));
+                }
+                if let VmValue::String(key) = &args[0] {
+                    let default = args.get(1).cloned().unwrap_or(VmValue::None);
+                    let found = pairs.iter().find(|(k, _)| k.as_ref() == key.as_ref());
+                    Ok(found.map(|(_, v)| v.clone()).unwrap_or(default))
+                } else {
+                    Err(runtime_err("get() expects a string key"))
+                }
+            }
+            "merge" => {
+                if args.is_empty() {
+                    return Err(runtime_err("merge() expects a map"));
+                }
+                if let VmValue::Map(other) = &args[0] {
+                    let mut merged = pairs;
+                    for (k, v) in other.iter() {
+                        if let Some(existing) = merged.iter_mut().find(|(mk, _)| mk.as_ref() == k.as_ref()) {
+                            existing.1 = v.clone();
+                        } else {
+                            merged.push((k.clone(), v.clone()));
+                        }
+                    }
+                    Ok(VmValue::Map(Box::new(merged)))
+                } else {
+                    Err(runtime_err("merge() expects a map"))
+                }
+            }
+            "entries" => {
+                let entries: Vec<VmValue> = pairs
+                    .iter()
+                    .map(|(k, v)| VmValue::List(Box::new(vec![VmValue::String(k.clone()), v.clone()])))
+                    .collect();
+                Ok(VmValue::List(Box::new(entries)))
+            }
+            "map_values" => {
+                if args.is_empty() {
+                    return Err(runtime_err("map_values() expects a function"));
+                }
+                let func = &args[0];
+                let mut result = Vec::new();
+                for (k, v) in pairs {
+                    let new_v = self.call_vm_function(func, &[v])?;
+                    result.push((k, new_v));
+                }
+                Ok(VmValue::Map(Box::new(result)))
+            }
+            "filter" => {
+                if args.is_empty() {
+                    return Err(runtime_err("filter() expects a predicate function"));
+                }
+                let func = &args[0];
+                let mut result = Vec::new();
+                for (k, v) in pairs {
+                    let val = self.call_vm_function(func, &[VmValue::String(k.clone()), v.clone()])?;
+                    if val.is_truthy() {
+                        result.push((k, v));
+                    }
+                }
+                Ok(VmValue::Map(Box::new(result)))
+            }
+            "set" => {
+                if args.len() < 2 {
+                    return Err(runtime_err("set() expects key and value"));
+                }
+                if let VmValue::String(key) = &args[0] {
+                    let mut new_pairs = pairs;
+                    if let Some(existing) = new_pairs.iter_mut().find(|(k, _)| k.as_ref() == key.as_ref()) {
+                        existing.1 = args[1].clone();
+                    } else {
+                        new_pairs.push((key.clone(), args[1].clone()));
+                    }
+                    Ok(VmValue::Map(Box::new(new_pairs)))
+                } else {
+                    Err(runtime_err("set() expects a string key"))
+                }
+            }
+            "is_empty" => Ok(VmValue::Bool(pairs.is_empty())),
             _ => Err(runtime_err(format!("No method '{}' on map", method))),
         }
     }
@@ -6989,7 +8027,7 @@ impl Vm {
                 if !new_items.iter().any(|x| vm_values_equal(x, &args[0])) {
                     new_items.push(args[0].clone());
                 }
-                Ok(VmValue::Set(new_items))
+                Ok(VmValue::Set(Box::new(new_items)))
             }
             "remove" => {
                 if args.is_empty() {
@@ -6999,21 +8037,21 @@ impl Vm {
                     .into_iter()
                     .filter(|x| !vm_values_equal(x, &args[0]))
                     .collect();
-                Ok(VmValue::Set(new_items))
+                Ok(VmValue::Set(Box::new(new_items)))
             }
-            "to_list" => Ok(VmValue::List(items)),
+            "to_list" => Ok(VmValue::List(Box::new(items))),
             "union" => {
                 if args.is_empty() {
                     return Err(runtime_err("union() expects a set"));
                 }
                 if let VmValue::Set(b) = &args[0] {
                     let mut result = items;
-                    for item in b {
+                    for item in b.iter() {
                         if !result.iter().any(|x| vm_values_equal(x, item)) {
                             result.push(item.clone());
                         }
                     }
-                    Ok(VmValue::Set(result))
+                    Ok(VmValue::Set(Box::new(result)))
                 } else {
                     Err(runtime_err("union() expects a set"))
                 }
@@ -7027,7 +8065,7 @@ impl Vm {
                         .into_iter()
                         .filter(|x| b.iter().any(|y| vm_values_equal(x, y)))
                         .collect();
-                    Ok(VmValue::Set(result))
+                    Ok(VmValue::Set(Box::new(result)))
                 } else {
                     Err(runtime_err("intersection() expects a set"))
                 }
@@ -7041,7 +8079,7 @@ impl Vm {
                         .into_iter()
                         .filter(|x| !b.iter().any(|y| vm_values_equal(x, y)))
                         .collect();
-                    Ok(VmValue::Set(result))
+                    Ok(VmValue::Set(Box::new(result)))
                 } else {
                     Err(runtime_err("difference() expects a set"))
                 }
@@ -7227,6 +8265,11 @@ impl Vm {
     /// Resolve dot-path segments to a file path for use statements.
     #[cfg(feature = "native")]
     fn resolve_use_path(&self, segments: &[&str]) -> Result<String, TlError> {
+        // Reject path traversal attempts
+        if segments.iter().any(|s| *s == "..") {
+            return Err(runtime_err("Import paths cannot contain '..'"));
+        }
+
         let base_dir = if let Some(ref fp) = self.file_path {
             std::path::Path::new(fp)
                 .parent()
@@ -7352,7 +8395,7 @@ impl Vm {
                 for arg in args {
                     self.stack.push(arg.clone());
                 }
-                let result = self.call_builtin(*id as u8, args_base, args.len());
+                let result = self.call_builtin(*id as u16, args_base, args.len());
                 self.stack.truncate(args_base);
                 result
             }
@@ -7769,6 +8812,191 @@ impl Vm {
                 let unique = self.engine().is_unique(df, &column).map_err(runtime_err)?;
                 Ok(VmValue::Bool(unique))
             }
+            // Phase F2: Window functions
+            "window" => {
+                use tl_data::datafusion::logical_expr::{
+                    expr::{WindowFunction as WinFunc, Sort as DfSort},
+                    WindowFunctionDefinition, WindowFrame,
+                };
+                if ast_args.is_empty() {
+                    return Err(runtime_err("window() expects named arguments: fn, partition_by, order_by, alias"));
+                }
+                let mut win_fn_name = String::new();
+                let mut partition_by_cols: Vec<String> = Vec::new();
+                let mut order_by_cols: Vec<String> = Vec::new();
+                let mut alias_name = String::new();
+                let mut win_args: Vec<String> = Vec::new();
+                let mut descending = false;
+
+                for arg in &ast_args {
+                    if let AstExpr::NamedArg { name, value } = arg {
+                        match name.as_str() {
+                            "fn" => win_fn_name = self.eval_ast_to_string(value)?,
+                            "partition_by" => match value.as_ref() {
+                                AstExpr::List(items) => {
+                                    for item in items {
+                                        partition_by_cols.push(self.eval_ast_to_string(item)?);
+                                    }
+                                }
+                                _ => partition_by_cols.push(self.eval_ast_to_string(value)?),
+                            },
+                            "order_by" => match value.as_ref() {
+                                AstExpr::List(items) => {
+                                    for item in items {
+                                        order_by_cols.push(self.eval_ast_to_string(item)?);
+                                    }
+                                }
+                                _ => order_by_cols.push(self.eval_ast_to_string(value)?),
+                            },
+                            "alias" | "as" => alias_name = self.eval_ast_to_string(value)?,
+                            "args" => match value.as_ref() {
+                                AstExpr::List(items) => {
+                                    for item in items {
+                                        win_args.push(self.eval_ast_to_string(item)?);
+                                    }
+                                }
+                                _ => win_args.push(self.eval_ast_to_string(value)?),
+                            },
+                            "desc" => {
+                                if let AstExpr::Bool(b) = value.as_ref() {
+                                    descending = *b;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                if win_fn_name.is_empty() {
+                    return Err(runtime_err("window() requires fn: parameter (rank, row_number, dense_rank, lag, lead, ntile)"));
+                }
+                if alias_name.is_empty() {
+                    alias_name = win_fn_name.clone();
+                }
+
+                // Build window function definition
+                let session = self.engine().session_ctx();
+                let win_udf = match win_fn_name.as_str() {
+                    "rank" => session.udwf("rank"),
+                    "dense_rank" => session.udwf("dense_rank"),
+                    "row_number" => session.udwf("row_number"),
+                    "percent_rank" => session.udwf("percent_rank"),
+                    "cume_dist" => session.udwf("cume_dist"),
+                    "ntile" => session.udwf("ntile"),
+                    "lag" => session.udwf("lag"),
+                    "lead" => session.udwf("lead"),
+                    "first_value" => session.udwf("first_value"),
+                    "last_value" => session.udwf("last_value"),
+                    _ => return Err(runtime_err(format!("Unknown window function: {win_fn_name}"))),
+                }.map_err(|e| runtime_err(format!("Window function '{win_fn_name}' not available: {e}")))?;
+
+                let fun = WindowFunctionDefinition::WindowUDF(win_udf);
+
+                // Build function args (for lag/lead/ntile)
+                let func_args: Vec<tl_data::datafusion::prelude::Expr> = win_args.iter().map(|a| {
+                    if let Ok(n) = a.parse::<i64>() {
+                        lit(n)
+                    } else {
+                        col(a.as_str())
+                    }
+                }).collect();
+
+                let partition_exprs: Vec<tl_data::datafusion::prelude::Expr> =
+                    partition_by_cols.iter().map(|c| col(c.as_str())).collect();
+                let order_exprs: Vec<DfSort> = order_by_cols.iter().map(|c| {
+                    DfSort::new(col(c.as_str()), !descending, true)
+                }).collect();
+
+                let has_order = !order_exprs.is_empty();
+                let win_expr = tl_data::datafusion::prelude::Expr::WindowFunction(WinFunc {
+                    fun,
+                    args: func_args,
+                    partition_by: partition_exprs,
+                    order_by: order_exprs,
+                    window_frame: WindowFrame::new(if has_order { Some(true) } else { None }),
+                    null_treatment: None,
+                }).alias(&alias_name);
+
+                // Get all existing columns and add the window column
+                let schema = df.schema();
+                let mut select_exprs: Vec<tl_data::datafusion::prelude::Expr> =
+                    schema.fields().iter().map(|f| col(f.name().as_str())).collect();
+                select_exprs.push(win_expr);
+
+                let result_df = df.select(select_exprs)
+                    .map_err(|e| runtime_err(format!("Window function error: {e}")))?;
+                Ok(VmValue::Table(VmTable { df: result_df }))
+            }
+            // Phase F3: Union
+            "union" => {
+                if ast_args.is_empty() {
+                    return Err(runtime_err("union() expects a table argument"));
+                }
+                let right_table = self.eval_ast_to_vm(&ast_args[0])?;
+                let right_df = match right_table {
+                    VmValue::Table(t) => t.df,
+                    _ => return Err(runtime_err("union() argument must be a table")),
+                };
+                let result_df = df.union(right_df)
+                    .map_err(|e| runtime_err(format!("Union error: {e}")))?;
+                Ok(VmValue::Table(VmTable { df: result_df }))
+            }
+            // Phase F4: Table sampling
+            "sample" => {
+                use tl_data::datafusion::arrow::{array::UInt32Array, compute};
+                use tl_data::datafusion::datasource::MemTable;
+                if ast_args.is_empty() {
+                    return Err(runtime_err("sample() expects a count or fraction"));
+                }
+                let batches = self.engine().collect(df).map_err(runtime_err)?;
+                let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+                let sample_count = match &ast_args[0] {
+                    AstExpr::Int(n) => (*n as usize).min(total_rows),
+                    AstExpr::Float(f) if *f > 0.0 && *f <= 1.0 => {
+                        ((total_rows as f64) * f).ceil() as usize
+                    }
+                    _ => {
+                        let val = self.eval_ast_to_string(&ast_args[0])?;
+                        val.parse::<usize>().map_err(|_| runtime_err("sample() expects integer count or float fraction"))?
+                    }
+                };
+                if total_rows == 0 || sample_count == 0 {
+                    let schema = batches[0].schema();
+                    let empty = tl_data::datafusion::arrow::record_batch::RecordBatch::new_empty(schema.clone());
+                    let mem_table = MemTable::try_new(schema, vec![vec![empty]])
+                        .map_err(|e| runtime_err(format!("{e}")))?;
+                    let new_df = self.engine().session_ctx().read_table(Arc::new(mem_table))
+                        .map_err(|e| runtime_err(format!("{e}")))?;
+                    return Ok(VmValue::Table(VmTable { df: new_df }));
+                }
+                // Random sampling
+                let mut rng = rand::thread_rng();
+                let mut indices: Vec<usize> = (0..total_rows).collect();
+                use rand::seq::SliceRandom;
+                indices.partial_shuffle(&mut rng, sample_count);
+                indices.truncate(sample_count);
+                indices.sort();
+                // Concatenate and take
+                let combined = compute::concat_batches(
+                    &batches[0].schema(), &batches
+                ).map_err(|e| runtime_err(format!("{e}")))?;
+                let idx_array = UInt32Array::from(
+                    indices.iter().map(|&i| i as u32).collect::<Vec<_>>()
+                );
+                let sampled_cols: Vec<tl_data::datafusion::arrow::array::ArrayRef> = (0..combined.num_columns())
+                    .map(|c| compute::take(combined.column(c), &idx_array, None)
+                        .map_err(|e| runtime_err(format!("{e}"))))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let sampled_batch = tl_data::datafusion::arrow::record_batch::RecordBatch::try_new(
+                    combined.schema(), sampled_cols
+                ).map_err(|e| runtime_err(format!("{e}")))?;
+                let mem_table = MemTable::try_new(
+                    sampled_batch.schema(), vec![vec![sampled_batch]]
+                ).map_err(|e| runtime_err(format!("{e}")))?;
+                let new_df = self.engine().session_ctx().read_table(Arc::new(mem_table))
+                    .map_err(|e| runtime_err(format!("{e}")))?;
+                Ok(VmValue::Table(VmTable { df: new_df }))
+            }
             _ => Err(runtime_err(format!("Unknown table operation: {op_name}"))),
         }
     }
@@ -7803,7 +9031,7 @@ impl Vm {
             for arg in &all_args {
                 self.stack.push(arg.clone());
             }
-            let result = self.call_builtin(builtin_id as u8, args_base, all_args.len());
+            let result = self.call_builtin(builtin_id as u16, args_base, all_args.len());
             self.stack.truncate(args_base);
             return result;
         }
@@ -8779,8 +10007,9 @@ print(m[0])"#,
 
     #[test]
     fn test_vm_now() {
-        let output = run_output("print(now() > 0)");
-        assert_eq!(output, vec!["true"]);
+        // now() returns DateTime which displays as formatted string
+        let output = run_output("let t = now()\nprint(type_of(t))");
+        assert_eq!(output, vec!["datetime"]);
     }
 
     #[test]
@@ -8792,7 +10021,7 @@ print(m[0])"#,
     #[test]
     fn test_vm_date_parse() {
         let output = run_output(r#"print(date_parse("2024-01-01 00:00:00", "%Y-%m-%d %H:%M:%S"))"#);
-        assert_eq!(output, vec!["1704067200000"]);
+        assert_eq!(output, vec!["2024-01-01 00:00:00"]);
     }
 
     #[test]

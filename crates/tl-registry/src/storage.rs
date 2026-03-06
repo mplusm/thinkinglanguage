@@ -32,6 +32,19 @@ pub struct SearchResult {
     pub description: Option<String>,
 }
 
+/// Validate that a package name or version string does not contain path traversal characters.
+fn validate_name(name: &str, label: &str) -> Result<(), String> {
+    if name.contains("..") || name.contains('/') || name.contains('\\') {
+        return Err(format!(
+            "Invalid {label}: '{name}' must not contain '..', '/', or '\\'"
+        ));
+    }
+    if name.is_empty() {
+        return Err(format!("Invalid {label}: must not be empty"));
+    }
+    Ok(())
+}
+
 /// Filesystem-based registry storage.
 ///
 /// Layout:
@@ -81,6 +94,7 @@ impl RegistryStorage {
 
     /// Load package metadata, or None if not published.
     pub fn load_metadata(&self, name: &str) -> Result<Option<PackageMetadata>, String> {
+        validate_name(name, "package name")?;
         let path = self.index_path(name);
         if !path.exists() {
             return Ok(None);
@@ -111,6 +125,9 @@ impl RegistryStorage {
         description: Option<&str>,
         tarball: &[u8],
     ) -> Result<String, String> {
+        validate_name(name, "package name")?;
+        validate_name(version, "version")?;
+
         // Compute hash
         let mut hasher = Sha256::new();
         hasher.update(tarball);
@@ -151,6 +168,8 @@ impl RegistryStorage {
 
     /// Download a package tarball.
     pub fn download(&self, name: &str, version: &str) -> Result<Vec<u8>, String> {
+        validate_name(name, "package name")?;
+        validate_name(version, "version")?;
         let path = self.tarball_path(name, version);
         if !path.exists() {
             return Err(format!("Package '{name}' version '{version}' not found"));

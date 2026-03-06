@@ -808,6 +808,7 @@ impl<'a> TypeChecker<'a> {
                 try_body,
                 catch_var,
                 catch_body,
+                finally_body,
             } => {
                 self.env.push_scope();
                 self.check_body(try_body);
@@ -818,6 +819,12 @@ impl<'a> TypeChecker<'a> {
                 self.used_vars.insert(catch_var.clone()); // catch vars are implicitly used
                 self.check_body(catch_body);
                 self.env.pop_scope();
+
+                if let Some(finally) = finally_body {
+                    self.env.push_scope();
+                    self.check_body(finally);
+                    self.env.pop_scope();
+                }
             }
 
             StmtKind::Throw(expr) => {

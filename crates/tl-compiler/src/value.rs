@@ -24,7 +24,7 @@ pub enum VmValue {
     String(Arc<str>),
     Bool(bool),
     None,
-    List(Vec<VmValue>),
+    List(Box<Vec<VmValue>>),
     /// A compiled closure (function + captured upvalues)
     Function(Arc<VmClosure>),
     /// A builtin function reference
@@ -64,7 +64,7 @@ pub enum VmValue {
     /// A module (from import)
     Module(Arc<VmModule>),
     /// An ordered map (string keys)
-    Map(Vec<(Arc<str>, VmValue)>),
+    Map(Box<Vec<(Arc<str>, VmValue)>>),
     /// A spawned task handle
     Task(Arc<VmTask>),
     /// A channel for inter-task communication
@@ -72,9 +72,11 @@ pub enum VmValue {
     /// A generator (lazy iterator)
     Generator(Arc<Mutex<VmGenerator>>),
     /// A set (unique values)
-    Set(Vec<VmValue>),
+    Set(Box<Vec<VmValue>>),
     /// Fixed-point decimal value
     Decimal(rust_decimal::Decimal),
+    /// A datetime value (milliseconds since Unix epoch)
+    DateTime(i64),
     /// A secret value (display-redacted)
     Secret(Arc<str>),
     /// An opaque Python object (feature-gated)
@@ -90,6 +92,27 @@ pub enum VmValue {
     Moved,
     /// Read-only reference wrapper
     Ref(Arc<VmValue>),
+}
+
+impl PartialEq for VmValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (VmValue::Int(a), VmValue::Int(b)) => a == b,
+            (VmValue::Float(a), VmValue::Float(b)) => a == b,
+            (VmValue::String(a), VmValue::String(b)) => a == b,
+            (VmValue::Bool(a), VmValue::Bool(b)) => a == b,
+            (VmValue::None, VmValue::None) => true,
+            (VmValue::Decimal(a), VmValue::Decimal(b)) => a == b,
+            (VmValue::DateTime(a), VmValue::DateTime(b)) => a == b,
+            (VmValue::DateTime(a), VmValue::Int(b)) | (VmValue::Int(a), VmValue::DateTime(b)) => a == b,
+            (VmValue::List(a), VmValue::List(b)) => a == b,
+            (VmValue::Map(a), VmValue::Map(b)) => a == b,
+            (VmValue::Set(a), VmValue::Set(b)) => a == b,
+            (VmValue::Ref(a), VmValue::Ref(b)) => a == b,
+            (VmValue::Ref(inner), other) | (other, VmValue::Ref(inner)) => inner.as_ref() == other,
+            _ => false,
+        }
+    }
 }
 
 /// Struct type definition
@@ -134,6 +157,11 @@ static TASK_COUNTER: AtomicU64 = AtomicU64::new(1);
 static CHANNEL_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// A spawned task handle — wraps the receiver for the task result.
+///
+/// **Note:** Tasks are shared via `Arc<VmTask>`, so cloning the `VmValue::Task`
+/// variant creates a second handle to the *same* task. Only the first `await`
+/// will receive the result; subsequent awaits on the same or cloned handle
+/// return `None` (the receiver is taken).
 pub struct VmTask {
     pub receiver: Mutex<Option<mpsc::Receiver<Result<VmValue, String>>>>,
     pub id: u64,
@@ -257,6 +285,14 @@ impl fmt::Debug for GeneratorKind {
 }
 
 /// A generator object — wraps a GeneratorKind with done state.
+///
+/// **Note:** Generators are shared via `Arc<Mutex<VmGenerator>>`, so cloning
+/// the `VmValue::Generator` variant shares iteration state. Both handles
+/// advance the same underlying iterator.
+///
+/// **Known limitation:** `next()` on an exhausted generator returns `VmValue::None`,
+/// which is indistinguishable from `yield none`. Use the generator's `done` field
+/// or a wrapper to detect exhaustion if this matters.
 pub struct VmGenerator {
     pub kind: GeneratorKind,
     pub done: bool,
@@ -377,6 +413,7 @@ impl VmValue {
             VmValue::Channel(_) => "channel",
             VmValue::Generator(_) => "generator",
             VmValue::Decimal(_) => "decimal",
+            VmValue::DateTime(_) => "datetime",
             VmValue::Secret(_) => "secret",
             #[cfg(feature = "python")]
             VmValue::PyObject(_) => "pyobject",
@@ -464,6 +501,15 @@ impl fmt::Debug for VmValue {
                 write!(f, "}}")
             }
             VmValue::Decimal(d) => write!(f, "Decimal({d})"),
+            VmValue::DateTime(ms) => {
+                use chrono::TimeZone;
+                let secs = *ms / 1000;
+                let nsecs = ((*ms % 1000) * 1_000_000) as u32;
+                match chrono::Utc.timestamp_opt(secs, nsecs).single() {
+                    Some(dt) => write!(f, "DateTime({})", dt.format("%Y-%m-%d %H:%M:%S UTC")),
+                    None => write!(f, "DateTime({ms}ms)"),
+                }
+            }
             VmValue::Secret(_) => write!(f, "Secret(***)"),
             #[cfg(feature = "python")]
             VmValue::PyObject(w) => write!(f, "PyObject({w:?})"),
@@ -573,6 +619,15 @@ impl fmt::Display for VmValue {
                 write!(f, "}}")
             }
             VmValue::Decimal(d) => write!(f, "{d}"),
+            VmValue::DateTime(ms) => {
+                use chrono::TimeZone;
+                let secs = *ms / 1000;
+                let nsecs = ((*ms % 1000) * 1_000_000) as u32;
+                match chrono::Utc.timestamp_opt(secs, nsecs).single() {
+                    Some(dt) => write!(f, "{}", dt.format("%Y-%m-%d %H:%M:%S")),
+                    None => write!(f, "<datetime {ms}ms>"),
+                }
+            }
             VmValue::Secret(_) => write!(f, "***"),
             #[cfg(feature = "python")]
             VmValue::PyObject(w) => write!(f, "{w}"),

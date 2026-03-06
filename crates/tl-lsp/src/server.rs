@@ -7,8 +7,8 @@ use lsp_types::notification::{
     PublishDiagnostics,
 };
 use lsp_types::request::{
-    Completion, DocumentSymbolRequest, Formatting, GotoDefinition, HoverRequest,
-    Request as LspRequest,
+    Completion, DocumentSymbolRequest, Formatting, GotoDefinition, HoverRequest, References,
+    Rename, Request as LspRequest,
 };
 use lsp_types::{
     CompletionOptions, DocumentSymbolResponse, InitializeParams, OneOf, PublishDiagnosticsParams,
@@ -35,6 +35,8 @@ pub fn run_server() -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
         definition_provider: Some(OneOf::Left(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
         document_formatting_provider: Some(OneOf::Left(true)),
+        references_provider: Some(OneOf::Left(true)),
+        rename_provider: Some(OneOf::Left(true)),
         ..Default::default()
     };
 
@@ -133,6 +135,77 @@ fn handle_request(
         let doc = state.get_document(&params.text_document.uri);
         let result = if let Some(doc) = doc {
             format::provide_formatting(&doc.source)
+        } else {
+            None
+        };
+        send_response(connection, id, serde_json::to_value(result)?)?;
+    } else if let Some((_, params)) = cast_request::<References>(&req) {
+        let uri = params.text_document_position.text_document.uri.clone();
+        let doc = state.get_document(&uri);
+        let result: Option<Vec<lsp_types::Location>> = if let Some(doc) = doc {
+            let offset = crate::ast_util::position_to_offset(
+                &doc.source,
+                params.text_document_position.position.line,
+                params.text_document_position.position.character,
+            );
+            if let Some((name, _, _)) = crate::ast_util::find_ident_at_offset(&doc.source, offset) {
+                let refs = crate::ast_util::find_all_references(&doc.source, &name);
+                if refs.is_empty() {
+                    None
+                } else {
+                    Some(
+                        refs.iter()
+                            .map(|&(start, _end)| lsp_types::Location {
+                                uri: uri.clone(),
+                                range: crate::diagnostics::span_to_range(
+                                    &doc.source,
+                                    tl_errors::Span { start, end: _end },
+                                ),
+                            })
+                            .collect(),
+                    )
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        send_response(connection, id, serde_json::to_value(result)?)?;
+    } else if let Some((_, params)) = cast_request::<Rename>(&req) {
+        let uri = params.text_document_position.text_document.uri.clone();
+        let doc = state.get_document(&uri);
+        let result: Option<lsp_types::WorkspaceEdit> = if let Some(doc) = doc {
+            let offset = crate::ast_util::position_to_offset(
+                &doc.source,
+                params.text_document_position.position.line,
+                params.text_document_position.position.character,
+            );
+            if let Some((name, _, _)) = crate::ast_util::find_ident_at_offset(&doc.source, offset) {
+                let refs = crate::ast_util::find_all_references(&doc.source, &name);
+                if refs.is_empty() {
+                    None
+                } else {
+                    let edits: Vec<lsp_types::TextEdit> = refs
+                        .iter()
+                        .map(|&(start, end)| lsp_types::TextEdit {
+                            range: crate::diagnostics::span_to_range(
+                                &doc.source,
+                                tl_errors::Span { start, end },
+                            ),
+                            new_text: params.new_name.clone(),
+                        })
+                        .collect();
+                    let mut changes = std::collections::HashMap::new();
+                    changes.insert(uri, edits);
+                    Some(lsp_types::WorkspaceEdit {
+                        changes: Some(changes),
+                        ..Default::default()
+                    })
+                }
+            } else {
+                None
+            }
         } else {
             None
         };

@@ -34,6 +34,10 @@ pub enum Token {
     #[regex(r"[0-9][0-9_]*\.[0-9][0-9_]*d", |lex| { let s = lex.slice(); Some(s[..s.len()-1].replace('_', "")) }, priority = 6)]
     DecimalLiteral(String),
 
+    /// Multi-line string literal: """...""" with dedent
+    #[token(r#"""""#, lex_triple_string, priority = 10)]
+    TripleString(String),
+
     /// String literal: "hello {name}"
     #[regex(r#""([^"\\]|\\.)*""#, |lex| {
         let s = lex.slice();
@@ -162,6 +166,8 @@ pub enum Token {
     Try,
     #[token("catch")]
     Catch,
+    #[token("finally")]
+    Finally,
     #[token("throw")]
     Throw,
 
@@ -329,6 +335,43 @@ pub struct SpannedToken {
     pub span: Span,
 }
 
+/// Callback for triple-quoted strings: scan until closing """
+fn lex_triple_string(lex: &mut logos::Lexer<Token>) -> Option<String> {
+    let remainder = lex.remainder();
+    // Find closing """
+    if let Some(end) = remainder.find("\"\"\"") {
+        let content = &remainder[..end];
+        lex.bump(end + 3); // consume content + closing """
+        // Dedent: find minimum indentation of non-empty lines
+        let lines: Vec<&str> = content.lines().collect();
+        if lines.is_empty() {
+            return Some(String::new());
+        }
+        // Skip first line if it's just whitespace after opening """
+        let start = if lines[0].trim().is_empty() { 1 } else { 0 };
+        let min_indent = lines[start..].iter()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.len() - l.trim_start().len())
+            .min()
+            .unwrap_or(0);
+        let dedented: Vec<&str> = lines[start..].iter()
+            .map(|l| {
+                if l.trim().is_empty() { "" }
+                else if l.len() >= min_indent { &l[min_indent..] }
+                else { l }
+            })
+            .collect();
+        // Strip trailing empty line
+        let mut result: Vec<&str> = dedented;
+        while result.last() == Some(&"") {
+            result.pop();
+        }
+        Some(result.join("\n"))
+    } else {
+        None // unterminated triple-quoted string
+    }
+}
+
 /// Tokenize source text into a vector of spanned tokens.
 /// Filters out newlines (for now — may be significant later).
 pub fn tokenize(source: &str) -> Result<Vec<SpannedToken>, tl_errors::TlError> {
@@ -341,6 +384,11 @@ pub fn tokenize(source: &str) -> Result<Vec<SpannedToken>, tl_errors::TlError> {
             Ok(token) => {
                 // Skip newlines for now (optional semicolons, newline-terminated)
                 if token != Token::Newline {
+                    // Convert triple-quoted strings to regular strings
+                    let token = match token {
+                        Token::TripleString(s) => Token::String(s),
+                        t => t,
+                    };
                     tokens.push(SpannedToken { token, span });
                 }
             }

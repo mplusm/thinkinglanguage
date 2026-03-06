@@ -7,8 +7,15 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// Default registry URL, can be overridden via TL_REGISTRY_URL env var.
+///
+/// Warns to stderr when a non-localhost HTTP (non-HTTPS) URL is configured,
+/// since packages would be fetched over an unencrypted connection.
 pub fn registry_url() -> String {
-    std::env::var("TL_REGISTRY_URL").unwrap_or_else(|_| "http://localhost:3333".to_string())
+    let url = std::env::var("TL_REGISTRY_URL").unwrap_or_else(|_| "http://localhost:3333".to_string());
+    if url.starts_with("http://") && !url.starts_with("http://localhost") && !url.starts_with("http://127.0.0.1") {
+        eprintln!("Warning: registry URL '{}' uses HTTP (not HTTPS). Packages may be transmitted insecurely.", url);
+    }
+    url
 }
 
 /// Package version info from the registry.

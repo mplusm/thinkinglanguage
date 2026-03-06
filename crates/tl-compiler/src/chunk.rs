@@ -204,21 +204,21 @@ impl Prototype {
                 // ABC: table ops
                 Op::TablePipe => format!("R{a} = table_pipe(K{b}, R{c})"),
 
-                // ABC: builtin call (followed by extra word for arg count)
+                // ABx: builtin call (Bx=builtin_id, followed by extra word for arg count + first arg)
                 Op::CallBuiltin => {
-                    let builtin_id = b;
-                    let builtin_name = unsafe {
-                        let bid: BuiltinId = std::mem::transmute(builtin_id);
-                        bid.name()
-                    };
-                    // Next instruction has arg count in A field
-                    let argc = if offset + 1 < self.code.len() {
-                        decode_a(self.code[offset + 1])
+                    let builtin_id = decode_bx(inst);
+                    let builtin_name = BuiltinId::try_from(builtin_id)
+                        .map(|b| b.name())
+                        .unwrap_or("<unknown>");
+                    // Next instruction: A=arg_count, B=first_arg_reg
+                    let (argc, first_arg) = if offset + 1 < self.code.len() {
+                        let next = self.code[offset + 1];
+                        (decode_a(next), decode_b(next))
                     } else {
-                        0
+                        (0, 0)
                     };
                     offset += 1; // skip the extra word
-                    format!("R{a} = {builtin_name}(R{c}, argc={argc})")
+                    format!("R{a} = {builtin_name}(R{first_arg}, argc={argc})")
                 }
 
                 // AB: iteration
@@ -417,7 +417,7 @@ pub struct UpvalueDef {
 
 /// Builtin function identifiers — avoids string comparisons in the VM hot loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
+#[repr(u16)]
 pub enum BuiltinId {
     Print = 0,
     Println = 1,
@@ -623,6 +623,233 @@ pub enum BuiltinId {
     Embed = 182,
     HttpRequest = 183,
     RunAgent = 184,
+    // Phase E5: Random & Sampling
+    Random = 185,
+    RandomInt = 186,
+    Sample = 187,
+    // Phase E6: Math builtins
+    Exp = 188,
+    IsNan = 189,
+    IsInfinite = 190,
+    Sign = 191,
+    // Phase E8: Table assertion
+    AssertTableEq = 192,
+    // Phase F1: Date/Time builtins
+    Today = 193,
+    DateAdd = 194,
+    DateDiff = 195,
+    DateTrunc = 196,
+    DateExtract = 197,
+    StreamAgent = 198,
+}
+
+impl TryFrom<u16> for BuiltinId {
+    type Error = u16;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(BuiltinId::Print),
+            1 => Ok(BuiltinId::Println),
+            2 => Ok(BuiltinId::Len),
+            3 => Ok(BuiltinId::Str),
+            4 => Ok(BuiltinId::Int),
+            5 => Ok(BuiltinId::Float),
+            6 => Ok(BuiltinId::Abs),
+            7 => Ok(BuiltinId::Min),
+            8 => Ok(BuiltinId::Max),
+            9 => Ok(BuiltinId::Range),
+            10 => Ok(BuiltinId::Push),
+            11 => Ok(BuiltinId::TypeOf),
+            12 => Ok(BuiltinId::Map),
+            13 => Ok(BuiltinId::Filter),
+            14 => Ok(BuiltinId::Reduce),
+            15 => Ok(BuiltinId::Sum),
+            16 => Ok(BuiltinId::Any),
+            17 => Ok(BuiltinId::All),
+            18 => Ok(BuiltinId::ReadCsv),
+            19 => Ok(BuiltinId::ReadParquet),
+            20 => Ok(BuiltinId::WriteCsv),
+            21 => Ok(BuiltinId::WriteParquet),
+            22 => Ok(BuiltinId::Collect),
+            23 => Ok(BuiltinId::Show),
+            24 => Ok(BuiltinId::Describe),
+            25 => Ok(BuiltinId::Head),
+            26 => Ok(BuiltinId::Postgres),
+            27 => Ok(BuiltinId::Tensor),
+            28 => Ok(BuiltinId::TensorZeros),
+            29 => Ok(BuiltinId::TensorOnes),
+            30 => Ok(BuiltinId::TensorShape),
+            31 => Ok(BuiltinId::TensorReshape),
+            32 => Ok(BuiltinId::TensorTranspose),
+            33 => Ok(BuiltinId::TensorSum),
+            34 => Ok(BuiltinId::TensorMean),
+            35 => Ok(BuiltinId::TensorDot),
+            36 => Ok(BuiltinId::Predict),
+            37 => Ok(BuiltinId::Similarity),
+            38 => Ok(BuiltinId::AiComplete),
+            39 => Ok(BuiltinId::AiChat),
+            40 => Ok(BuiltinId::ModelSave),
+            41 => Ok(BuiltinId::ModelLoad),
+            42 => Ok(BuiltinId::ModelRegister),
+            43 => Ok(BuiltinId::ModelList),
+            44 => Ok(BuiltinId::ModelGet),
+            45 => Ok(BuiltinId::AlertSlack),
+            46 => Ok(BuiltinId::AlertWebhook),
+            47 => Ok(BuiltinId::Emit),
+            48 => Ok(BuiltinId::Lineage),
+            49 => Ok(BuiltinId::RunPipeline),
+            50 => Ok(BuiltinId::Sqrt),
+            51 => Ok(BuiltinId::Pow),
+            52 => Ok(BuiltinId::Floor),
+            53 => Ok(BuiltinId::Ceil),
+            54 => Ok(BuiltinId::Round),
+            55 => Ok(BuiltinId::Sin),
+            56 => Ok(BuiltinId::Cos),
+            57 => Ok(BuiltinId::Tan),
+            58 => Ok(BuiltinId::Log),
+            59 => Ok(BuiltinId::Log2),
+            60 => Ok(BuiltinId::Log10),
+            61 => Ok(BuiltinId::Join),
+            62 => Ok(BuiltinId::HttpGet),
+            63 => Ok(BuiltinId::HttpPost),
+            64 => Ok(BuiltinId::Assert),
+            65 => Ok(BuiltinId::AssertEq),
+            66 => Ok(BuiltinId::JsonParse),
+            67 => Ok(BuiltinId::JsonStringify),
+            68 => Ok(BuiltinId::MapFrom),
+            69 => Ok(BuiltinId::ReadFile),
+            70 => Ok(BuiltinId::WriteFile),
+            71 => Ok(BuiltinId::AppendFile),
+            72 => Ok(BuiltinId::FileExists),
+            73 => Ok(BuiltinId::ListDir),
+            74 => Ok(BuiltinId::EnvGet),
+            75 => Ok(BuiltinId::EnvSet),
+            76 => Ok(BuiltinId::RegexMatch),
+            77 => Ok(BuiltinId::RegexFind),
+            78 => Ok(BuiltinId::RegexReplace),
+            79 => Ok(BuiltinId::Now),
+            80 => Ok(BuiltinId::DateFormat),
+            81 => Ok(BuiltinId::DateParse),
+            82 => Ok(BuiltinId::Zip),
+            83 => Ok(BuiltinId::Enumerate),
+            84 => Ok(BuiltinId::Bool),
+            85 => Ok(BuiltinId::Spawn),
+            86 => Ok(BuiltinId::Sleep),
+            87 => Ok(BuiltinId::Channel),
+            88 => Ok(BuiltinId::Send),
+            89 => Ok(BuiltinId::Recv),
+            90 => Ok(BuiltinId::TryRecv),
+            91 => Ok(BuiltinId::AwaitAll),
+            92 => Ok(BuiltinId::Pmap),
+            93 => Ok(BuiltinId::Timeout),
+            94 => Ok(BuiltinId::Next),
+            95 => Ok(BuiltinId::IsGenerator),
+            96 => Ok(BuiltinId::Iter),
+            97 => Ok(BuiltinId::Take),
+            98 => Ok(BuiltinId::Skip_),
+            99 => Ok(BuiltinId::GenCollect),
+            100 => Ok(BuiltinId::GenMap),
+            101 => Ok(BuiltinId::GenFilter),
+            102 => Ok(BuiltinId::Chain),
+            103 => Ok(BuiltinId::GenZip),
+            104 => Ok(BuiltinId::GenEnumerate),
+            105 => Ok(BuiltinId::Ok),
+            106 => Ok(BuiltinId::Err_),
+            107 => Ok(BuiltinId::IsOk),
+            108 => Ok(BuiltinId::IsErr),
+            109 => Ok(BuiltinId::Unwrap),
+            110 => Ok(BuiltinId::SetFrom),
+            111 => Ok(BuiltinId::SetAdd),
+            112 => Ok(BuiltinId::SetRemove),
+            113 => Ok(BuiltinId::SetContains),
+            114 => Ok(BuiltinId::SetUnion),
+            115 => Ok(BuiltinId::SetIntersection),
+            116 => Ok(BuiltinId::SetDifference),
+            117 => Ok(BuiltinId::FillNull),
+            118 => Ok(BuiltinId::DropNull),
+            119 => Ok(BuiltinId::Dedup),
+            120 => Ok(BuiltinId::Clamp),
+            121 => Ok(BuiltinId::DataProfile),
+            122 => Ok(BuiltinId::RowCount),
+            123 => Ok(BuiltinId::NullRate),
+            124 => Ok(BuiltinId::IsUnique),
+            125 => Ok(BuiltinId::IsEmail),
+            126 => Ok(BuiltinId::IsUrl),
+            127 => Ok(BuiltinId::IsPhone),
+            128 => Ok(BuiltinId::IsBetween),
+            129 => Ok(BuiltinId::Levenshtein),
+            130 => Ok(BuiltinId::Soundex),
+            131 => Ok(BuiltinId::ReadMysql),
+            132 => Ok(BuiltinId::RedisConnect),
+            133 => Ok(BuiltinId::RedisGet),
+            134 => Ok(BuiltinId::RedisSet),
+            135 => Ok(BuiltinId::RedisDel),
+            136 => Ok(BuiltinId::GraphqlQuery),
+            137 => Ok(BuiltinId::RegisterS3),
+            138 => Ok(BuiltinId::PyImport),
+            139 => Ok(BuiltinId::PyCall),
+            140 => Ok(BuiltinId::PyEval),
+            141 => Ok(BuiltinId::PyGetAttr),
+            142 => Ok(BuiltinId::PySetAttr),
+            143 => Ok(BuiltinId::PyToTl),
+            144 => Ok(BuiltinId::SchemaRegister),
+            145 => Ok(BuiltinId::SchemaGet),
+            146 => Ok(BuiltinId::SchemaLatest),
+            147 => Ok(BuiltinId::SchemaHistory),
+            148 => Ok(BuiltinId::SchemaCheck),
+            149 => Ok(BuiltinId::SchemaDiff),
+            150 => Ok(BuiltinId::SchemaApplyMigration),
+            151 => Ok(BuiltinId::SchemaVersions),
+            152 => Ok(BuiltinId::SchemaFields),
+            153 => Ok(BuiltinId::Decimal),
+            154 => Ok(BuiltinId::SecretGet),
+            155 => Ok(BuiltinId::SecretSet),
+            156 => Ok(BuiltinId::SecretDelete),
+            157 => Ok(BuiltinId::SecretList),
+            158 => Ok(BuiltinId::CheckPermission),
+            159 => Ok(BuiltinId::MaskEmail),
+            160 => Ok(BuiltinId::MaskPhone),
+            161 => Ok(BuiltinId::MaskCreditCard),
+            162 => Ok(BuiltinId::Redact),
+            163 => Ok(BuiltinId::Hash),
+            164 => Ok(BuiltinId::AsyncReadFile),
+            165 => Ok(BuiltinId::AsyncWriteFile),
+            166 => Ok(BuiltinId::AsyncHttpGet),
+            167 => Ok(BuiltinId::AsyncHttpPost),
+            168 => Ok(BuiltinId::AsyncSleep),
+            169 => Ok(BuiltinId::Select),
+            170 => Ok(BuiltinId::AsyncMap),
+            171 => Ok(BuiltinId::AsyncFilter),
+            172 => Ok(BuiltinId::RaceAll),
+            173 => Ok(BuiltinId::IsError),
+            174 => Ok(BuiltinId::ErrorType),
+            175 => Ok(BuiltinId::GpuAvailable),
+            176 => Ok(BuiltinId::ToGpu),
+            177 => Ok(BuiltinId::ToCpu),
+            178 => Ok(BuiltinId::GpuMatmul),
+            179 => Ok(BuiltinId::GpuBatchPredict),
+            180 => Ok(BuiltinId::ReadSqlite),
+            181 => Ok(BuiltinId::WriteSqlite),
+            182 => Ok(BuiltinId::Embed),
+            183 => Ok(BuiltinId::HttpRequest),
+            184 => Ok(BuiltinId::RunAgent),
+            185 => Ok(BuiltinId::Random),
+            186 => Ok(BuiltinId::RandomInt),
+            187 => Ok(BuiltinId::Sample),
+            188 => Ok(BuiltinId::Exp),
+            189 => Ok(BuiltinId::IsNan),
+            190 => Ok(BuiltinId::IsInfinite),
+            191 => Ok(BuiltinId::Sign),
+            192 => Ok(BuiltinId::AssertTableEq),
+            193 => Ok(BuiltinId::Today),
+            194 => Ok(BuiltinId::DateAdd),
+            195 => Ok(BuiltinId::DateDiff),
+            196 => Ok(BuiltinId::DateTrunc),
+            197 => Ok(BuiltinId::DateExtract),
+            198 => Ok(BuiltinId::StreamAgent),
+            _ => Err(value),
+        }
+    }
 }
 
 impl BuiltinId {
@@ -823,6 +1050,20 @@ impl BuiltinId {
             "embed" => Some(BuiltinId::Embed),
             "http_request" => Some(BuiltinId::HttpRequest),
             "run_agent" => Some(BuiltinId::RunAgent),
+            "random" => Some(BuiltinId::Random),
+            "random_int" => Some(BuiltinId::RandomInt),
+            "sample" => Some(BuiltinId::Sample),
+            "exp" => Some(BuiltinId::Exp),
+            "is_nan" => Some(BuiltinId::IsNan),
+            "is_infinite" => Some(BuiltinId::IsInfinite),
+            "sign" => Some(BuiltinId::Sign),
+            "assert_table_eq" => Some(BuiltinId::AssertTableEq),
+            "today" => Some(BuiltinId::Today),
+            "date_add" => Some(BuiltinId::DateAdd),
+            "date_diff" => Some(BuiltinId::DateDiff),
+            "date_trunc" => Some(BuiltinId::DateTrunc),
+            "date_extract" | "extract" => Some(BuiltinId::DateExtract),
+            "stream_agent" => Some(BuiltinId::StreamAgent),
             _ => None,
         }
     }
@@ -1024,6 +1265,21 @@ impl BuiltinId {
             BuiltinId::Embed => "embed",
             BuiltinId::HttpRequest => "http_request",
             BuiltinId::RunAgent => "run_agent",
+            // Phase E5/E6
+            BuiltinId::Random => "random",
+            BuiltinId::RandomInt => "random_int",
+            BuiltinId::Sample => "sample",
+            BuiltinId::Exp => "exp",
+            BuiltinId::IsNan => "is_nan",
+            BuiltinId::IsInfinite => "is_infinite",
+            BuiltinId::Sign => "sign",
+            BuiltinId::AssertTableEq => "assert_table_eq",
+            BuiltinId::Today => "today",
+            BuiltinId::DateAdd => "date_add",
+            BuiltinId::DateDiff => "date_diff",
+            BuiltinId::DateTrunc => "date_trunc",
+            BuiltinId::DateExtract => "date_extract",
+            BuiltinId::StreamAgent => "stream_agent",
         }
     }
 }
@@ -1084,5 +1340,23 @@ mod tests {
             output.contains("hello world"),
             "expected 'hello world' in:\n{output}"
         );
+    }
+
+    #[test]
+    fn test_builtin_id_try_from_valid() {
+        for v in 0..=198u16 {
+            assert!(
+                BuiltinId::try_from(v).is_ok(),
+                "BuiltinId::try_from({v}) should succeed"
+            );
+        }
+        assert_eq!(BuiltinId::try_from(0u16).unwrap(), BuiltinId::Print);
+        assert_eq!(BuiltinId::try_from(198u16).unwrap(), BuiltinId::StreamAgent);
+    }
+
+    #[test]
+    fn test_builtin_id_try_from_invalid() {
+        assert_eq!(BuiltinId::try_from(199u16), Err(199u16));
+        assert_eq!(BuiltinId::try_from(65535u16), Err(65535u16));
     }
 }

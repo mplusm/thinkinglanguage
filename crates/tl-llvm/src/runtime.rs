@@ -441,7 +441,7 @@ pub extern "C" fn tl_rt_call_builtin(
     for arg in args_slice {
         vm.stack.push(arg.clone());
     }
-    match vm.call_builtin(builtin_id as u8, base, nargs as usize) {
+    match vm.call_builtin(builtin_id as u16, base, nargs as usize) {
         Ok(val) => {
             vm.stack.truncate(base);
             unsafe {
@@ -470,7 +470,7 @@ pub extern "C" fn tl_rt_make_list(vals: *const VmValue, count: i64, out: *mut Vm
         Vec::new()
     };
     unsafe {
-        out.write(VmValue::List(items));
+        out.write(VmValue::List(Box::new(items)));
     }
 }
 
@@ -491,7 +491,7 @@ pub extern "C" fn tl_rt_make_map(
         }
     }
     unsafe {
-        out.write(VmValue::Map(pairs));
+        out.write(VmValue::Map(Box::new(pairs)));
     }
 }
 

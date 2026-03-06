@@ -82,6 +82,9 @@ impl CompilerState {
     }
 
     fn alloc_register(&mut self) -> u8 {
+        if self.next_register == 255 {
+            panic!("Register overflow: function too complex (max 255 registers)");
+        }
         let r = self.next_register;
         self.next_register += 1;
         if self.next_register > self.proto.num_registers {
@@ -111,6 +114,9 @@ impl CompilerState {
 
     fn add_constant(&mut self, c: Constant) -> u16 {
         let idx = self.proto.constants.len();
+        if idx >= 65535 {
+            panic!("Constant pool overflow: too many constants (max 65535)");
+        }
         self.proto.constants.push(c);
         idx as u16
     }
@@ -126,7 +132,7 @@ impl CompilerState {
         let op = (old >> 24) as u8;
         let a = ((old >> 16) & 0xFF) as u8;
         self.proto.code[inst_pos] = encode_abx(
-            unsafe { std::mem::transmute::<u8, Op>(op) },
+            Op::try_from(op).expect("patching valid instruction"),
             a,
             offset as u16,
         );
@@ -448,6 +454,7 @@ impl Compiler {
                 try_body,
                 catch_var,
                 catch_body,
+                finally_body,
             } => {
                 // Emit TryBegin with offset to catch handler
                 let try_begin_pos = self.current().current_pos();
@@ -464,6 +471,15 @@ impl Compiler {
 
                 // Emit TryEnd
                 self.current().emit_abx(Op::TryEnd, 0, 0, 0);
+
+                // Compile finally after try (success path)
+                if let Some(finally_stmts) = &finally_body {
+                    self.begin_scope();
+                    for stmt in finally_stmts {
+                        self.compile_stmt(stmt)?;
+                    }
+                    self.end_scope();
+                }
 
                 // Jump over catch
                 let jump_over_pos = self.current().current_pos();
@@ -483,6 +499,15 @@ impl Compiler {
                     self.compile_stmt(stmt)?;
                 }
                 self.end_scope();
+
+                // Compile finally after catch (error path)
+                if let Some(finally_stmts) = &finally_body {
+                    self.begin_scope();
+                    for stmt in finally_stmts {
+                        self.compile_stmt(stmt)?;
+                    }
+                    self.end_scope();
+                }
 
                 // Patch jump over catch
                 self.current().patch_jump(jump_over_pos);
@@ -600,6 +625,7 @@ impl Compiler {
                 max_tokens,
                 base_url,
                 api_key,
+                output_format,
                 on_tool_call,
                 on_complete,
             } => self.compile_agent(
@@ -612,6 +638,7 @@ impl Compiler {
                 max_tokens,
                 base_url,
                 api_key,
+                output_format,
                 on_tool_call,
                 on_complete,
             ),
@@ -1424,6 +1451,7 @@ impl Compiler {
         max_tokens: &Option<i64>,
         base_url: &Option<String>,
         api_key: &Option<String>,
+        output_format: &Option<String>,
         on_tool_call: &Option<Vec<tl_ast::Stmt>>,
         on_complete: &Option<Vec<tl_ast::Stmt>>,
     ) -> Result<(), TlError> {
@@ -1482,6 +1510,13 @@ impl Compiler {
             config_exprs.push(tl_ast::Expr::NamedArg {
                 name: "api_key".to_string(),
                 value: Box::new(tl_ast::Expr::String(key.clone())),
+            });
+        }
+
+        if let Some(fmt) = output_format {
+            config_exprs.push(tl_ast::Expr::NamedArg {
+                name: "output_format".to_string(),
+                value: Box::new(tl_ast::Expr::String(fmt.clone())),
             });
         }
 
@@ -2034,16 +2069,9 @@ impl Compiler {
                 let end_reg = self.current().alloc_register();
                 self.compile_expr(start, start_reg)?;
                 self.compile_expr(end, end_reg)?;
-                // CallBuiltin Range with 2 args
-                self.current().emit_abc(
-                    Op::CallBuiltin,
-                    dest,
-                    BuiltinId::Range as u8,
-                    start_reg,
-                    0,
-                );
-                // Encode arg count in next instruction
-                self.current().emit_abc(Op::Move, 2, 0, 0, 0); // arg count = 2
+                // CallBuiltin Range with 2 args (ABx: dest, builtin_id; next: argc, first_arg)
+                self.current().emit_abx(Op::CallBuiltin, dest, BuiltinId::Range as u16, 0);
+                self.current().emit_abc(Op::Move, 2, start_reg, 0, 0);
                 self.current().free_register();
                 self.current().free_register();
             }
@@ -2262,9 +2290,9 @@ impl Compiler {
         }
 
         self.current()
-            .emit_abc(Op::CallBuiltin, dest, builtin_id as u8, args_start, 0);
-        // Encode arg count
-        self.current().emit_abc(Op::Move, args.len() as u8, 0, 0, 0); // arg count marker
+            .emit_abx(Op::CallBuiltin, dest, builtin_id as u16, 0);
+        // Next instruction: A=arg_count, B=first_arg_reg
+        self.current().emit_abc(Op::Move, args.len() as u8, args_start, 0, 0);
 
         for _ in args {
             self.current().free_register();
@@ -2306,6 +2334,9 @@ impl Compiler {
         "describe",
         "write_csv",
         "write_parquet",
+        "sample",
+        "window",
+        "union",
     ];
 
     fn compile_pipe(&mut self, left: &Expr, right: &Expr, dest: u8) -> Result<(), TlError> {
@@ -2465,15 +2496,9 @@ impl Compiler {
                             let r = self.current().alloc_register();
                             self.compile_expr(arg, r)?;
                         }
-                        self.current().emit_abc(
-                            Op::CallBuiltin,
-                            dest,
-                            builtin_id as u8,
-                            args_start,
-                            0,
-                        );
+                        self.current().emit_abx(Op::CallBuiltin, dest, builtin_id as u16, 0);
                         self.current()
-                            .emit_abc(Op::Move, (args.len() + 1) as u8, 0, 0, 0);
+                            .emit_abc(Op::Move, (args.len() + 1) as u8, args_start, 0, 0);
                         for _ in args {
                             self.current().free_register();
                         }
@@ -2513,8 +2538,8 @@ impl Compiler {
                 // Pipe into named function with left as only arg
                 if let Some(builtin_id) = BuiltinId::from_name(name) {
                     self.current()
-                        .emit_abc(Op::CallBuiltin, dest, builtin_id as u8, left_reg, 0);
-                    self.current().emit_abc(Op::Move, 1, 0, 0, 0);
+                        .emit_abx(Op::CallBuiltin, dest, builtin_id as u16, 0);
+                    self.current().emit_abc(Op::Move, 1, left_reg, 0, 0);
                 } else {
                     let func_reg = self.current().alloc_register();
                     let name_idx = self
@@ -2813,14 +2838,8 @@ impl Compiler {
                 // Check list length
                 let len_builtin_reg = self.current().alloc_register();
                 // Call len(subj)
-                self.current().emit_abc(
-                    Op::CallBuiltin,
-                    len_builtin_reg,
-                    BuiltinId::Len as u8,
-                    subj_reg,
-                    0,
-                );
-                self.current().emit_abc(Op::Move, 1, 0, 0, 0); // arg count = 1
+                self.current().emit_abx(Op::CallBuiltin, len_builtin_reg, BuiltinId::Len as u16, 0);
+                self.current().emit_abc(Op::Move, 1, subj_reg, 0, 0); // arg count = 1
 
                 let expected_len_reg = self.current().alloc_register();
                 let len_val = elements.len() as i64;
@@ -3087,8 +3106,8 @@ impl Compiler {
                 }
                 // Convert to string via CallBuiltin Str
                 self.current()
-                    .emit_abc(Op::CallBuiltin, dest, BuiltinId::Str as u8, var_reg, 0);
-                self.current().emit_abc(Op::Move, 1, 0, 0, 0); // 1 arg
+                    .emit_abx(Op::CallBuiltin, dest, BuiltinId::Str as u16, 0);
+                self.current().emit_abc(Op::Move, 1, var_reg, 0, 0); // 1 arg
                 self.current().free_register(); // var_reg
             }
         }

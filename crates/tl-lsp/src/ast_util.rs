@@ -149,7 +149,52 @@ pub fn find_ident_at_offset(source: &str, offset: usize) -> Option<(String, usiz
     Some((name, start, end))
 }
 
+/// Find all occurrences of a name in source text (simple text-based search).
+/// Returns byte offset pairs (start, end) for each occurrence that is an identifier match.
+pub fn find_all_references(source: &str, name: &str) -> Vec<(usize, usize)> {
+    let mut refs = Vec::new();
+    let is_ident_char = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let bytes = source.as_bytes();
+    let name_bytes = name.as_bytes();
+    let name_len = name_bytes.len();
+
+    let mut i = 0;
+    while i + name_len <= bytes.len() {
+        if &bytes[i..i + name_len] == name_bytes {
+            // Check word boundaries
+            let before_ok = i == 0 || !is_ident_char(bytes[i - 1]);
+            let after_ok = i + name_len >= bytes.len() || !is_ident_char(bytes[i + name_len]);
+            if before_ok && after_ok {
+                refs.push((i, i + name_len));
+                i += name_len;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    refs
+}
+
 /// Collect names of parameters from function declarations in scope up to an offset.
+#[cfg(test)]
+mod tests_refs {
+    use super::*;
+
+    #[test]
+    fn test_find_all_references_simple() {
+        let source = "let x = 1\nlet y = x + 2\nprint(x)";
+        let refs = find_all_references(source, "x");
+        assert_eq!(refs.len(), 3, "Should find 3 occurrences of x");
+    }
+
+    #[test]
+    fn test_find_all_references_no_partial_match() {
+        let source = "let xyz = 1\nlet x = 2";
+        let refs = find_all_references(source, "x");
+        assert_eq!(refs.len(), 1, "Should only find whole-word 'x', not 'xyz'");
+    }
+}
+
 pub fn collect_params_at_offset(program: &Program, offset: usize) -> Vec<String> {
     let mut params = Vec::new();
     for stmt in &program.statements {

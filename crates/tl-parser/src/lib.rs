@@ -25,11 +25,31 @@ fn make_stmt(kind: StmtKind, start: usize, end: usize) -> Stmt {
 pub struct Parser {
     tokens: Vec<SpannedToken>,
     pos: usize,
+    depth: usize,
 }
+
+const MAX_PARSER_DEPTH: usize = 256;
 
 impl Parser {
     pub fn new(tokens: Vec<SpannedToken>) -> Self {
-        Self { tokens, pos: 0 }
+        Self { tokens, pos: 0, depth: 0 }
+    }
+
+    fn enter_depth(&mut self) -> Result<(), TlError> {
+        self.depth += 1;
+        if self.depth > MAX_PARSER_DEPTH {
+            Err(TlError::Parser(ParserError {
+                message: "Maximum parser nesting depth (256) exceeded".to_string(),
+                span: Span::new(0, 0),
+                hint: None,
+            }))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn leave_depth(&mut self) {
+        self.depth -= 1;
     }
 
     /// Parse a complete program
@@ -78,14 +98,23 @@ impl Parser {
     // ── Helpers ──────────────────────────────────────────────
 
     fn peek(&self) -> &Token {
+        if self.pos >= self.tokens.len() {
+            return &Token::None_;
+        }
         &self.tokens[self.pos].token
     }
 
     fn peek_span(&self) -> Span {
+        if self.pos >= self.tokens.len() {
+            return Span::new(0, 0);
+        }
         self.tokens[self.pos].span
     }
 
     fn previous_span(&self) -> Span {
+        if self.tokens.is_empty() {
+            return Span::new(0, 0);
+        }
         if self.pos > 0 {
             self.tokens[self.pos - 1].span
         } else {
@@ -94,6 +123,10 @@ impl Parser {
     }
 
     fn advance(&mut self) -> &SpannedToken {
+        if self.pos >= self.tokens.len() {
+            // Return last token (EOF sentinel) if past end
+            return self.tokens.last().expect("token list must not be empty");
+        }
         let tok = &self.tokens[self.pos];
         if !self.is_at_end() {
             self.pos += 1;
@@ -102,6 +135,9 @@ impl Parser {
     }
 
     fn is_at_end(&self) -> bool {
+        if self.tokens.is_empty() {
+            return true;
+        }
         // The tokenizer always appends a Token::None_ (EOF) sentinel as the last token.
         // Check position rather than token value so the `none` keyword works correctly.
         self.pos >= self.tokens.len() - 1
@@ -881,6 +917,7 @@ impl Parser {
         let mut max_tokens = None;
         let mut base_url = None;
         let mut api_key = None;
+        let mut output_format = None;
         let mut on_tool_call = None;
         let mut on_complete = None;
 
@@ -1012,6 +1049,21 @@ impl Parser {
                     }
                     self.match_token(&Token::Comma);
                 }
+                Token::Ident(s) if s == "output_format" => {
+                    self.advance();
+                    self.expect(&Token::Colon)?;
+                    if let Token::String(s) = self.peek().clone() {
+                        output_format = Some(s);
+                        self.advance();
+                    } else {
+                        return Err(TlError::Parser(ParserError {
+                            message: "Expected string for output_format".to_string(),
+                            span: self.peek_span(),
+                            hint: None,
+                        }));
+                    }
+                    self.match_token(&Token::Comma);
+                }
                 Token::Ident(s) if s == "on_tool_call" => {
                     self.advance();
                     self.expect(&Token::LBrace)?;
@@ -1058,6 +1110,7 @@ impl Parser {
                 max_tokens,
                 base_url,
                 api_key,
+                output_format,
                 on_tool_call,
                 on_complete,
             },
@@ -1505,6 +1558,13 @@ impl Parser {
     // ── Expression Parsing (Pratt / precedence climbing) ─────
 
     fn parse_expression(&mut self) -> Result<Expr, TlError> {
+        self.enter_depth()?;
+        let result = self.parse_expression_inner();
+        self.leave_depth();
+        result
+    }
+
+    fn parse_expression_inner(&mut self) -> Result<Expr, TlError> {
         let expr = self.parse_pipe()?;
         // Assignment: target = value
         if self.match_token(&Token::Assign) {
@@ -2688,12 +2748,26 @@ impl Parser {
             catch_body.push(self.parse_statement()?);
         }
         self.expect(&Token::RBrace)?;
+        // Parse optional finally block
+        let finally_body = if self.check(&Token::Finally) {
+            self.advance(); // consume 'finally'
+            self.expect(&Token::LBrace)?;
+            let mut body = Vec::new();
+            while !self.check(&Token::RBrace) && !self.is_at_end() {
+                body.push(self.parse_statement()?);
+            }
+            self.expect(&Token::RBrace)?;
+            Some(body)
+        } else {
+            None
+        };
         let end = self.previous_span().end;
         Ok(make_stmt(
             StmtKind::TryCatch {
                 try_body,
                 catch_var,
                 catch_body,
+                finally_body,
             },
             start,
             end,
@@ -3335,6 +3409,7 @@ mod tests {
             try_body,
             catch_var,
             catch_body,
+            ..
         } = &program.statements[0].kind
         {
             assert_eq!(try_body.len(), 1);
