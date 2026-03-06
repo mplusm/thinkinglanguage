@@ -1,6 +1,6 @@
 # Machine Learning
 
-TL provides built-in support for model training (via linfa), ONNX inference (via ort), embeddings, and LLM API access.
+TL provides built-in support for model training (via linfa), ONNX inference (via ort), embeddings, LLM API access, and [AI agents with tool-use](agents.md).
 
 ## Model Training
 
@@ -32,21 +32,47 @@ This enables integration with models trained in PyTorch, TensorFlow, scikit-lear
 
 ## Embeddings
 
-Generate vector embeddings from text:
+Generate vector embeddings from text using the OpenAI embeddings API:
 
 ```tl
-let emb = embed(text, model: "default")
+let emb = embed("Hello, world!")                          // default model
+let emb = embed("Hello, world!", "text-embedding-3-small") // explicit model
+```
+
+Requires `TL_OPENAI_KEY` environment variable. Returns a tensor (1D vector).
+
+Use `similarity()` to compare embeddings:
+
+```tl
+let a = embed("machine learning")
+let b = embed("artificial intelligence")
+println(similarity(a, b))   // ~0.85 (high similarity)
 ```
 
 ## LLM API
 
-Call large language model APIs:
+Call large language model APIs directly:
 
 ```tl
-let response = llm(prompt, model: "gpt-4")
+// Single-shot completion (defaults to claude-sonnet-4-20250514)
+let response = ai_complete("Explain quantum computing in one sentence")
+
+// With a specific model
+let response = ai_complete("Hello", "gpt-4o-mini")
+
+// Multi-turn chat
+let response = ai_chat("gpt-4o", "You are a tutor.", [
+    ["user", "What is 2+2?"],
+    ["assistant", "4"],
+    ["user", "And 3+3?"]
+])
 ```
 
-Configure API keys via environment variables.
+Configure API keys via environment variables: `TL_OPENAI_KEY`, `TL_ANTHROPIC_KEY`, or `TL_LLM_KEY`.
+
+## AI Agents
+
+For autonomous AI agents with tool-use, multi-turn conversations, and lifecycle hooks, see the [Agent Framework Guide](agents.md).
 
 ## Model Registry
 

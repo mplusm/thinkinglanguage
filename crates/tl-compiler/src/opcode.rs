@@ -199,6 +199,10 @@ pub enum Op {
     MakeRef = 65,
     /// ParallelFor: A = list reg, B = body prototype constant, C = unused
     ParallelFor = 66,
+
+    // ── Phase 34: AI Agent Framework ──
+    /// AgentExec: A = dest, B = name constant, C = config constant
+    AgentExec = 67,
 }
 
 impl Op {
@@ -272,6 +276,7 @@ impl Op {
             Op::LoadMoved => "LoadMoved",
             Op::MakeRef => "MakeRef",
             Op::ParallelFor => "ParallelFor",
+            Op::AgentExec => "AgentExec",
         }
     }
 }

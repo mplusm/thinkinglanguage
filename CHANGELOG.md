@@ -40,7 +40,7 @@ All notable changes to ThinkingLanguage are documented here, organized by implem
 - Tensor type backed by ndarray
 - ML model training via linfa (linear regression, logistic regression, random forest, kmeans)
 - ONNX inference via ort
-- Embeddings and LLM API integration
+- Embeddings and LLM API integration (`ai_complete`, `ai_chat`)
 - Model registry for storing and retrieving trained models
 
 ### Phase 4 — Streaming & Pipelines
@@ -312,3 +312,35 @@ All notable changes to ThinkingLanguage are documented here, organized by implem
   - ratatui 0.29 + crossterm 0.28
   - Persistent VM state across cells
   - Normal/Edit modes
+
+### Phase 34 — AI Agent Framework
+
+- First-class `agent` language construct for defining AI agents
+  - Declarative syntax: `agent name { model: "...", tools { ... }, max_turns: N }`
+  - Tool definitions with OpenAI function-calling JSON schema format
+  - Lifecycle hooks: `on_tool_call { ... }` and `on_complete { ... }`
+- Multi-provider LLM support
+  - Automatic provider detection from model name (Claude → Anthropic, others → OpenAI)
+  - `base_url` field for any OpenAI-compatible endpoint (Ollama, Azure, Together, etc.)
+  - `TL_LLM_KEY`, `TL_ANTHROPIC_KEY`, `TL_OPENAI_KEY` env vars with priority resolution
+- Tool-use / function-calling in LLM API
+  - `LlmResponse::Text` / `LlmResponse::ToolUse` structured responses
+  - `ToolCall` type with id, name, and JSON input
+  - `chat_with_tools()` function handling both Anthropic and OpenAI tool protocols
+  - `format_tool_result_messages()` for provider-specific tool result formatting
+- `run_agent(agent, message)` builtin for executing the agent loop
+  - Automatic tool dispatch: looks up TL functions by name, converts JSON args
+  - Multi-turn conversation management
+  - Returns `{response: string, turns: int}` map
+- `http_request(method, url, headers, body)` builtin
+  - Supports GET, POST, PUT, DELETE, PATCH, HEAD
+  - Returns `{status: int, body: string}`
+- `embed(text, model?, api_key?)` builtin
+  - OpenAI embeddings API (`text-embedding-3-small` default)
+  - Returns tensor
+- `Expr::Map` / `parse_map_literal()` — JSON-like map syntax in tool definitions
+  - Keyword-as-key support (`type`, `model`, etc. as map keys)
+- New opcode: `Op::AgentExec = 67`
+- New builtins: `BuiltinId::Embed = 182`, `HttpRequest = 183`, `RunAgent = 184`
+- New value types: `VmValue::AgentDef`, `Value::Agent`
+- WASM: agent syntax parses but execution returns descriptive errors

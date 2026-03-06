@@ -3065,79 +3065,88 @@ let graph = lineage(daily_etl)
 
 ## 20. LLM & GenAI Integration
 
-### 20.1 First-Class LLM Support
+### 20.1 LLM API Functions
 
-TL treats LLM interactions as typed, auditable operations — not opaque string concatenation:
+TL provides built-in functions for LLM interaction:
 
 ```tl
-use ai.llm.{prompt, chat, complete}
+// Single-shot completion (defaults to claude-sonnet-4-20250514)
+let summary = ai_complete("Summarize this: some long text here")
 
-// Simple completion
-let summary = prompt("Summarize this data: {table_preview(users, rows: 5)}")
-    .model("claude-sonnet")
-    .max_tokens(200)
-    .temperature(0.3)
-    .await
+// With a specific model
+let summary = ai_complete("Summarize this text", "gpt-4o-mini")
 
-// Structured output (type-safe LLM responses)
-schema Sentiment {
-    text: string
-    sentiment: string       // "positive" | "negative" | "neutral"
-    confidence: float64
-    reasoning: string
-}
-
-let analyzed = reviews
-    |> with {
-        analysis = prompt("Analyze sentiment: {text}")
-            .model("claude-haiku")
-            .output_schema(Sentiment)          // Enforces structured JSON output
-            .await
-    }
-    |> with {
-        sentiment = analysis.sentiment
-        confidence = analysis.confidence
-    }
-
-// Chat with context
-let assistant = chat("claude-sonnet")
-    .system("You are a data quality analyst.")
-    .context(table_preview(users, rows: 20))
-
-let insights = assistant.send("What data quality issues do you see?").await
+// Multi-turn chat
+let response = ai_chat("gpt-4o", "You are a data analyst.", [
+    ["user", "What patterns do you see in this data?"],
+    ["assistant", "I notice several trends..."],
+    ["user", "Can you elaborate on the first one?"]
+])
 ```
 
-### 20.2 Embedding & Vector Operations
+API keys are configured via environment variables: `TL_OPENAI_KEY`, `TL_ANTHROPIC_KEY`, or `TL_LLM_KEY`.
+
+### 20.2 AI Agents
+
+TL has a first-class `agent` construct for building autonomous AI agents with tool-use:
 
 ```tl
-use ai.embeddings.{embed, vector_store}
+fn search(query) {
+    let resp = http_request("GET", "https://api.example.com/search?q=" + query, none, none)
+    resp.body
+}
 
-// Generate embeddings
-let products_with_embeddings = products
-    |> with {
-        embedding = embed("{name} {description}", model: "sentence-transformer")
-    }
+agent research_bot {
+    model: "gpt-4o",
+    system: "You are a research assistant. Use tools to find information.",
+    tools {
+        search: {
+            description: "Search the web for information",
+            parameters: {
+                type: "object",
+                properties: {
+                    query: { type: "string", description: "Search query" }
+                },
+                required: ["query"]
+            }
+        }
+    },
+    max_turns: 5
+}
 
-// Store in vector database
-let store = vector_store("chromadb://localhost:8000/products")
-load products_with_embeddings -> store
+let result = run_agent(research_bot, "What is quantum computing?")
+println(result.response)      // agent's final text answer
+println(result.turns)          // number of turns used
+```
 
-// Semantic search
-let similar = store.query(
-    embed("comfortable running shoes"),
-    top_k: 10,
-    filter: category == "footwear"
+Agents support any OpenAI-compatible endpoint via `base_url`, lifecycle hooks (`on_tool_call`, `on_complete`), and automatic provider detection. See Phase 34 for full details.
+
+### 20.3 Embedding & Vector Operations
+
+```tl
+// Generate embeddings (OpenAI API, returns tensor)
+let emb = embed("machine learning is fascinating")
+
+// Similarity search
+let doc1 = embed("Python is great for data science")
+let doc2 = embed("Rust is great for systems programming")
+let query = embed("What language for AI?")
+
+println(similarity(query, doc1))   // higher similarity
+println(similarity(query, doc2))   // lower similarity
+```
+
+### 20.4 HTTP Requests
+
+Full HTTP control for building tool functions and API integrations:
+
+```tl
+let resp = http_request("POST", "https://api.example.com/data",
+    {"Content-Type": "application/json", "Authorization": "Bearer token"},
+    json_stringify({"query": "test"})
 )
-
-// RAG (Retrieval-Augmented Generation)
-let context = store.query(embed(user_question), top_k: 5)
-let answer = prompt("""
-    Answer the question based on this context:
-    Context: {context}
-    Question: {user_question}
-""")
-.model("claude-sonnet")
-.await
+println(resp.status)   // 200
+let data = json_parse(resp.body)
 ```
 
 ---
@@ -3958,6 +3967,104 @@ tl notebook analysis.tlnb --export
 | `q` | Quit |
 
 In Edit mode: type normally, `Esc` to save, `Ctrl-C` to cancel.
+
+## Phase 34: AI Agent Framework ✅
+
+First-class `agent` language construct for building AI agents with tool-use, multi-provider LLM support, and lifecycle hooks.
+
+### Agent Definition
+
+```tl
+fn search(query) {
+    let resp = http_request("GET", "https://api.example.com/search?q=" + query, none, none)
+    resp.body
+}
+
+agent research_bot {
+    model: "gpt-4o",
+    system: "You are a research assistant.",
+    tools {
+        search: {
+            description: "Search for information",
+            parameters: {
+                type: "object",
+                properties: {
+                    query: { type: "string", description: "Search query" }
+                },
+                required: ["query"]
+            }
+        }
+    },
+    max_turns: 5,
+    on_tool_call {
+        println("[LOG] Tool: " + tool_name + " -> " + tool_result)
+    }
+    on_complete {
+        println("Done in " + string(result.turns) + " turns")
+    }
+}
+
+let result = run_agent(research_bot, "What is the capital of France?")
+println(result.response)
+```
+
+### Agent Syntax
+
+```
+agent <name> {
+    model: <string>,              // required — LLM model identifier
+    system: <string>,             // optional — system prompt
+    tools { ... },                // optional — tool definitions (OpenAI function-calling schema)
+    max_turns: <int>,             // optional — default 10
+    temperature: <float>,         // optional
+    max_tokens: <int>,            // optional
+    base_url: <string>,           // optional — any OpenAI-compatible endpoint
+    api_key: <string>,            // optional — overrides env vars
+    on_tool_call { ... }          // optional — runs after each tool call
+    on_complete { ... }           // optional — runs when agent produces final response
+}
+```
+
+### Multi-Provider Support
+
+Provider auto-detected from model name: `"claude*"` → Anthropic API, all others → OpenAI Chat Completions API. Custom endpoints via `base_url` always use OpenAI-compatible protocol.
+
+```tl
+// Local Ollama
+agent local { model: "llama3", base_url: "http://localhost:11434/v1" }
+
+// Any OpenAI-compatible provider
+agent custom { model: "mixtral", base_url: "https://api.together.xyz/v1", api_key: "..." }
+```
+
+### New Builtins
+
+| Builtin | Signature | Description |
+|---------|-----------|-------------|
+| `run_agent` | `run_agent(agent, message) -> map` | Execute agent loop, returns `{response, turns}` |
+| `http_request` | `http_request(method, url, headers, body) -> map` | HTTP client, returns `{status, body}` |
+| `embed` | `embed(text, model?, api_key?) -> tensor` | OpenAI embeddings API |
+
+### Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `TL_LLM_KEY` | Generic API key (highest priority) |
+| `TL_ANTHROPIC_KEY` | Anthropic-specific API key |
+| `TL_OPENAI_KEY` | OpenAI-specific API key (also used for embeddings) |
+| `TL_LLM_BASE_URL` | Default base URL for all LLM calls |
+
+### Implementation
+
+- Lexer: `Token::Agent` keyword
+- AST: `StmtKind::Agent` with 12 fields including lifecycle hooks
+- Parser: `parse_agent()`, `parse_map_literal()` for JSON-like map syntax in tool definitions
+- `tl-stream`: `AgentDef`, `AgentTool` structs
+- `tl-ai`: `LlmResponse`, `ToolCall`, `chat_with_tools()`, `format_tool_result_messages()`
+- Compiler: `compile_agent()` → `Op::AgentExec = 67`, hooks compiled as functions via `compile_agent_hook()`
+- VM: `handle_agent_exec()`, `exec_agent_loop()`, `execute_tool_call()` — `BuiltinId::RunAgent = 184`
+- Interpreter: `Value::Agent`, `exec_agent()`, `exec_agent_loop()` with tool dispatch
+- WASM: syntax parses but execution returns descriptive error
 
 ---
 

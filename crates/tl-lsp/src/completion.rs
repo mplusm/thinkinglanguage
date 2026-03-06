@@ -201,6 +201,7 @@ pub fn provide_completions(
                 DefKind::Trait => CompletionItemKind::INTERFACE,
                 DefKind::Schema => CompletionItemKind::STRUCT,
                 DefKind::Pipeline => CompletionItemKind::FUNCTION,
+                DefKind::Agent => CompletionItemKind::FUNCTION,
                 DefKind::Test => CompletionItemKind::FUNCTION,
             };
             // Avoid duplicates with builtins

@@ -1578,6 +1578,18 @@ impl Vm {
                 // Currently compiled as regular ForIter, this opcode is reserved
                 // for future rayon-backed parallel iteration.
             }
+            Op::AgentExec => {
+                #[cfg(feature = "native")]
+                {
+                    let result = self.handle_agent_exec(frame_idx, b, c)?;
+                    self.stack[base + a as usize] = result;
+                }
+                #[cfg(not(feature = "native"))]
+                {
+                    let _ = (a, b, c, frame_idx);
+                    return Err(runtime_err("Agents not available in WASM".to_string()));
+                }
+            }
         }
         Ok(None)
     }
@@ -5260,6 +5272,112 @@ impl Vm {
             BuiltinId::GpuBatchPredict => Err(runtime_err(
                 "GPU operations not available. Build with --features gpu",
             )),
+            // Phase 34: AI Agent Framework
+            #[cfg(feature = "native")]
+            BuiltinId::Embed => {
+                if args.is_empty() {
+                    return Err(runtime_err("embed() requires a text argument"));
+                }
+                let text = match &args[0] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("embed() expects a string")),
+                };
+                let model = args
+                    .get(1)
+                    .and_then(|v| match v {
+                        VmValue::String(s) => Some(s.to_string()),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| "text-embedding-3-small".to_string());
+                let api_key = args
+                    .get(2)
+                    .and_then(|v| match v {
+                        VmValue::String(s) => Some(s.to_string()),
+                        _ => None,
+                    })
+                    .or_else(|| std::env::var("TL_OPENAI_KEY").ok())
+                    .ok_or_else(|| {
+                        runtime_err(
+                            "embed() requires an API key. Set TL_OPENAI_KEY or pass as 3rd arg",
+                        )
+                    })?;
+                let tensor =
+                    tl_ai::embed::embed_api(&text, "openai", &model, &api_key)
+                        .map_err(|e| runtime_err(format!("embed error: {e}")))?;
+                Ok(VmValue::Tensor(Arc::new(tensor)))
+            }
+            #[cfg(not(feature = "native"))]
+            BuiltinId::Embed => Err(runtime_err("embed() not available in WASM")),
+            #[cfg(feature = "native")]
+            BuiltinId::HttpRequest => {
+                if args.len() < 2 {
+                    return Err(runtime_err(
+                        "http_request(method, url, headers?, body?) expects at least 2 args",
+                    ));
+                }
+                let method = match &args[0] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("http_request() method must be a string")),
+                };
+                let url = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("http_request() url must be a string")),
+                };
+                let client = reqwest::blocking::Client::new();
+                let mut builder = match method.to_uppercase().as_str() {
+                    "GET" => client.get(&url),
+                    "POST" => client.post(&url),
+                    "PUT" => client.put(&url),
+                    "DELETE" => client.delete(&url),
+                    "PATCH" => client.patch(&url),
+                    "HEAD" => client.head(&url),
+                    _ => return Err(runtime_err(format!("Unsupported HTTP method: {method}"))),
+                };
+                // Set headers if provided
+                if let Some(VmValue::Map(headers)) = args.get(2) {
+                    for (key, val) in headers {
+                        if let VmValue::String(v) = val {
+                            builder = builder.header(key.as_ref(), v.as_ref());
+                        }
+                    }
+                }
+                // Set body if provided
+                if let Some(VmValue::String(body)) = args.get(3) {
+                    builder = builder.body(body.as_ref().to_string());
+                }
+                let resp = builder
+                    .send()
+                    .map_err(|e| runtime_err(format!("HTTP error: {e}")))?;
+                let status = resp.status().as_u16() as i64;
+                let body = resp
+                    .text()
+                    .map_err(|e| runtime_err(format!("HTTP response error: {e}")))?;
+                Ok(VmValue::Map(vec![
+                    (Arc::from("status"), VmValue::Int(status)),
+                    (Arc::from("body"), VmValue::String(Arc::from(body.as_str()))),
+                ]))
+            }
+            #[cfg(not(feature = "native"))]
+            BuiltinId::HttpRequest => Err(runtime_err("http_request() not available in WASM")),
+            #[cfg(feature = "native")]
+            BuiltinId::RunAgent => {
+                if args.len() < 2 {
+                    return Err(runtime_err(
+                        "run_agent(agent, message) expects 2 arguments",
+                    ));
+                }
+                let agent_def = match &args[0] {
+                    VmValue::AgentDef(def) => def.clone(),
+                    _ => return Err(runtime_err("run_agent() first arg must be an agent")),
+                };
+                let message = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("run_agent() second arg must be a string")),
+                };
+                self.exec_agent_loop(&agent_def, &message)
+            }
+            #[cfg(not(feature = "native"))]
+            BuiltinId::RunAgent => Err(runtime_err("run_agent() not available in WASM")),
         }
     }
 
@@ -5561,6 +5679,397 @@ impl Vm {
 
         self.output.push(format!("Stream '{}' declared", name));
         Ok(VmValue::StreamDef(Arc::new(def)))
+    }
+
+    #[cfg(feature = "native")]
+    fn handle_agent_exec(
+        &mut self,
+        frame_idx: usize,
+        name_const: u8,
+        config_const: u8,
+    ) -> Result<VmValue, TlError> {
+        let frame = &self.frames[frame_idx];
+        let name = match &frame.prototype.constants[name_const as usize] {
+            Constant::String(s) => s.to_string(),
+            _ => return Err(runtime_err("Expected string constant for agent name")),
+        };
+
+        let mut model = String::new();
+        let mut system_prompt = None;
+        let mut max_turns = 10u32;
+        let mut temperature = None;
+        let mut max_tokens = None;
+        let mut base_url = None;
+        let mut api_key = None;
+        let mut tools = Vec::new();
+
+        if let Constant::AstExprList(args) =
+            &frame.prototype.constants[config_const as usize]
+        {
+            for arg in args {
+                if let AstExpr::NamedArg {
+                    name: key,
+                    value,
+                } = arg
+                {
+                    if let Some(tool_name) = key.strip_prefix("tool:") {
+                        // Tool definition — extract description and parameters from map expr
+                        let (desc, params) = Self::extract_tool_from_ast(value);
+                        tools.push(tl_stream::AgentTool {
+                            name: tool_name.to_string(),
+                            description: desc,
+                            parameters: params,
+                        });
+                    } else {
+                        match key.as_str() {
+                            "model" => {
+                                if let AstExpr::String(s) = value.as_ref() {
+                                    model = s.clone();
+                                }
+                            }
+                            "system" => {
+                                if let AstExpr::String(s) = value.as_ref() {
+                                    system_prompt = Some(s.clone());
+                                }
+                            }
+                            "max_turns" => {
+                                if let AstExpr::Int(n) = value.as_ref() {
+                                    max_turns = *n as u32;
+                                }
+                            }
+                            "temperature" => {
+                                if let AstExpr::Float(f) = value.as_ref() {
+                                    temperature = Some(*f);
+                                }
+                            }
+                            "max_tokens" => {
+                                if let AstExpr::Int(n) = value.as_ref() {
+                                    max_tokens = Some(*n as u32);
+                                }
+                            }
+                            "base_url" => {
+                                if let AstExpr::String(s) = value.as_ref() {
+                                    base_url = Some(s.clone());
+                                }
+                            }
+                            "api_key" => {
+                                if let AstExpr::String(s) = value.as_ref() {
+                                    api_key = Some(s.clone());
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+
+        let def = tl_stream::AgentDef {
+            name: name.clone(),
+            model,
+            system_prompt,
+            tools,
+            max_turns,
+            temperature,
+            max_tokens,
+            base_url,
+            api_key,
+        };
+
+        Ok(VmValue::AgentDef(Arc::new(def)))
+    }
+
+    #[cfg(feature = "native")]
+    fn extract_tool_from_ast(expr: &AstExpr) -> (String, serde_json::Value) {
+        let mut desc = String::new();
+        let mut params = serde_json::Value::Object(serde_json::Map::new());
+        if let AstExpr::Map(pairs) = expr {
+            for (key_expr, val_expr) in pairs {
+                if let AstExpr::Ident(key) | AstExpr::String(key) = key_expr {
+                    match key.as_str() {
+                        "description" => {
+                            if let AstExpr::String(s) = val_expr {
+                                desc = s.clone();
+                            }
+                        }
+                        "parameters" => {
+                            params = Self::ast_to_json(val_expr);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        (desc, params)
+    }
+
+    #[cfg(feature = "native")]
+    fn ast_to_json(expr: &AstExpr) -> serde_json::Value {
+        match expr {
+            AstExpr::String(s) => serde_json::Value::String(s.clone()),
+            AstExpr::Int(n) => serde_json::json!(*n),
+            AstExpr::Float(f) => serde_json::json!(*f),
+            AstExpr::Bool(b) => serde_json::Value::Bool(*b),
+            AstExpr::None => serde_json::Value::Null,
+            AstExpr::List(items) => {
+                serde_json::Value::Array(items.iter().map(Self::ast_to_json).collect())
+            }
+            AstExpr::Map(pairs) => {
+                let mut map = serde_json::Map::new();
+                for (k, v) in pairs {
+                    let key = match k {
+                        AstExpr::String(s) | AstExpr::Ident(s) => s.clone(),
+                        _ => format!("{k:?}"),
+                    };
+                    map.insert(key, Self::ast_to_json(v));
+                }
+                serde_json::Value::Object(map)
+            }
+            _ => serde_json::Value::Null,
+        }
+    }
+
+    #[cfg(feature = "native")]
+    fn exec_agent_loop(
+        &mut self,
+        agent_def: &tl_stream::AgentDef,
+        user_message: &str,
+    ) -> Result<VmValue, TlError> {
+        use tl_ai::{LlmResponse, chat_with_tools, format_tool_result_messages};
+
+        let model = &agent_def.model;
+        let system = agent_def.system_prompt.as_deref();
+        let base_url = agent_def.base_url.as_deref();
+        let api_key = agent_def.api_key.as_deref();
+
+        let provider = if model.starts_with("claude") {
+            "anthropic"
+        } else {
+            "openai"
+        };
+
+        // Build tools JSON in OpenAI format
+        let tools_json: Vec<serde_json::Value> = agent_def
+            .tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters
+                    }
+                })
+            })
+            .collect();
+
+        let mut messages: Vec<serde_json::Value> = vec![serde_json::json!({
+            "role": "user",
+            "content": user_message
+        })];
+
+        for turn in 0..agent_def.max_turns {
+            let response = chat_with_tools(
+                model,
+                system,
+                &messages,
+                &tools_json,
+                base_url,
+                api_key,
+            )
+            .map_err(|e| runtime_err(format!("Agent LLM error: {e}")))?;
+
+            match response {
+                LlmResponse::Text(text) => {
+                    // Agent completed — return result map
+                    let result = VmValue::Map(vec![
+                        (Arc::from("response"), VmValue::String(Arc::from(text.as_str()))),
+                        (Arc::from("turns"), VmValue::Int(turn as i64 + 1)),
+                    ]);
+
+                    // Call on_complete lifecycle hook if defined
+                    let hook_name = format!("__agent_{}_on_complete__", agent_def.name);
+                    if let Some(hook) = self.globals.get(&hook_name).cloned() {
+                        let _ = self.call_value(hook, &[result.clone()]);
+                    }
+
+                    return Ok(result);
+                }
+                LlmResponse::ToolUse(tool_calls) => {
+                    // Add assistant message with tool calls for context
+                    let tc_json: Vec<serde_json::Value> = tool_calls
+                        .iter()
+                        .map(|tc| {
+                            serde_json::json!({
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.name,
+                                    "arguments": serde_json::to_string(&tc.input).unwrap_or_default()
+                                }
+                            })
+                        })
+                        .collect();
+                    messages.push(serde_json::json!({
+                        "role": "assistant",
+                        "tool_calls": tc_json
+                    }));
+
+                    // Execute each tool call
+                    let mut results: Vec<(String, String)> = Vec::new();
+                    for tc in &tool_calls {
+                        let result_str = self.execute_tool_call(&tc.name, &tc.input)?;
+
+                        // Call on_tool_call lifecycle hook if defined
+                        let hook_name = format!("__agent_{}_on_tool_call__", agent_def.name);
+                        if let Some(hook) = self.globals.get(&hook_name).cloned() {
+                            let hook_args = vec![
+                                VmValue::String(Arc::from(tc.name.as_str())),
+                                self.json_value_to_vm(&tc.input),
+                                VmValue::String(Arc::from(result_str.as_str())),
+                            ];
+                            let _ = self.call_value(hook, &hook_args);
+                        }
+
+                        results.push((tc.name.clone(), result_str));
+                    }
+
+                    // Format tool results and add to messages
+                    let result_msgs =
+                        format_tool_result_messages(provider, &tool_calls, &results);
+                    messages.extend(result_msgs);
+                }
+            }
+        }
+
+        Err(runtime_err(format!(
+            "Agent '{}' exceeded max_turns ({})",
+            agent_def.name, agent_def.max_turns
+        )))
+    }
+
+    #[cfg(feature = "native")]
+    fn execute_tool_call(
+        &mut self,
+        tool_name: &str,
+        input: &serde_json::Value,
+    ) -> Result<String, TlError> {
+        // Look up the tool function in globals
+        let func = self
+            .globals
+            .get(tool_name)
+            .ok_or_else(|| {
+                runtime_err(format!("Agent tool function '{tool_name}' not found"))
+            })?
+            .clone();
+
+        // Convert JSON args to VmValues
+        let args = self.json_to_vm_args(input);
+
+        // Call the function using call_value
+        let result = self.call_value(func, &args)?;
+
+        // Convert result to string for the LLM
+        Ok(format!("{result}"))
+    }
+
+    #[cfg(feature = "native")]
+    fn json_to_vm_args(&self, input: &serde_json::Value) -> Vec<VmValue> {
+        match input {
+            serde_json::Value::Object(map) => {
+                // Pass values in order as positional args
+                map.values().map(|v| self.json_value_to_vm(v)).collect()
+            }
+            serde_json::Value::Array(arr) => {
+                arr.iter().map(|v| self.json_value_to_vm(v)).collect()
+            }
+            _ => vec![self.json_value_to_vm(input)],
+        }
+    }
+
+    #[cfg(feature = "native")]
+    fn json_value_to_vm(&self, val: &serde_json::Value) -> VmValue {
+        match val {
+            serde_json::Value::String(s) => VmValue::String(Arc::from(s.as_str())),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    VmValue::Int(i)
+                } else if let Some(f) = n.as_f64() {
+                    VmValue::Float(f)
+                } else {
+                    VmValue::None
+                }
+            }
+            serde_json::Value::Bool(b) => VmValue::Bool(*b),
+            serde_json::Value::Null => VmValue::None,
+            serde_json::Value::Array(arr) => {
+                VmValue::List(arr.iter().map(|v| self.json_value_to_vm(v)).collect())
+            }
+            serde_json::Value::Object(map) => {
+                let pairs: Vec<(Arc<str>, VmValue)> = map
+                    .iter()
+                    .map(|(k, v)| (Arc::from(k.as_str()), self.json_value_to_vm(v)))
+                    .collect();
+                VmValue::Map(pairs)
+            }
+        }
+    }
+
+    #[cfg(feature = "native")]
+    fn call_value(
+        &mut self,
+        func: VmValue,
+        args: &[VmValue],
+    ) -> Result<VmValue, TlError> {
+        match &func {
+            VmValue::Function(_) => {
+                // Set up a synthetic call: push args to stack, do_call
+                let save_len = self.stack.len();
+                let func_slot = save_len;
+                let _args_start = func_slot + 1;
+                self.stack.push(func.clone());
+                for arg in args {
+                    self.stack.push(arg.clone());
+                }
+                self.ensure_stack(self.stack.len() + 256);
+
+                self.do_call(
+                    func,
+                    func_slot,
+                    0,
+                    1,
+                    args.len() as u8,
+                )?;
+
+                // Run until the function returns
+                let entry_depth = self.frames.len() - 1;
+                while self.frames.len() > entry_depth {
+                    if self.run_step(entry_depth)?.is_some() {
+                        break;
+                    }
+                }
+
+                // Result is at func_slot
+                let result = self.stack[func_slot].clone();
+                self.stack.truncate(save_len);
+                Ok(result)
+            }
+            VmValue::Builtin(id) => {
+                let id_u8 = *id as u8;
+                let save_len = self.stack.len();
+                for arg in args {
+                    self.stack.push(arg.clone());
+                }
+                let result = self.call_builtin(id_u8, save_len, args.len())?;
+                self.stack.truncate(save_len);
+                Ok(result)
+            }
+            _ => Err(runtime_err(format!(
+                "Agent tool '{}' is not callable",
+                func.type_name()
+            ))),
+        }
     }
 
     #[cfg(feature = "native")]
@@ -11108,5 +11617,122 @@ print(r)"#,
         let output = run_output(&src);
         assert!(output[0].contains("Alice"), "Output: {}", output[0]);
         assert!(!output[0].contains("Bob"), "Output: {}", output[0]);
+    }
+
+    // ── Phase 34: Agent Framework ──
+
+    #[test]
+    fn test_vm_agent_definition() {
+        let output = run_output(
+            r#"
+fn search(query) { "found: " + query }
+agent bot {
+    model: "gpt-4o",
+    system: "You are helpful.",
+    tools {
+        search: {
+            description: "Search the web",
+            parameters: {}
+        }
+    },
+    max_turns: 5
+}
+print(type_of(bot))
+print(bot)
+"#,
+        );
+        assert_eq!(output, vec!["agent", "<agent bot>"]);
+    }
+
+    #[test]
+    fn test_vm_agent_minimal() {
+        let output = run_output(
+            r#"
+agent minimal_bot {
+    model: "claude-sonnet-4-20250514"
+}
+print(type_of(minimal_bot))
+"#,
+        );
+        assert_eq!(output, vec!["agent"]);
+    }
+
+    #[test]
+    fn test_vm_agent_with_base_url() {
+        let output = run_output(
+            r#"
+agent local_bot {
+    model: "llama3",
+    base_url: "http://localhost:11434/v1",
+    max_turns: 3
+}
+print(local_bot)
+"#,
+        );
+        assert_eq!(output, vec!["<agent local_bot>"]);
+    }
+
+    #[test]
+    fn test_vm_agent_multiple_tools() {
+        let output = run_output(
+            r#"
+fn search(query) { "result" }
+fn weather(city) { "sunny" }
+agent helper {
+    model: "gpt-4o",
+    tools {
+        search: { description: "Search", parameters: {} },
+        weather: { description: "Get weather", parameters: {} }
+    }
+}
+print(type_of(helper))
+"#,
+        );
+        assert_eq!(output, vec!["agent"]);
+    }
+
+    #[test]
+    fn test_vm_agent_lifecycle_hooks_stored() {
+        let output = run_output(
+            r#"
+fn search(q) { "result" }
+agent bot {
+    model: "gpt-4o",
+    tools {
+        search: { description: "Search", parameters: {} }
+    },
+    on_tool_call {
+        println("tool: " + tool_name)
+    }
+    on_complete {
+        println("done")
+    }
+}
+print(type_of(bot))
+print(type_of(__agent_bot_on_tool_call__))
+print(type_of(__agent_bot_on_complete__))
+"#,
+        );
+        assert_eq!(output, vec!["agent", "function", "function"]);
+    }
+
+    #[test]
+    fn test_vm_agent_lifecycle_hook_callable() {
+        let output = run_output(
+            r#"
+agent bot {
+    model: "gpt-4o",
+    on_tool_call {
+        println("called: " + tool_name + " -> " + tool_result)
+    }
+    on_complete {
+        println("completed")
+    }
+}
+__agent_bot_on_tool_call__("search", "query", "found it")
+__agent_bot_on_complete__("hello")
+"#,
+        );
+        assert_eq!(output, vec!["called: search -> found it", "completed"]);
     }
 }

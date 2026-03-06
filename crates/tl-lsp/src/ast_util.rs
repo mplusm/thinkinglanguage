@@ -14,6 +14,7 @@ pub enum DefKind {
     Trait,
     Schema,
     Pipeline,
+    Agent,
     Test,
 }
 
@@ -48,6 +49,9 @@ fn collect_defs_from_body(stmts: &[Stmt], defs: &mut Vec<(String, DefKind, Span)
             }
             StmtKind::Pipeline { name, .. } => {
                 defs.push((name.clone(), DefKind::Pipeline, stmt.span));
+            }
+            StmtKind::Agent { name, .. } => {
+                defs.push((name.clone(), DefKind::Agent, stmt.span));
             }
             StmtKind::Test { name, .. } => {
                 defs.push((name.clone(), DefKind::Test, stmt.span));

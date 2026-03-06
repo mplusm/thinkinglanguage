@@ -1,8 +1,9 @@
 // ThinkingLanguage — AI/ML Integration
-// Licensed under MIT OR Apache-2.0
+// Licensed under Apache-2.0
 //
 // Phase 3: Tensor type, model training (linfa), prediction (ONNX Runtime),
 // embeddings, LLM integration (Claude/OpenAI), model registry.
+// Phase 34: Multi-provider LLM, tool-use, agent framework.
 
 pub mod embed;
 pub mod llm;
@@ -13,7 +14,10 @@ pub mod tensor;
 pub mod train;
 
 pub use embed::similarity;
-pub use llm::{chat as ai_chat, complete as ai_complete};
+pub use llm::{
+    LlmResponse, ToolCall, chat as ai_chat, chat_with_tools, complete as ai_complete,
+    format_tool_result_messages,
+};
 pub use model::{LinfaKind, ModelMeta, TlModel};
 pub use predict::{predict, predict_batch};
 pub use registry::ModelRegistry;

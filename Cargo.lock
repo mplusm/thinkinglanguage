@@ -5758,6 +5758,7 @@ dependencies = [
  "tl-errors",
  "tl-interpreter",
  "tl-lexer",
+ "tl-llvm",
  "tl-lsp",
  "tl-package",
  "tl-parser",

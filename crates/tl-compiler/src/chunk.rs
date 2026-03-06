@@ -339,6 +339,8 @@ impl Prototype {
                     let body = self.format_constant(b as usize);
                     format!("parallel_for R{a}, {body}")
                 }
+                // Phase 34: AI Agent Framework
+                Op::AgentExec => format!("R{a} = agent(K{b}, K{c})"),
             };
 
             out.push_str(&format!(
@@ -617,6 +619,10 @@ pub enum BuiltinId {
     // Phase 33: SQLite
     ReadSqlite = 180,
     WriteSqlite = 181,
+    // Phase 34: AI Agent Framework
+    Embed = 182,
+    HttpRequest = 183,
+    RunAgent = 184,
 }
 
 impl BuiltinId {
@@ -813,6 +819,10 @@ impl BuiltinId {
             // Phase 33: SQLite
             "read_sqlite" => Some(BuiltinId::ReadSqlite),
             "write_sqlite" => Some(BuiltinId::WriteSqlite),
+            // Phase 34: AI Agent Framework
+            "embed" => Some(BuiltinId::Embed),
+            "http_request" => Some(BuiltinId::HttpRequest),
+            "run_agent" => Some(BuiltinId::RunAgent),
             _ => None,
         }
     }
@@ -1010,6 +1020,10 @@ impl BuiltinId {
             // Phase 33: SQLite
             BuiltinId::ReadSqlite => "read_sqlite",
             BuiltinId::WriteSqlite => "write_sqlite",
+            // Phase 34: AI Agent Framework
+            BuiltinId::Embed => "embed",
+            BuiltinId::HttpRequest => "http_request",
+            BuiltinId::RunAgent => "run_agent",
         }
     }
 }

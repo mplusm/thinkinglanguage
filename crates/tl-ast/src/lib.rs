@@ -248,6 +248,21 @@ pub enum StmtKind {
         is_public: bool,
     },
 
+    /// `agent name { model: "...", system: "...", tools { ... }, max_turns: N, on_tool_call { ... }, on_complete { ... } }`
+    Agent {
+        name: String,
+        model: String,
+        system_prompt: Option<String>,
+        tools: Vec<(String, Expr)>,
+        max_turns: Option<i64>,
+        temperature: Option<f64>,
+        max_tokens: Option<i64>,
+        base_url: Option<String>,
+        api_key: Option<String>,
+        on_tool_call: Option<Vec<Stmt>>,
+        on_complete: Option<Vec<Stmt>>,
+    },
+
     /// `break`
     Break,
 

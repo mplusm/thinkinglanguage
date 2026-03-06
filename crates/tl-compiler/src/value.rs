@@ -12,7 +12,7 @@ use tl_data::{ArrowSchema, DataFrame};
 #[cfg(feature = "gpu")]
 use tl_gpu::GpuTensor;
 #[cfg(feature = "native")]
-use tl_stream::{ConnectorConfig, PipelineDef, PipelineResult, StreamDef};
+use tl_stream::{AgentDef, ConnectorConfig, PipelineDef, PipelineResult, StreamDef};
 
 use crate::chunk::{BuiltinId, Prototype};
 
@@ -83,6 +83,9 @@ pub enum VmValue {
     /// A GPU-resident tensor (feature-gated)
     #[cfg(feature = "gpu")]
     GpuTensor(Arc<GpuTensor>),
+    /// An agent definition
+    #[cfg(feature = "native")]
+    AgentDef(Arc<AgentDef>),
     /// Tombstone for a value consumed by pipe-move
     Moved,
     /// Read-only reference wrapper
@@ -379,6 +382,8 @@ impl VmValue {
             VmValue::PyObject(_) => "pyobject",
             #[cfg(feature = "gpu")]
             VmValue::GpuTensor(_) => "gpu_tensor",
+            #[cfg(feature = "native")]
+            VmValue::AgentDef(_) => "agent",
             VmValue::Moved => "<moved>",
             VmValue::Ref(inner) => inner.type_name(),
         }
@@ -464,6 +469,8 @@ impl fmt::Debug for VmValue {
             VmValue::PyObject(w) => write!(f, "PyObject({w:?})"),
             #[cfg(feature = "gpu")]
             VmValue::GpuTensor(t) => write!(f, "{t:?}"),
+            #[cfg(feature = "native")]
+            VmValue::AgentDef(a) => write!(f, "AgentDef({})", a.name),
             VmValue::Moved => write!(f, "<moved>"),
             VmValue::Ref(inner) => write!(f, "&{inner:?}"),
         }
@@ -571,6 +578,8 @@ impl fmt::Display for VmValue {
             VmValue::PyObject(w) => write!(f, "{w}"),
             #[cfg(feature = "gpu")]
             VmValue::GpuTensor(t) => write!(f, "{t}"),
+            #[cfg(feature = "native")]
+            VmValue::AgentDef(a) => write!(f, "<agent {}>", a.name),
             VmValue::Moved => write!(f, "<moved>"),
             VmValue::Ref(inner) => write!(f, "{inner}"),
         }

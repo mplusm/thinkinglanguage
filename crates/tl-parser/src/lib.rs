@@ -231,6 +231,7 @@ impl Parser {
             Token::Trait => self.parse_trait_def(),
             Token::Model => self.parse_train(),
             Token::Pipeline => self.parse_pipeline(),
+            Token::Agent => self.parse_agent(),
             Token::Stream => self.parse_stream_decl(),
             Token::Source => self.parse_source_decl(),
             Token::Sink => self.parse_sink_decl(),
@@ -796,6 +797,269 @@ impl Parser {
                 retries,
                 on_failure,
                 on_success,
+            },
+            start,
+            end,
+        ))
+    }
+
+    /// Convert a keyword token to a string name when used as a map key.
+    fn token_as_key_name(token: &Token) -> Option<String> {
+        match token {
+            Token::Type => Some("type".into()),
+            Token::Model => Some("model".into()),
+            Token::Source => Some("source".into()),
+            Token::Sink => Some("sink".into()),
+            Token::True => Some("true".into()),
+            Token::False => Some("false".into()),
+            Token::None_ => Some("none".into()),
+            Token::Match => Some("match".into()),
+            Token::If => Some("if".into()),
+            _ => None,
+        }
+    }
+
+    /// Parse a JSON-like map literal: `{ key: value, ... }` → `Expr::Map`
+    /// Used in agent tool definitions where `{ description: "...", parameters: {...} }` syntax is needed.
+    fn parse_map_literal(&mut self) -> Result<Expr, TlError> {
+        self.expect(&Token::LBrace)?;
+        let mut pairs = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            // Key can be an identifier, string, or keyword used as key
+            let key = match self.peek().clone() {
+                Token::Ident(s) => {
+                    self.advance();
+                    Expr::String(s)
+                }
+                Token::String(s) => {
+                    self.advance();
+                    Expr::String(s)
+                }
+                // Allow keywords as map keys (e.g., "type", "model", etc.)
+                ref t if Self::token_as_key_name(t).is_some() => {
+                    let name = Self::token_as_key_name(t).unwrap();
+                    self.advance();
+                    Expr::String(name)
+                }
+                _ => {
+                    return Err(TlError::Parser(ParserError {
+                        message: "Expected identifier or string key in map".to_string(),
+                        span: self.peek_span(),
+                        hint: None,
+                    }));
+                }
+            };
+            self.expect(&Token::Colon)?;
+            // Value: recurse for nested maps, otherwise parse expression
+            let value = if self.check(&Token::LBrace) {
+                self.parse_map_literal()?
+            } else if self.check(&Token::LBracket) {
+                // Allow JSON-like arrays too
+                self.parse_primary()?
+            } else {
+                self.parse_expression()?
+            };
+            pairs.push((key, value));
+            self.match_token(&Token::Comma);
+        }
+        self.expect(&Token::RBrace)?;
+        Ok(Expr::Map(pairs))
+    }
+
+    /// Parse `agent NAME { model: "...", system: "...", tools { ... }, max_turns: N }`
+    fn parse_agent(&mut self) -> Result<Stmt, TlError> {
+        let start = self.peek_span().start;
+        self.advance(); // consume 'agent'
+        let name = self.expect_ident()?;
+        self.expect(&Token::LBrace)?;
+
+        let mut model = None;
+        let mut system_prompt = None;
+        let mut tools: Vec<(String, Expr)> = Vec::new();
+        let mut max_turns = None;
+        let mut temperature = None;
+        let mut max_tokens = None;
+        let mut base_url = None;
+        let mut api_key = None;
+        let mut on_tool_call = None;
+        let mut on_complete = None;
+
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            match self.peek().clone() {
+                Token::Model => {
+                    self.advance();
+                    self.expect(&Token::Colon)?;
+                    if let Token::String(s) = self.peek().clone() {
+                        self.advance();
+                        model = Some(s);
+                    } else {
+                        return Err(TlError::Parser(ParserError {
+                            message: "Expected string for model".to_string(),
+                            span: self.peek_span(),
+                            hint: None,
+                        }));
+                    }
+                    self.match_token(&Token::Comma);
+                }
+                Token::Ident(s) if s == "system" => {
+                    self.advance();
+                    self.expect(&Token::Colon)?;
+                    if let Token::String(s) = self.peek().clone() {
+                        self.advance();
+                        system_prompt = Some(s);
+                    } else {
+                        return Err(TlError::Parser(ParserError {
+                            message: "Expected string for system prompt".to_string(),
+                            span: self.peek_span(),
+                            hint: None,
+                        }));
+                    }
+                    self.match_token(&Token::Comma);
+                }
+                Token::Ident(s) if s == "tools" => {
+                    self.advance();
+                    self.expect(&Token::LBrace)?;
+                    // Parse tool definitions: fn_name: { description: "...", parameters: {...} }
+                    while !self.check(&Token::RBrace) && !self.is_at_end() {
+                        let tool_name = self.expect_ident()?;
+                        self.expect(&Token::Colon)?;
+                        let tool_def = self.parse_map_literal()?;
+                        tools.push((tool_name, tool_def));
+                        self.match_token(&Token::Comma);
+                    }
+                    self.expect(&Token::RBrace)?;
+                    self.match_token(&Token::Comma);
+                }
+                Token::Ident(s) if s == "max_turns" => {
+                    self.advance();
+                    self.expect(&Token::Colon)?;
+                    if let Token::Int(n) = self.peek().clone() {
+                        self.advance();
+                        max_turns = Some(n);
+                    } else {
+                        return Err(TlError::Parser(ParserError {
+                            message: "Expected integer for max_turns".to_string(),
+                            span: self.peek_span(),
+                            hint: None,
+                        }));
+                    }
+                    self.match_token(&Token::Comma);
+                }
+                Token::Ident(s) if s == "temperature" => {
+                    self.advance();
+                    self.expect(&Token::Colon)?;
+                    match self.peek().clone() {
+                        Token::Float(f) => {
+                            self.advance();
+                            temperature = Some(f);
+                        }
+                        Token::Int(n) => {
+                            self.advance();
+                            temperature = Some(n as f64);
+                        }
+                        _ => {
+                            return Err(TlError::Parser(ParserError {
+                                message: "Expected number for temperature".to_string(),
+                                span: self.peek_span(),
+                                hint: None,
+                            }));
+                        }
+                    }
+                    self.match_token(&Token::Comma);
+                }
+                Token::Ident(s) if s == "max_tokens" => {
+                    self.advance();
+                    self.expect(&Token::Colon)?;
+                    if let Token::Int(n) = self.peek().clone() {
+                        self.advance();
+                        max_tokens = Some(n);
+                    } else {
+                        return Err(TlError::Parser(ParserError {
+                            message: "Expected integer for max_tokens".to_string(),
+                            span: self.peek_span(),
+                            hint: None,
+                        }));
+                    }
+                    self.match_token(&Token::Comma);
+                }
+                Token::Ident(s) if s == "base_url" => {
+                    self.advance();
+                    self.expect(&Token::Colon)?;
+                    if let Token::String(s) = self.peek().clone() {
+                        self.advance();
+                        base_url = Some(s);
+                    } else {
+                        return Err(TlError::Parser(ParserError {
+                            message: "Expected string for base_url".to_string(),
+                            span: self.peek_span(),
+                            hint: None,
+                        }));
+                    }
+                    self.match_token(&Token::Comma);
+                }
+                Token::Ident(s) if s == "api_key" => {
+                    self.advance();
+                    self.expect(&Token::Colon)?;
+                    if let Token::String(s) = self.peek().clone() {
+                        self.advance();
+                        api_key = Some(s);
+                    } else {
+                        return Err(TlError::Parser(ParserError {
+                            message: "Expected string for api_key".to_string(),
+                            span: self.peek_span(),
+                            hint: None,
+                        }));
+                    }
+                    self.match_token(&Token::Comma);
+                }
+                Token::Ident(s) if s == "on_tool_call" => {
+                    self.advance();
+                    self.expect(&Token::LBrace)?;
+                    on_tool_call = Some(self.parse_block_body()?);
+                    self.expect(&Token::RBrace)?;
+                }
+                Token::Ident(s) if s == "on_complete" => {
+                    self.advance();
+                    self.expect(&Token::LBrace)?;
+                    on_complete = Some(self.parse_block_body()?);
+                    self.expect(&Token::RBrace)?;
+                }
+                _ => {
+                    return Err(TlError::Parser(ParserError {
+                        message: format!(
+                            "Unexpected token in agent block: `{}`",
+                            self.peek()
+                        ),
+                        span: self.peek_span(),
+                        hint: Some("Expected model, system, tools, max_turns, temperature, max_tokens, base_url, api_key, on_tool_call, or on_complete".into()),
+                    }));
+                }
+            }
+        }
+        self.expect(&Token::RBrace)?;
+        let end = self.previous_span().end;
+
+        let model = model.ok_or_else(|| {
+            TlError::Parser(ParserError {
+                message: "Agent definition requires a 'model' field".to_string(),
+                span: Span::new(start, end),
+                hint: None,
+            })
+        })?;
+
+        Ok(make_stmt(
+            StmtKind::Agent {
+                name,
+                model,
+                system_prompt,
+                tools,
+                max_turns,
+                temperature,
+                max_tokens,
+                base_url,
+                api_key,
+                on_tool_call,
+                on_complete,
             },
             start,
             end,
@@ -4319,6 +4583,154 @@ schema Secret {
             // The annotation is on the schema-level doc, not on individual fields
         } else {
             panic!("Expected Schema statement");
+        }
+    }
+
+    // ── Phase 34: Agent Framework ──
+
+    #[test]
+    fn test_parse_agent_basic() {
+        let program = parse(
+            r#"agent bot {
+                model: "gpt-4o",
+                system: "You are helpful.",
+                tools {
+                    search: {
+                        description: "Search the web",
+                        parameters: {}
+                    }
+                },
+                max_turns: 10
+            }"#,
+        )
+        .unwrap();
+        if let StmtKind::Agent {
+            name,
+            model,
+            system_prompt,
+            tools,
+            max_turns,
+            ..
+        } = &program.statements[0].kind
+        {
+            assert_eq!(name, "bot");
+            assert_eq!(model, "gpt-4o");
+            assert_eq!(system_prompt.as_deref(), Some("You are helpful."));
+            assert_eq!(tools.len(), 1);
+            assert_eq!(tools[0].0, "search");
+            assert_eq!(max_turns, &Some(10));
+        } else {
+            panic!("Expected Agent statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_agent_minimal() {
+        let program = parse(
+            r#"agent minimal {
+                model: "claude-sonnet-4-20250514"
+            }"#,
+        )
+        .unwrap();
+        if let StmtKind::Agent {
+            name,
+            model,
+            system_prompt,
+            tools,
+            max_turns,
+            ..
+        } = &program.statements[0].kind
+        {
+            assert_eq!(name, "minimal");
+            assert_eq!(model, "claude-sonnet-4-20250514");
+            assert!(system_prompt.is_none());
+            assert!(tools.is_empty());
+            assert!(max_turns.is_none());
+        } else {
+            panic!("Expected Agent statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_agent_multiple_tools() {
+        let program = parse(
+            r#"agent assistant {
+                model: "gpt-4o",
+                tools {
+                    search: { description: "Search", parameters: {} },
+                    weather: { description: "Get weather", parameters: {} }
+                }
+            }"#,
+        )
+        .unwrap();
+        if let StmtKind::Agent { tools, .. } = &program.statements[0].kind {
+            assert_eq!(tools.len(), 2);
+            assert_eq!(tools[0].0, "search");
+            assert_eq!(tools[1].0, "weather");
+        } else {
+            panic!("Expected Agent statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_agent_with_base_url() {
+        let program = parse(
+            r#"agent local {
+                model: "llama3",
+                base_url: "http://localhost:11434/v1",
+                max_turns: 3,
+                temperature: 0.7
+            }"#,
+        )
+        .unwrap();
+        if let StmtKind::Agent {
+            name,
+            base_url,
+            temperature,
+            max_turns,
+            ..
+        } = &program.statements[0].kind
+        {
+            assert_eq!(name, "local");
+            assert_eq!(base_url.as_deref(), Some("http://localhost:11434/v1"));
+            assert_eq!(temperature, &Some(0.7));
+            assert_eq!(max_turns, &Some(3));
+        } else {
+            panic!("Expected Agent statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_agent_lifecycle_hooks() {
+        let program = parse(
+            r#"agent bot {
+                model: "gpt-4o",
+                tools {
+                    search: { description: "Search", parameters: {} }
+                },
+                on_tool_call {
+                    println("Tool called: " + tool_name)
+                }
+                on_complete {
+                    println("Done!")
+                }
+            }"#,
+        )
+        .unwrap();
+        if let StmtKind::Agent {
+            name,
+            on_tool_call,
+            on_complete,
+            ..
+        } = &program.statements[0].kind
+        {
+            assert_eq!(name, "bot");
+            assert!(on_tool_call.is_some());
+            assert_eq!(on_tool_call.as_ref().unwrap().len(), 1);
+            assert!(on_complete.is_some());
+            assert_eq!(on_complete.as_ref().unwrap().len(), 1);
+        } else {
+            panic!("Expected Agent statement");
         }
     }
 }

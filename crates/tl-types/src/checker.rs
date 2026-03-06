@@ -895,7 +895,8 @@ impl<'a> TypeChecker<'a> {
             | StmtKind::SourceDecl { .. }
             | StmtKind::SinkDecl { .. }
             | StmtKind::ModDecl { .. }
-            | StmtKind::Migrate { .. } => {}
+            | StmtKind::Migrate { .. }
+            | StmtKind::Agent { .. } => {}
 
             StmtKind::TraitDef {
                 name,

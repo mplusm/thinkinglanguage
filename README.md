@@ -9,7 +9,7 @@ ThinkingLanguage (TL) replaces the fragile Python + SQL + YAML + Spark glue-code
 ## Highlights
 
 - **Native tables** — columnar data backed by Apache Arrow/DataFusion with pipe-based transforms
-- **AI/ML built-in** — tensors, model training (linfa), ONNX inference, embeddings, LLM APIs
+- **AI/ML built-in** — tensors, model training (linfa), ONNX inference, embeddings, LLM APIs, AI agents with tool-use
 - **Streaming & Pipelines** — ETL/ELT constructs, windowed streams, Kafka integration
 - **GPU acceleration** — wgpu-based tensor operations on Vulkan/Metal/DX12/WebGPU
 - **Multiple backends** — bytecode VM (default), LLVM AOT native compilation, WASM browser target
@@ -123,6 +123,27 @@ let t = tensor([[1.0, 2.0], [3.0, 4.0]])
 let result = t |> matmul(tensor([[5.0], [6.0]]))
 ```
 
+### AI Agents
+
+```
+fn search(query) { http_request("GET", "https://api.example.com/search?q=" + query, none, none).body }
+
+agent research_bot {
+    model: "gpt-4o",
+    system: "You are a research assistant. Use tools to find information.",
+    tools {
+        search: {
+            description: "Search the web",
+            parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }
+        }
+    },
+    max_turns: 5
+}
+
+let result = run_agent(research_bot, "What is the capital of France?")
+println(result.response)
+```
+
 ### Streaming
 
 ```
@@ -230,7 +251,7 @@ crates/
   tl-types/          Type system and checker
   tl-errors/         Error types and diagnostics
   tl-data/           Data engine (DataFusion, Arrow)
-  tl-ai/             AI/ML (ndarray, linfa, ONNX)
+  tl-ai/             AI/ML (ndarray, linfa, ONNX, LLM, agents)
   tl-stream/         Streaming and pipelines
   tl-ir/             Intermediate representation optimizer
   tl-llvm/           LLVM AOT backend (inkwell)
@@ -254,7 +275,7 @@ Detailed documentation is available in the [docs/](docs/) directory:
 - **[Getting Started](docs/getting-started/)** — Installation, quickstart, editor setup
 - **[Language Guide](docs/language/)** — Syntax, types, functions, structs, generics, error handling
 - **[Data Engineering](docs/data/)** — Tables, connectors, streaming, data quality
-- **[AI & ML](docs/ai/)** — Tensors, model training, ONNX inference
+- **[AI & ML](docs/ai/)** — Tensors, model training, ONNX inference, [AI agents](docs/ai/agents.md)
 - **[Tools & Ecosystem](docs/tools/)** — CLI, package manager, notebook, LSP
 - **[Advanced Topics](docs/advanced/)** — Backends, Python FFI, security, schema evolution
 

@@ -92,6 +92,8 @@ pub enum Token {
     Model,
     #[token("train")]
     Train,
+    #[token("agent")]
+    Agent,
 
     // Control flow
     #[token("if")]

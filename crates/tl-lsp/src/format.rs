@@ -727,6 +727,100 @@ impl Formatter {
                 self.output.push_str(&self.format_type_expr(value));
                 self.output.push('\n');
             }
+            StmtKind::Agent {
+                name,
+                model,
+                system_prompt,
+                tools,
+                max_turns,
+                temperature,
+                max_tokens,
+                base_url,
+                api_key,
+                on_tool_call,
+                on_complete,
+            } => {
+                self.push_indent();
+                self.output.push_str("agent ");
+                self.output.push_str(name);
+                self.output.push_str(" {\n");
+                self.indent += 1;
+                self.push_indent();
+                self.output.push_str("model: \"");
+                self.output.push_str(model);
+                self.output.push_str("\"\n");
+                if let Some(prompt) = system_prompt {
+                    self.push_indent();
+                    self.output.push_str("system: \"");
+                    self.output
+                        .push_str(&prompt.replace('\\', "\\\\").replace('"', "\\\""));
+                    self.output.push_str("\"\n");
+                }
+                if !tools.is_empty() {
+                    self.push_indent();
+                    self.output.push_str("tools {\n");
+                    self.indent += 1;
+                    for (tool_name, tool_expr) in tools {
+                        self.push_indent();
+                        self.output.push_str(tool_name);
+                        self.output.push_str(": ");
+                        self.output.push_str(&self.format_expr(tool_expr));
+                        self.output.push('\n');
+                    }
+                    self.indent -= 1;
+                    self.push_indent();
+                    self.output.push_str("}\n");
+                }
+                if let Some(mt) = max_turns {
+                    self.push_indent();
+                    self.output.push_str(&format!("max_turns: {}\n", mt));
+                }
+                if let Some(temp) = temperature {
+                    self.push_indent();
+                    self.output.push_str(&format!("temperature: {}\n", temp));
+                }
+                if let Some(mt) = max_tokens {
+                    self.push_indent();
+                    self.output.push_str(&format!("max_tokens: {}\n", mt));
+                }
+                if let Some(url) = base_url {
+                    self.push_indent();
+                    self.output.push_str("base_url: \"");
+                    self.output.push_str(url);
+                    self.output.push_str("\"\n");
+                }
+                if let Some(key) = api_key {
+                    self.push_indent();
+                    self.output.push_str("api_key: \"");
+                    self.output.push_str(key);
+                    self.output.push_str("\"\n");
+                }
+                if let Some(stmts) = on_tool_call {
+                    self.push_indent();
+                    self.output.push_str("on_tool_call {\n");
+                    self.indent += 1;
+                    for s in stmts {
+                        self.format_stmt(s);
+                    }
+                    self.indent -= 1;
+                    self.push_indent();
+                    self.output.push_str("}\n");
+                }
+                if let Some(stmts) = on_complete {
+                    self.push_indent();
+                    self.output.push_str("on_complete {\n");
+                    self.indent += 1;
+                    for s in stmts {
+                        self.format_stmt(s);
+                    }
+                    self.indent -= 1;
+                    self.push_indent();
+                    self.output.push_str("}\n");
+                }
+                self.indent -= 1;
+                self.push_indent();
+                self.output.push_str("}\n");
+            }
             StmtKind::Migrate {
                 schema_name,
                 from_version,
@@ -1117,6 +1211,7 @@ fn is_top_level_decl(kind: &StmtKind) -> bool {
             | StmtKind::Pipeline { .. }
             | StmtKind::Schema { .. }
             | StmtKind::Migrate { .. }
+            | StmtKind::Agent { .. }
     )
 }
 

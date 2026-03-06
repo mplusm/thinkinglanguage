@@ -281,6 +281,8 @@ pub enum Value {
     Pipeline(PipelineDef),
     /// A stream definition
     Stream(StreamDef),
+    /// An agent definition (Phase 34)
+    Agent(tl_stream::AgentDef),
     /// A struct type definition
     StructDef {
         name: String,
@@ -364,6 +366,7 @@ impl fmt::Display for Value {
             Value::Connector(c) => write!(f, "{c}"),
             Value::Pipeline(p) => write!(f, "{p}"),
             Value::Stream(s) => write!(f, "{s}"),
+            Value::Agent(a) => write!(f, "<agent {}>", a.name),
             Value::StructDef { name, .. } => write!(f, "<struct {name}>"),
             Value::StructInstance { type_name, fields } => {
                 write!(f, "{type_name} {{ ")?;
@@ -466,6 +469,7 @@ impl Value {
             Value::Connector(_) => "connector",
             Value::Pipeline(_) => "pipeline",
             Value::Stream(_) => "stream",
+            Value::Agent(_) => "agent",
             Value::StructDef { .. } => "struct_def",
             Value::StructInstance { type_name, .. } => {
                 // We can't return a dynamic string from &'static str,
@@ -737,6 +741,14 @@ impl Environment {
         global.insert(
             "http_post".to_string(),
             Value::Builtin("http_post".to_string()),
+        );
+        global.insert(
+            "http_request".to_string(),
+            Value::Builtin("http_request".to_string()),
+        );
+        global.insert(
+            "run_agent".to_string(),
+            Value::Builtin("run_agent".to_string()),
         );
         // Concurrency builtins
         global.insert("spawn".to_string(), Value::Builtin("spawn".to_string()));
@@ -1434,6 +1446,19 @@ impl Interpreter {
                 window,
                 watermark,
             } => self.exec_stream_decl(name, source, transform, sink, window, watermark),
+            StmtKind::Agent {
+                name,
+                model,
+                system_prompt,
+                tools,
+                max_turns,
+                temperature,
+                max_tokens,
+                base_url,
+                api_key,
+                on_tool_call,
+                on_complete,
+            } => self.exec_agent(name, model, system_prompt, tools, max_turns, temperature, max_tokens, base_url, api_key, on_tool_call, on_complete),
             StmtKind::SourceDecl {
                 name,
                 connector_type,
@@ -2315,6 +2340,19 @@ impl Interpreter {
                     }
                     _ => Ok(val), // passthrough
                 }
+            }
+
+            Expr::Map(pairs) => {
+                let mut result = Vec::new();
+                for (key_expr, val_expr) in pairs {
+                    let key = match self.eval_expr(key_expr)? {
+                        Value::String(s) => s,
+                        other => format!("{other}"),
+                    };
+                    let val = self.eval_expr(val_expr)?;
+                    result.push((key, val));
+                }
+                Ok(Value::Map(result))
             }
 
             _ => Err(runtime_err(format!("Unsupported expression: {expr:?}"))),
@@ -3268,9 +3306,25 @@ impl Interpreter {
             "model_register" => self.builtin_model_register(args),
             "model_list" => self.builtin_model_list(args),
             "model_get" => self.builtin_model_get(args),
-            "embed" => Err(runtime_err(
-                "embed() requires an API key. Set TL_OPENAI_KEY env var.".to_string(),
-            )),
+            "embed" => {
+                if args.is_empty() {
+                    return Err(runtime_err("embed() requires a text argument".to_string()));
+                }
+                let text = match &args[0] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err("embed() expects a string".to_string())),
+                };
+                let model = args.get(1)
+                    .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                    .unwrap_or_else(|| "text-embedding-3-small".to_string());
+                let api_key = args.get(2)
+                    .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                    .or_else(|| std::env::var("TL_OPENAI_KEY").ok())
+                    .ok_or_else(|| runtime_err("embed() requires an API key. Set TL_OPENAI_KEY or pass as 3rd arg".to_string()))?;
+                let tensor = tl_ai::embed::embed_api(&text, "openai", &model, &api_key)
+                    .map_err(|e| runtime_err(format!("embed error: {e}")))?;
+                Ok(Value::Tensor(tensor))
+            }
             // Streaming builtins
             "alert_slack" => {
                 if args.len() != 2 {
@@ -3492,6 +3546,62 @@ impl Interpreter {
                 } else {
                     Err(runtime_err_s("http_post() expects string URL and body"))
                 }
+            }
+            "http_request" => {
+                if args.len() < 2 {
+                    return Err(runtime_err_s("http_request(method, url, headers?, body?) expects at least 2 args"));
+                }
+                let method = match &args[0] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err_s("http_request() method must be a string")),
+                };
+                let url = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err_s("http_request() url must be a string")),
+                };
+                let client = reqwest::blocking::Client::new();
+                let mut builder = match method.to_uppercase().as_str() {
+                    "GET" => client.get(&url),
+                    "POST" => client.post(&url),
+                    "PUT" => client.put(&url),
+                    "DELETE" => client.delete(&url),
+                    "PATCH" => client.patch(&url),
+                    "HEAD" => client.head(&url),
+                    _ => return Err(runtime_err(format!("Unsupported HTTP method: {method}"))),
+                };
+                if let Some(Value::Map(headers)) = args.get(2) {
+                    for (key, val) in headers {
+                        if let Value::String(v) = val {
+                            builder = builder.header(key.as_str(), v.as_str());
+                        }
+                    }
+                }
+                if let Some(Value::String(body)) = args.get(3) {
+                    builder = builder.body(body.clone());
+                }
+                let resp = builder.send()
+                    .map_err(|e| runtime_err(format!("HTTP error: {e}")))?;
+                let status = resp.status().as_u16() as i64;
+                let body = resp.text()
+                    .map_err(|e| runtime_err(format!("HTTP response error: {e}")))?;
+                Ok(Value::Map(vec![
+                    ("status".to_string(), Value::Int(status)),
+                    ("body".to_string(), Value::String(body)),
+                ]))
+            }
+            "run_agent" => {
+                if args.len() < 2 {
+                    return Err(runtime_err_s("run_agent(agent, message) expects 2 arguments"));
+                }
+                let agent_def = match &args[0] {
+                    Value::Agent(def) => def.clone(),
+                    _ => return Err(runtime_err_s("run_agent() first arg must be an agent")),
+                };
+                let message = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err_s("run_agent() second arg must be a string")),
+                };
+                self.exec_agent_loop(&agent_def, &message)
             }
             // ── Phase 6: Stdlib & Ecosystem builtins ──
             "json_parse" => {
@@ -8205,6 +8315,298 @@ impl Interpreter {
         Ok(Signal::None)
     }
 
+    // ── Phase 34: Agent Framework ──────────────────────────────
+
+    #[allow(clippy::too_many_arguments)]
+    fn exec_agent(
+        &mut self,
+        name: &str,
+        model: &str,
+        system_prompt: &Option<String>,
+        tools: &[(String, Expr)],
+        max_turns: &Option<i64>,
+        temperature: &Option<f64>,
+        max_tokens: &Option<i64>,
+        base_url: &Option<String>,
+        api_key: &Option<String>,
+        on_tool_call: &Option<Vec<Stmt>>,
+        on_complete: &Option<Vec<Stmt>>,
+    ) -> Result<Signal, TlError> {
+        let mut agent_tools = Vec::new();
+        for (tool_name, tool_expr) in tools {
+            let val = self.eval_expr(tool_expr)?;
+            let (desc, params) = self.extract_agent_tool(&val);
+            agent_tools.push(tl_stream::AgentTool {
+                name: tool_name.clone(),
+                description: desc,
+                parameters: params,
+            });
+        }
+        let def = tl_stream::AgentDef {
+            name: name.to_string(),
+            model: model.to_string(),
+            system_prompt: system_prompt.clone(),
+            tools: agent_tools,
+            max_turns: max_turns.unwrap_or(10) as u32,
+            temperature: *temperature,
+            max_tokens: max_tokens.map(|n| n as u32),
+            base_url: base_url.clone(),
+            api_key: api_key.clone(),
+        };
+        self.env.set(name.to_string(), Value::Agent(def));
+
+        // Store lifecycle hooks as functions
+        if let Some(stmts) = on_tool_call {
+            let hook = Value::Function {
+                name: format!("__agent_{name}_on_tool_call__"),
+                params: vec![
+                    Param { name: "tool_name".into(), type_ann: None },
+                    Param { name: "tool_args".into(), type_ann: None },
+                    Param { name: "tool_result".into(), type_ann: None },
+                ],
+                body: stmts.clone(),
+                is_generator: false,
+            };
+            self.env.set(format!("__agent_{name}_on_tool_call__"), hook);
+        }
+        if let Some(stmts) = on_complete {
+            let hook = Value::Function {
+                name: format!("__agent_{name}_on_complete__"),
+                params: vec![
+                    Param { name: "result".into(), type_ann: None },
+                ],
+                body: stmts.clone(),
+                is_generator: false,
+            };
+            self.env.set(format!("__agent_{name}_on_complete__"), hook);
+        }
+
+        Ok(Signal::None)
+    }
+
+    fn extract_agent_tool(&self, val: &Value) -> (String, serde_json::Value) {
+        let mut desc = String::new();
+        let mut params = serde_json::Value::Object(serde_json::Map::new());
+        if let Value::Map(pairs) = val {
+            for (key, v) in pairs {
+                match key.as_str() {
+                    "description" => {
+                        if let Value::String(s) = v { desc = s.clone(); }
+                    }
+                    "parameters" => {
+                        params = self.agent_value_to_json(v);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        (desc, params)
+    }
+
+    fn agent_value_to_json(&self, val: &Value) -> serde_json::Value {
+        match val {
+            Value::String(s) => serde_json::Value::String(s.clone()),
+            Value::Int(n) => serde_json::json!(*n),
+            Value::Float(f) => serde_json::json!(*f),
+            Value::Bool(b) => serde_json::Value::Bool(*b),
+            Value::None => serde_json::Value::Null,
+            Value::List(items) => serde_json::Value::Array(items.iter().map(|v| self.agent_value_to_json(v)).collect()),
+            Value::Map(pairs) => {
+                let mut map = serde_json::Map::new();
+                for (k, v) in pairs {
+                    map.insert(k.clone(), self.agent_value_to_json(v));
+                }
+                serde_json::Value::Object(map)
+            }
+            _ => serde_json::Value::Null,
+        }
+    }
+
+    fn exec_agent_loop(&mut self, agent_def: &tl_stream::AgentDef, user_message: &str) -> Result<Value, TlError> {
+        use tl_ai::{LlmResponse, chat_with_tools, format_tool_result_messages};
+
+        let model = &agent_def.model;
+        let system = agent_def.system_prompt.as_deref();
+        let base_url = agent_def.base_url.as_deref();
+        let api_key = agent_def.api_key.as_deref();
+        let provider = if model.starts_with("claude") { "anthropic" } else { "openai" };
+
+        let tools_json: Vec<serde_json::Value> = agent_def.tools.iter().map(|t| {
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.parameters
+                }
+            })
+        }).collect();
+
+        let mut messages: Vec<serde_json::Value> = vec![
+            serde_json::json!({"role": "user", "content": user_message})
+        ];
+
+        for turn in 0..agent_def.max_turns {
+            let response = chat_with_tools(model, system, &messages, &tools_json, base_url, api_key)
+                .map_err(|e| runtime_err(format!("Agent LLM error: {e}")))?;
+
+            match response {
+                LlmResponse::Text(text) => {
+                    let result = Value::Map(vec![
+                        ("response".to_string(), Value::String(text)),
+                        ("turns".to_string(), Value::Int(turn as i64 + 1)),
+                    ]);
+
+                    // Call on_complete lifecycle hook if defined
+                    let hook_name = format!("__agent_{}_on_complete__", agent_def.name);
+                    if let Some(hook) = self.env.get(&hook_name).cloned() {
+                        let _ = self.call_function_value(&hook, &[result.clone()]);
+                    }
+
+                    return Ok(result);
+                }
+                LlmResponse::ToolUse(tool_calls) => {
+                    let tc_json: Vec<serde_json::Value> = tool_calls.iter().map(|tc| {
+                        serde_json::json!({
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": serde_json::to_string(&tc.input).unwrap_or_default()
+                            }
+                        })
+                    }).collect();
+                    messages.push(serde_json::json!({"role": "assistant", "tool_calls": tc_json}));
+
+                    let mut results: Vec<(String, String)> = Vec::new();
+                    for tc in &tool_calls {
+                        let func = self.env.get(&tc.name).ok_or_else(|| {
+                            runtime_err(format!("Agent tool function '{}' not found", tc.name))
+                        })?.clone();
+                        let call_args = self.agent_json_to_values(&tc.input);
+                        let result = self.call_function_value(&func, &call_args)?;
+                        let result_str = format!("{result}");
+
+                        // Call on_tool_call lifecycle hook if defined
+                        let hook_name = format!("__agent_{}_on_tool_call__", agent_def.name);
+                        if let Some(hook) = self.env.get(&hook_name).cloned() {
+                            let hook_args = vec![
+                                Value::String(tc.name.clone()),
+                                Value::Map(tc.input.as_object().map(|m| {
+                                    m.iter().map(|(k, v)| (k.clone(), self.agent_json_to_value(v))).collect()
+                                }).unwrap_or_default()),
+                                Value::String(result_str.clone()),
+                            ];
+                            let _ = self.call_function_value(&hook, &hook_args);
+                        }
+
+                        results.push((tc.name.clone(), result_str));
+                    }
+
+                    let result_msgs = format_tool_result_messages(provider, &tool_calls, &results);
+                    messages.extend(result_msgs);
+                }
+            }
+        }
+
+        Err(runtime_err(format!("Agent '{}' exceeded max_turns ({})", agent_def.name, agent_def.max_turns)))
+    }
+
+    fn agent_json_to_values(&self, input: &serde_json::Value) -> Vec<Value> {
+        match input {
+            serde_json::Value::Object(map) => map.values().map(|v| self.agent_json_to_value(v)).collect(),
+            serde_json::Value::Array(arr) => arr.iter().map(|v| self.agent_json_to_value(v)).collect(),
+            _ => vec![self.agent_json_to_value(input)],
+        }
+    }
+
+    fn agent_json_to_value(&self, val: &serde_json::Value) -> Value {
+        match val {
+            serde_json::Value::String(s) => Value::String(s.clone()),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() { Value::Int(i) }
+                else if let Some(f) = n.as_f64() { Value::Float(f) }
+                else { Value::None }
+            }
+            serde_json::Value::Bool(b) => Value::Bool(*b),
+            serde_json::Value::Null => Value::None,
+            serde_json::Value::Array(arr) => Value::List(arr.iter().map(|v| self.agent_json_to_value(v)).collect()),
+            serde_json::Value::Object(map) => {
+                Value::Map(map.iter().map(|(k, v)| (k.clone(), self.agent_json_to_value(v))).collect())
+            }
+        }
+    }
+
+    fn call_function_value(&mut self, func: &Value, args: &[Value]) -> Result<Value, TlError> {
+        match func {
+            Value::Function {
+                params,
+                body,
+                is_generator,
+                ..
+            } => {
+                if *is_generator {
+                    return self.create_generator(params, body, args);
+                }
+                self.env.push_scope();
+                for (param, arg) in params.iter().zip(args.iter()) {
+                    self.env.set(param.name.clone(), arg.clone());
+                }
+                let mut result = Value::None;
+                for stmt in body {
+                    match self.exec_stmt(stmt)? {
+                        Signal::Return(v) => { result = v; break; }
+                        Signal::None => {}
+                        _ => {}
+                    }
+                }
+                self.env.pop_scope();
+                Ok(result)
+            }
+            Value::Closure {
+                params,
+                body,
+                captured_env,
+            } => {
+                let saved_env = std::mem::replace(&mut self.env.scopes, captured_env.clone());
+                self.env.push_scope();
+                for (param, arg) in params.iter().zip(args.iter()) {
+                    self.env.set(param.name.clone(), arg.clone());
+                }
+                let result = match body {
+                    ClosureBody::Expr(e) => self.eval_expr(e),
+                    ClosureBody::Block { stmts, expr } => {
+                        let mut early_return = None;
+                        for s in stmts {
+                            match self.exec_stmt(s) {
+                                Ok(Signal::Return(val)) => {
+                                    early_return = Some(val);
+                                    break;
+                                }
+                                Ok(_) => {}
+                                Err(e) => {
+                                    self.env.scopes = saved_env;
+                                    return Err(e);
+                                }
+                            }
+                        }
+                        if let Some(val) = early_return {
+                            Ok(val)
+                        } else if let Some(e) = expr {
+                            self.eval_expr(e)
+                        } else {
+                            Ok(Value::None)
+                        }
+                    }
+                };
+                self.env.scopes = saved_env;
+                result
+            }
+            Value::Builtin(name) => self.call_builtin(name, args),
+            _ => Err(runtime_err(format!("Agent tool is not callable: {}", func.type_name()))),
+        }
+    }
+
     fn exec_source_decl(
         &mut self,
         name: &str,
@@ -11379,5 +11781,124 @@ print(result)
 "#,
         );
         assert_eq!(output, vec!["11"]);
+    }
+
+    // ── Phase 34: Agent Framework ──
+
+    #[test]
+    fn test_interp_agent_definition() {
+        let output = run_output(
+            r#"
+fn search(query) { "found: " + query }
+agent bot {
+    model: "gpt-4o",
+    system: "You are helpful.",
+    tools {
+        search: {
+            description: "Search the web",
+            parameters: {}
+        }
+    },
+    max_turns: 5
+}
+print(type_of(bot))
+print(bot)
+"#,
+        );
+        assert_eq!(output, vec!["agent", "<agent bot>"]);
+    }
+
+    #[test]
+    fn test_interp_agent_minimal() {
+        let output = run_output(
+            r#"
+agent minimal_bot {
+    model: "claude-sonnet-4-20250514"
+}
+print(type_of(minimal_bot))
+"#,
+        );
+        assert_eq!(output, vec!["agent"]);
+    }
+
+    #[test]
+    fn test_interp_agent_with_base_url() {
+        let output = run_output(
+            r#"
+agent local_bot {
+    model: "llama3",
+    base_url: "http://localhost:11434/v1",
+    max_turns: 3,
+    temperature: 0.7
+}
+print(local_bot)
+"#,
+        );
+        assert_eq!(output, vec!["<agent local_bot>"]);
+    }
+
+    #[test]
+    fn test_interp_agent_multiple_tools() {
+        let output = run_output(
+            r#"
+fn search(query) { "result" }
+fn weather(city) { "sunny" }
+agent helper {
+    model: "gpt-4o",
+    tools {
+        search: { description: "Search", parameters: {} },
+        weather: { description: "Get weather", parameters: {} }
+    }
+}
+print(type_of(helper))
+"#,
+        );
+        assert_eq!(output, vec!["agent"]);
+    }
+
+    #[test]
+    fn test_interp_agent_lifecycle_hooks_stored() {
+        // Verify that lifecycle hooks are stored as functions
+        let output = run_output(
+            r#"
+fn search(q) { "result" }
+agent bot {
+    model: "gpt-4o",
+    tools {
+        search: { description: "Search", parameters: {} }
+    },
+    on_tool_call {
+        println("tool: " + tool_name)
+    }
+    on_complete {
+        println("done")
+    }
+}
+print(type_of(bot))
+print(type_of(__agent_bot_on_tool_call__))
+print(type_of(__agent_bot_on_complete__))
+"#,
+        );
+        assert_eq!(output, vec!["agent", "function", "function"]);
+    }
+
+    #[test]
+    fn test_interp_agent_lifecycle_hook_callable() {
+        // Verify lifecycle hook functions can be called directly
+        let output = run_output(
+            r#"
+agent bot {
+    model: "gpt-4o",
+    on_tool_call {
+        println("called: " + tool_name + " -> " + tool_result)
+    }
+    on_complete {
+        println("completed with " + string(len(result)))
+    }
+}
+__agent_bot_on_tool_call__("search", "query", "found it")
+"#,
+        );
+        assert_eq!(output, vec!["called: search -> found it"]);
     }
 }

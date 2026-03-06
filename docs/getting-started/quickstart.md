@@ -221,8 +221,35 @@ tl compile script.tl -o script
 ./script
 ```
 
+## AI Agents
+
+TL has a first-class `agent` construct for building AI agents with tool-use:
+
+```
+fn get_weather(city) {
+    "Weather in " + city + ": 22C, sunny"
+}
+
+agent weather_bot {
+    model: "gpt-4o-mini",
+    system: "Use tools to answer questions.",
+    tools {
+        get_weather: {
+            description: "Get weather for a city",
+            parameters: { type: "object", properties: { city: { type: "string" } }, required: ["city"] }
+        }
+    },
+    max_turns: 3
+}
+
+let result = run_agent(weather_bot, "Weather in Tokyo?")
+println(result.response)
+```
+
+Set `TL_OPENAI_KEY` or `TL_ANTHROPIC_KEY` environment variable before running. See the [Agent Framework Guide](../ai/agents.md) for full documentation.
+
 ## Next Steps
 
 - **Language Guide** -- in-depth coverage of the type system, modules, generics, traits, and more
 - **Data Guide** -- detailed documentation on tables, connectors, pipelines, and streaming
-- **AI Guide** -- tensors, ML training, ONNX inference, embeddings, and LLM integration
+- **AI Guide** -- tensors, ML training, ONNX inference, embeddings, LLM integration, and [AI agents](../ai/agents.md)

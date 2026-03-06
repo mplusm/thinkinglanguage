@@ -221,3 +221,43 @@ type_of(loaded)"#,
     let result = run(&source).unwrap();
     assert!(matches!(result, VmValue::String(ref s) if s.as_ref() == "model"));
 }
+
+// ── Agent Framework Integration ──
+
+#[test]
+#[ignore] // Requires TL_OPENAI_KEY environment variable
+fn test_vm_agent_live_api() {
+    // This test exercises the full agent loop with a real LLM API call.
+    // The agent has a simple tool that always returns a fixed answer.
+    // The LLM should call the tool and produce a text response.
+    let source = r#"
+fn get_capital(country) {
+    "The capital of " + country + " is Paris."
+}
+
+agent geo_bot {
+    model: "gpt-4o-mini",
+    system: "You are a geography assistant. Use the get_capital tool to answer questions about capitals. After getting the tool result, respond with just the capital city name.",
+    tools {
+        get_capital: {
+            description: "Get the capital city of a country",
+            parameters: {
+                type: "object",
+                properties: {
+                    country: { type: "string", description: "The country name" }
+                },
+                required: ["country"]
+            }
+        }
+    },
+    max_turns: 3
+}
+
+let result = run_agent(geo_bot, "What is the capital of France?")
+print(type_of(result))
+print(type_of(result.response))
+"#;
+    let output = run_output(source);
+    assert_eq!(output[0], "map");
+    assert_eq!(output[1], "string");
+}

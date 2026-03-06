@@ -590,6 +590,31 @@ impl Compiler {
                 to_version,
                 operations,
             } => self.compile_migrate(schema_name, *from_version, *to_version, operations),
+            StmtKind::Agent {
+                name,
+                model,
+                system_prompt,
+                tools,
+                max_turns,
+                temperature,
+                max_tokens,
+                base_url,
+                api_key,
+                on_tool_call,
+                on_complete,
+            } => self.compile_agent(
+                name,
+                model,
+                system_prompt,
+                tools,
+                max_turns,
+                temperature,
+                max_tokens,
+                base_url,
+                api_key,
+                on_tool_call,
+                on_complete,
+            ),
         }
     }
 
@@ -1383,6 +1408,163 @@ impl Compiler {
             .current()
             .add_constant(Constant::String(Arc::from(name)));
         self.current().emit_abx(Op::SetGlobal, dest, gname, 0);
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn compile_agent(
+        &mut self,
+        name: &str,
+        model: &str,
+        system_prompt: &Option<String>,
+        tools: &[(String, tl_ast::Expr)],
+        max_turns: &Option<i64>,
+        temperature: &Option<f64>,
+        max_tokens: &Option<i64>,
+        base_url: &Option<String>,
+        api_key: &Option<String>,
+        on_tool_call: &Option<Vec<tl_ast::Stmt>>,
+        on_complete: &Option<Vec<tl_ast::Stmt>>,
+    ) -> Result<(), TlError> {
+        let dest = self.add_local(name.to_string());
+
+        // Store agent name as constant
+        let name_const = self
+            .current()
+            .add_constant(Constant::String(Arc::from(name)));
+
+        // Build config as AstExprList of NamedArgs
+        let mut config_exprs: Vec<tl_ast::Expr> = Vec::new();
+
+        // model (required)
+        config_exprs.push(tl_ast::Expr::NamedArg {
+            name: "model".to_string(),
+            value: Box::new(tl_ast::Expr::String(model.to_string())),
+        });
+
+        if let Some(sys) = system_prompt {
+            config_exprs.push(tl_ast::Expr::NamedArg {
+                name: "system".to_string(),
+                value: Box::new(tl_ast::Expr::String(sys.clone())),
+            });
+        }
+
+        if let Some(n) = max_turns {
+            config_exprs.push(tl_ast::Expr::NamedArg {
+                name: "max_turns".to_string(),
+                value: Box::new(tl_ast::Expr::Int(*n)),
+            });
+        }
+
+        if let Some(t) = temperature {
+            config_exprs.push(tl_ast::Expr::NamedArg {
+                name: "temperature".to_string(),
+                value: Box::new(tl_ast::Expr::Float(*t)),
+            });
+        }
+
+        if let Some(n) = max_tokens {
+            config_exprs.push(tl_ast::Expr::NamedArg {
+                name: "max_tokens".to_string(),
+                value: Box::new(tl_ast::Expr::Int(*n)),
+            });
+        }
+
+        if let Some(url) = base_url {
+            config_exprs.push(tl_ast::Expr::NamedArg {
+                name: "base_url".to_string(),
+                value: Box::new(tl_ast::Expr::String(url.clone())),
+            });
+        }
+
+        if let Some(key) = api_key {
+            config_exprs.push(tl_ast::Expr::NamedArg {
+                name: "api_key".to_string(),
+                value: Box::new(tl_ast::Expr::String(key.clone())),
+            });
+        }
+
+        // Encode tools as a list of NamedArgs: tool_name: { desc, params map expr }
+        for (tool_name, tool_expr) in tools {
+            config_exprs.push(tl_ast::Expr::NamedArg {
+                name: format!("tool:{tool_name}"),
+                value: Box::new(tool_expr.clone()),
+            });
+        }
+
+        // Encode lifecycle hook markers
+        if on_tool_call.is_some() {
+            config_exprs.push(tl_ast::Expr::NamedArg {
+                name: "on_tool_call".to_string(),
+                value: Box::new(tl_ast::Expr::Bool(true)),
+            });
+        }
+        if on_complete.is_some() {
+            config_exprs.push(tl_ast::Expr::NamedArg {
+                name: "on_complete".to_string(),
+                value: Box::new(tl_ast::Expr::Bool(true)),
+            });
+        }
+
+        let config_idx = self
+            .current()
+            .add_constant(Constant::AstExprList(config_exprs));
+
+        // Emit AgentExec opcode
+        self.current().emit_abc(
+            Op::AgentExec,
+            dest,
+            name_const as u8,
+            config_idx as u8,
+            0,
+        );
+
+        // Set as global
+        let gname = self
+            .current()
+            .add_constant(Constant::String(Arc::from(name)));
+        self.current().emit_abx(Op::SetGlobal, dest, gname, 0);
+
+        // Compile lifecycle hooks as global functions
+        if let Some(stmts) = on_tool_call {
+            let hook_name = format!("__agent_{name}_on_tool_call__");
+            let params = vec![
+                tl_ast::Param { name: "tool_name".into(), type_ann: None },
+                tl_ast::Param { name: "tool_args".into(), type_ann: None },
+                tl_ast::Param { name: "tool_result".into(), type_ann: None },
+            ];
+            self.compile_agent_hook(&hook_name, &params, stmts)?;
+        }
+        if let Some(stmts) = on_complete {
+            let hook_name = format!("__agent_{name}_on_complete__");
+            let params = vec![
+                tl_ast::Param { name: "result".into(), type_ann: None },
+            ];
+            self.compile_agent_hook(&hook_name, &params, stmts)?;
+        }
+
+        Ok(())
+    }
+
+    fn compile_agent_hook(
+        &mut self,
+        hook_name: &str,
+        params: &[tl_ast::Param],
+        body: &[tl_ast::Stmt],
+    ) -> Result<(), TlError> {
+        // Add a local for the hook function
+        let local = self.add_local(hook_name.to_string());
+
+        // Compile the function body using compile_function
+        let dest = self.compile_function(hook_name.to_string(), params, body, false)?;
+
+        // Set as global so exec_agent_loop can find it
+        let gname = self
+            .current()
+            .add_constant(Constant::String(Arc::from(hook_name)));
+        self.current().emit_abx(Op::SetGlobal, local, gname, 0);
+        let _ = dest;
 
         Ok(())
     }

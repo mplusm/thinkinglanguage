@@ -640,7 +640,8 @@ impl<'ctx> LlvmCodegen<'ctx> {
                 | Op::TryPropagate
                 | Op::LoadMoved
                 | Op::MakeRef
-                | Op::ParallelFor => {
+                | Op::ParallelFor
+                | Op::AgentExec => {
                     self.emit_vm_fallback(
                         inst,
                         &reg_slots,

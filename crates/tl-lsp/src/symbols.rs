@@ -120,6 +120,17 @@ pub fn provide_document_symbols(source: &str, ast: Option<&Program>) -> Vec<Symb
                     &uri,
                 ));
             }
+            StmtKind::Agent { name, .. } => {
+                let detail = Some("agent".to_string());
+                symbols.push(make_symbol(
+                    name,
+                    SymbolKind::FUNCTION,
+                    detail,
+                    source,
+                    stmt.span,
+                    &uri,
+                ));
+            }
             _ => {}
         }
     }
