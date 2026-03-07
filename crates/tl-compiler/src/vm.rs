@@ -9,7 +9,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// Global mutex for env_set/env_remove thread safety (std::env::set_var is not thread-safe).
 static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-    ENV_MUTEX.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner())
+    ENV_MUTEX
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
 }
 #[cfg(feature = "native")]
 use std::time::Duration;
@@ -18,9 +21,9 @@ use std::time::Duration;
 use rayon::prelude::*;
 use tl_ast::Expr as AstExpr;
 #[cfg(feature = "native")]
-use tl_data::translate::{LocalValue, TranslateContext, translate_expr};
-#[cfg(feature = "native")]
 use tl_data::datafusion::execution::FunctionRegistry;
+#[cfg(feature = "native")]
+use tl_data::translate::{LocalValue, TranslateContext, translate_expr};
 #[cfg(feature = "native")]
 use tl_data::{DataEngine, JoinType, col, lit};
 use tl_errors::{RuntimeError, TlError};
@@ -133,7 +136,9 @@ fn vm_json_to_value(v: &serde_json::Value) -> VmValue {
             }
         }
         serde_json::Value::String(s) => VmValue::String(Arc::from(s.as_str())),
-        serde_json::Value::Array(arr) => VmValue::List(Box::new(arr.iter().map(vm_json_to_value).collect())),
+        serde_json::Value::Array(arr) => {
+            VmValue::List(Box::new(arr.iter().map(vm_json_to_value).collect()))
+        }
         serde_json::Value::Object(obj) => VmValue::Map(Box::new(
             obj.iter()
                 .map(|(k, v)| (Arc::from(k.as_str()), vm_json_to_value(v)))
@@ -231,7 +236,8 @@ fn execute_pure_fn(proto: &Arc<Prototype>, args: &[VmValue]) -> Result<VmValue, 
             }
             Op::Add => {
                 let result = match (&stack[base + b as usize], &stack[base + c as usize]) {
-                    (VmValue::Int(x), VmValue::Int(y)) => x.checked_add(*y)
+                    (VmValue::Int(x), VmValue::Int(y)) => x
+                        .checked_add(*y)
                         .map(VmValue::Int)
                         .unwrap_or_else(|| VmValue::Float(*x as f64 + *y as f64)),
                     (VmValue::Float(x), VmValue::Float(y)) => VmValue::Float(x + y),
@@ -243,7 +249,8 @@ fn execute_pure_fn(proto: &Arc<Prototype>, args: &[VmValue]) -> Result<VmValue, 
             }
             Op::Sub => {
                 let result = match (&stack[base + b as usize], &stack[base + c as usize]) {
-                    (VmValue::Int(x), VmValue::Int(y)) => x.checked_sub(*y)
+                    (VmValue::Int(x), VmValue::Int(y)) => x
+                        .checked_sub(*y)
                         .map(VmValue::Int)
                         .unwrap_or_else(|| VmValue::Float(*x as f64 - *y as f64)),
                     (VmValue::Float(x), VmValue::Float(y)) => VmValue::Float(x - y),
@@ -255,7 +262,8 @@ fn execute_pure_fn(proto: &Arc<Prototype>, args: &[VmValue]) -> Result<VmValue, 
             }
             Op::Mul => {
                 let result = match (&stack[base + b as usize], &stack[base + c as usize]) {
-                    (VmValue::Int(x), VmValue::Int(y)) => x.checked_mul(*y)
+                    (VmValue::Int(x), VmValue::Int(y)) => x
+                        .checked_mul(*y)
                         .map(VmValue::Int)
                         .unwrap_or_else(|| VmValue::Float(*x as f64 * *y as f64)),
                     (VmValue::Float(x), VmValue::Float(y)) => VmValue::Float(x * y),
@@ -467,11 +475,21 @@ pub struct Vm {
 pub struct SecretVault(HashMap<String, String>);
 
 impl SecretVault {
-    pub fn new() -> Self { Self(HashMap::new()) }
-    pub fn get(&self, key: &str) -> Option<&String> { self.0.get(key) }
-    pub fn insert(&mut self, key: String, val: String) { self.0.insert(key, val); }
-    pub fn remove(&mut self, key: &str) { self.0.remove(key); }
-    pub fn keys(&self) -> impl Iterator<Item = &String> { self.0.keys() }
+    pub fn new() -> Self {
+        Self(HashMap::new())
+    }
+    pub fn get(&self, key: &str) -> Option<&String> {
+        self.0.get(key)
+    }
+    pub fn insert(&mut self, key: String, val: String) {
+        self.0.insert(key, val);
+    }
+    pub fn remove(&mut self, key: &str) {
+        self.0.remove(key);
+    }
+    pub fn keys(&self) -> impl Iterator<Item = &String> {
+        self.0.keys()
+    }
 }
 
 impl Drop for SecretVault {
@@ -667,12 +685,19 @@ impl Vm {
 
     /// Get the current function name being executed.
     pub fn debug_current_function(&self) -> String {
-        self.frames.last().map(|f| f.prototype.name.clone()).unwrap_or_default()
+        self.frames
+            .last()
+            .map(|f| f.prototype.name.clone())
+            .unwrap_or_default()
     }
 
     /// Check if the VM has finished executing (no more frames).
     pub fn debug_is_done(&self) -> bool {
-        self.frames.is_empty() || self.frames.last().is_some_and(|f| f.ip >= f.prototype.code.len())
+        self.frames.is_empty()
+            || self
+                .frames
+                .last()
+                .is_some_and(|f| f.ip >= f.prototype.code.len())
     }
 
     /// Get a global variable by name.
@@ -1093,7 +1118,8 @@ impl Vm {
                             if adjusted < 0 {
                                 return Err(runtime_err(format!(
                                     "Index {} out of bounds for list of length {}",
-                                    i, items.len()
+                                    i,
+                                    items.len()
                                 )));
                             }
                             adjusted as usize
@@ -1103,7 +1129,8 @@ impl Vm {
                         items.get(idx).cloned().ok_or_else(|| {
                             runtime_err(format!(
                                 "Index {} out of bounds for list of length {}",
-                                i, items.len()
+                                i,
+                                items.len()
                             ))
                         })?
                     }
@@ -1138,7 +1165,8 @@ impl Vm {
                                 if adjusted < 0 {
                                     return Err(runtime_err(format!(
                                         "Index {} out of bounds for list of length {}",
-                                        i, items.len()
+                                        i,
+                                        items.len()
                                     )));
                                 }
                                 adjusted as usize
@@ -1150,7 +1178,8 @@ impl Vm {
                             } else {
                                 return Err(runtime_err(format!(
                                     "Index {} out of bounds for list of length {}",
-                                    i, items.len()
+                                    i,
+                                    items.len()
                                 )));
                             }
                         }
@@ -1231,7 +1260,10 @@ impl Vm {
                     VmValue::Map(pairs) => {
                         if idx < pairs.len() {
                             let (k, v) = &pairs[idx];
-                            let pair = VmValue::List(Box::new(vec![VmValue::String(k.clone()), v.clone()]));
+                            let pair = VmValue::List(Box::new(vec![
+                                VmValue::String(k.clone()),
+                                v.clone(),
+                            ]));
                             self.stack[base + c as usize] = pair;
                             self.stack[base + a as usize] = VmValue::Int((idx + 1) as i64);
                             false
@@ -2040,7 +2072,8 @@ impl Vm {
         let left = &self.stack[base + b as usize];
         let right = &self.stack[base + c as usize];
         match (left, right) {
-            (VmValue::Int(a), VmValue::Int(b)) => Ok(a.checked_add(*b)
+            (VmValue::Int(a), VmValue::Int(b)) => Ok(a
+                .checked_add(*b)
                 .map(VmValue::Int)
                 .unwrap_or_else(|| VmValue::Float(*a as f64 + *b as f64))),
             (VmValue::Float(a), VmValue::Float(b)) => Ok(VmValue::Float(a + b)),
@@ -2095,7 +2128,8 @@ impl Vm {
         let left = &self.stack[base + b as usize];
         let right = &self.stack[base + c as usize];
         match (left, right) {
-            (VmValue::Int(a), VmValue::Int(b)) => Ok(a.checked_sub(*b)
+            (VmValue::Int(a), VmValue::Int(b)) => Ok(a
+                .checked_sub(*b)
                 .map(VmValue::Int)
                 .unwrap_or_else(|| VmValue::Float(*a as f64 - *b as f64))),
             (VmValue::Float(a), VmValue::Float(b)) => Ok(VmValue::Float(a - b)),
@@ -2146,7 +2180,8 @@ impl Vm {
         let left = &self.stack[base + b as usize];
         let right = &self.stack[base + c as usize];
         match (left, right) {
-            (VmValue::Int(a), VmValue::Int(b)) => Ok(a.checked_mul(*b)
+            (VmValue::Int(a), VmValue::Int(b)) => Ok(a
+                .checked_mul(*b)
                 .map(VmValue::Int)
                 .unwrap_or_else(|| VmValue::Float(*a as f64 * *b as f64))),
             (VmValue::Float(a), VmValue::Float(b)) => Ok(VmValue::Float(a * b)),
@@ -2154,10 +2189,14 @@ impl Vm {
             (VmValue::Float(a), VmValue::Int(b)) => Ok(VmValue::Float(a * *b as f64)),
             (VmValue::String(a), VmValue::Int(b)) => {
                 if *b < 0 {
-                    return Err(runtime_err("Cannot repeat string a negative number of times"));
+                    return Err(runtime_err(
+                        "Cannot repeat string a negative number of times",
+                    ));
                 }
                 if *b > 10_000_000 {
-                    return Err(runtime_err("String repeat count too large (max 10,000,000)"));
+                    return Err(runtime_err(
+                        "String repeat count too large (max 10,000,000)",
+                    ));
                 }
                 Ok(VmValue::String(Arc::from(a.repeat(*b as usize).as_str())))
             }
@@ -2375,9 +2414,7 @@ impl Vm {
         let right = &self.stack[base + c as usize];
         match (left, right) {
             (VmValue::Int(a), VmValue::Int(b)) => Ok(Some(a.cmp(b) as i8)),
-            (VmValue::Float(a), VmValue::Float(b)) => {
-                Ok(a.partial_cmp(b).map(|o| o as i8))
-            }
+            (VmValue::Float(a), VmValue::Float(b)) => Ok(a.partial_cmp(b).map(|o| o as i8)),
             (VmValue::Int(a), VmValue::Float(b)) => {
                 let fa = *a as f64;
                 Ok(fa.partial_cmp(b).map(|o| o as i8))
@@ -2410,9 +2447,7 @@ impl Vm {
     fn check_permission(&self, perm: &str) -> Result<(), TlError> {
         if let Some(ref policy) = self.security_policy {
             if !policy.check(perm) {
-                return Err(runtime_err(format!(
-                    "{perm} blocked by security policy"
-                )));
+                return Err(runtime_err(format!("{perm} blocked by security policy")));
             }
         }
         Ok(())
@@ -2437,8 +2472,8 @@ impl Vm {
             })
             .collect();
 
-        let builtin_id: BuiltinId = BuiltinId::try_from(id)
-            .map_err(|v| runtime_err(format!("Invalid builtin id: {v}")))?;
+        let builtin_id: BuiltinId =
+            BuiltinId::try_from(id).map_err(|v| runtime_err(format!("Invalid builtin id: {v}")))?;
 
         match builtin_id {
             BuiltinId::Print | BuiltinId::Println => {
@@ -2542,7 +2577,9 @@ impl Vm {
                         if size > 10_000_000 {
                             return Err(runtime_err("range() size too large (max 10,000,000)"));
                         }
-                        Ok(VmValue::List(Box::new((*start..*end).map(VmValue::Int).collect())))
+                        Ok(VmValue::List(Box::new(
+                            (*start..*end).map(VmValue::Int).collect(),
+                        )))
                     } else {
                         Err(runtime_err("range() expects integers"))
                     }
@@ -3754,12 +3791,18 @@ impl Vm {
             }
             BuiltinId::DateFormat => {
                 if args.len() < 2 {
-                    return Err(runtime_err("date_format() expects datetime/timestamp and format"));
+                    return Err(runtime_err(
+                        "date_format() expects datetime/timestamp and format",
+                    ));
                 }
                 let ts = match &args[0] {
                     VmValue::DateTime(ms) => *ms,
                     VmValue::Int(ms) => *ms,
-                    _ => return Err(runtime_err("date_format() expects a datetime or int timestamp")),
+                    _ => {
+                        return Err(runtime_err(
+                            "date_format() expects a datetime or int timestamp",
+                        ));
+                    }
                 };
                 let fmt = match &args[1] {
                     VmValue::String(s) => s,
@@ -3812,7 +3855,9 @@ impl Vm {
                     let pairs: Vec<VmValue> = items
                         .iter()
                         .enumerate()
-                        .map(|(i, v)| VmValue::List(Box::new(vec![VmValue::Int(i as i64), v.clone()])))
+                        .map(|(i, v)| {
+                            VmValue::List(Box::new(vec![VmValue::Int(i as i64), v.clone()]))
+                        })
                         .collect();
                     Ok(VmValue::List(Box::new(pairs)))
                 } else {
@@ -3951,7 +3996,8 @@ impl Vm {
                             match task {
                                 VmValue::Task(t) => {
                                     let rx = {
-                                        let mut guard = t.receiver.lock().unwrap_or_else(|e| e.into_inner());
+                                        let mut guard =
+                                            t.receiver.lock().unwrap_or_else(|e| e.into_inner());
                                         guard.take()
                                     };
                                     match rx {
@@ -5619,9 +5665,8 @@ impl Vm {
                             "embed() requires an API key. Set TL_OPENAI_KEY or pass as 3rd arg",
                         )
                     })?;
-                let tensor =
-                    tl_ai::embed::embed_api(&text, "openai", &model, &api_key)
-                        .map_err(|e| runtime_err(format!("embed error: {e}")))?;
+                let tensor = tl_ai::embed::embed_api(&text, "openai", &model, &api_key)
+                    .map_err(|e| runtime_err(format!("embed error: {e}")))?;
                 Ok(VmValue::Tensor(Arc::new(tensor)))
             }
             #[cfg(not(feature = "native"))]
@@ -5773,11 +5818,15 @@ impl Vm {
             BuiltinId::StreamAgent => Err(runtime_err("stream_agent() not available in WASM")),
 
             // Phase E5: Random & Sampling
+            #[cfg(feature = "native")]
             BuiltinId::Random => {
                 let mut rng = rand::thread_rng();
                 let val: f64 = rand::Rng::r#gen(&mut rng);
                 Ok(VmValue::Float(val))
             }
+            #[cfg(not(feature = "native"))]
+            BuiltinId::Random => Err(runtime_err("random() not available in WASM")),
+            #[cfg(feature = "native")]
             BuiltinId::RandomInt => {
                 if args.len() < 2 {
                     return Err(runtime_err("random_int() expects min and max"));
@@ -5797,6 +5846,9 @@ impl Vm {
                 let val: i64 = rand::Rng::gen_range(&mut rng, a..b);
                 Ok(VmValue::Int(val))
             }
+            #[cfg(not(feature = "native"))]
+            BuiltinId::RandomInt => Err(runtime_err("random_int() not available in WASM")),
+            #[cfg(feature = "native")]
             BuiltinId::Sample => {
                 use rand::seq::SliceRandom;
                 if args.is_empty() {
@@ -5823,6 +5875,8 @@ impl Vm {
                     Ok(VmValue::List(Box::new(result)))
                 }
             }
+            #[cfg(not(feature = "native"))]
+            BuiltinId::Sample => Err(runtime_err("sample() not available in WASM")),
 
             // Phase E6: Math builtins
             BuiltinId::Exp => {
@@ -5847,18 +5901,27 @@ impl Vm {
                 };
                 Ok(VmValue::Bool(result))
             }
-            BuiltinId::Sign => {
-                match args.first() {
-                    Some(VmValue::Int(n)) => Ok(VmValue::Int(if *n > 0 { 1 } else if *n < 0 { -1 } else { 0 })),
-                    Some(VmValue::Float(f)) => {
-                        if f.is_nan() { Ok(VmValue::Float(f64::NAN)) }
-                        else if *f > 0.0 { Ok(VmValue::Int(1)) }
-                        else if *f < 0.0 { Ok(VmValue::Int(-1)) }
-                        else { Ok(VmValue::Int(0)) }
+            BuiltinId::Sign => match args.first() {
+                Some(VmValue::Int(n)) => Ok(VmValue::Int(if *n > 0 {
+                    1
+                } else if *n < 0 {
+                    -1
+                } else {
+                    0
+                })),
+                Some(VmValue::Float(f)) => {
+                    if f.is_nan() {
+                        Ok(VmValue::Float(f64::NAN))
+                    } else if *f > 0.0 {
+                        Ok(VmValue::Int(1))
+                    } else if *f < 0.0 {
+                        Ok(VmValue::Int(-1))
+                    } else {
+                        Ok(VmValue::Int(0))
                     }
-                    _ => Err(runtime_err("sign() expects a number")),
                 }
-            }
+                _ => Err(runtime_err("sign() expects a number")),
+            },
             // Phase E8: Table assertion
             #[cfg(feature = "native")]
             BuiltinId::AssertTableEq => {
@@ -5867,48 +5930,72 @@ impl Vm {
                 }
                 let t1 = match &args[0] {
                     VmValue::Table(t) => t,
-                    _ => return Err(runtime_err("assert_table_eq() first argument must be a table")),
+                    _ => {
+                        return Err(runtime_err(
+                            "assert_table_eq() first argument must be a table",
+                        ));
+                    }
                 };
                 let t2 = match &args[1] {
                     VmValue::Table(t) => t,
-                    _ => return Err(runtime_err("assert_table_eq() second argument must be a table")),
+                    _ => {
+                        return Err(runtime_err(
+                            "assert_table_eq() second argument must be a table",
+                        ));
+                    }
                 };
                 // Compare schemas
                 if t1.df.schema() != t2.df.schema() {
                     return Err(runtime_err(format!(
                         "assert_table_eq: schemas differ\n  left:  {:?}\n  right: {:?}",
-                        t1.df.schema(), t2.df.schema()
+                        t1.df.schema(),
+                        t2.df.schema()
                     )));
                 }
                 // Collect both DataFrames
                 let batches1 = self.engine().collect(t1.df.clone()).map_err(runtime_err)?;
                 let batches2 = self.engine().collect(t2.df.clone()).map_err(runtime_err)?;
                 // Flatten into rows and compare
-                let rows1: Vec<String> = batches1.iter()
-                    .flat_map(|b| (0..b.num_rows()).map(move |r| {
-                        (0..b.num_columns()).map(|c| {
-                            let col = b.column(c);
-                            format!("{:?}", col.slice(r, 1))
-                        }).collect::<Vec<_>>().join(",")
-                    }))
+                let rows1: Vec<String> = batches1
+                    .iter()
+                    .flat_map(|b| {
+                        (0..b.num_rows()).map(move |r| {
+                            (0..b.num_columns())
+                                .map(|c| {
+                                    let col = b.column(c);
+                                    format!("{:?}", col.slice(r, 1))
+                                })
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        })
+                    })
                     .collect();
-                let rows2: Vec<String> = batches2.iter()
-                    .flat_map(|b| (0..b.num_rows()).map(move |r| {
-                        (0..b.num_columns()).map(|c| {
-                            let col = b.column(c);
-                            format!("{:?}", col.slice(r, 1))
-                        }).collect::<Vec<_>>().join(",")
-                    }))
+                let rows2: Vec<String> = batches2
+                    .iter()
+                    .flat_map(|b| {
+                        (0..b.num_rows()).map(move |r| {
+                            (0..b.num_columns())
+                                .map(|c| {
+                                    let col = b.column(c);
+                                    format!("{:?}", col.slice(r, 1))
+                                })
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        })
+                    })
                     .collect();
                 if rows1.len() != rows2.len() {
                     return Err(runtime_err(format!(
-                        "assert_table_eq: row count differs ({} vs {})", rows1.len(), rows2.len()
+                        "assert_table_eq: row count differs ({} vs {})",
+                        rows1.len(),
+                        rows2.len()
                     )));
                 }
                 for (i, (r1, r2)) in rows1.iter().zip(rows2.iter()).enumerate() {
                     if r1 != r2 {
                         return Err(runtime_err(format!(
-                            "assert_table_eq: row {} differs\n  left:  {}\n  right: {}", i, r1, r2
+                            "assert_table_eq: row {} differs\n  left:  {}\n  right: {}",
+                            i, r1, r2
                         )));
                     }
                 }
@@ -5921,7 +6008,8 @@ impl Vm {
             BuiltinId::Today => {
                 use chrono::{Datelike, TimeZone};
                 let now = chrono::Utc::now();
-                let midnight = chrono::Utc.with_ymd_and_hms(now.year(), now.month(), now.day(), 0, 0, 0)
+                let midnight = chrono::Utc
+                    .with_ymd_and_hms(now.year(), now.month(), now.day(), 0, 0, 0)
                     .single()
                     .ok_or_else(|| runtime_err("Failed to compute today"))?;
                 Ok(VmValue::DateTime(midnight.timestamp_millis()))
@@ -5955,7 +6043,9 @@ impl Vm {
             }
             BuiltinId::DateDiff => {
                 if args.len() < 3 {
-                    return Err(runtime_err("date_diff() expects datetime1, datetime2, unit"));
+                    return Err(runtime_err(
+                        "date_diff() expects datetime1, datetime2, unit",
+                    ));
                 }
                 let ms1 = match &args[0] {
                     VmValue::DateTime(ms) => *ms,
@@ -5997,18 +6087,50 @@ impl Vm {
                 };
                 use chrono::{Datelike, TimeZone, Timelike};
                 let secs = ms / 1000;
-                let dt = chrono::Utc.timestamp_opt(secs, 0).single()
+                let dt = chrono::Utc
+                    .timestamp_opt(secs, 0)
+                    .single()
                     .ok_or_else(|| runtime_err("Invalid timestamp"))?;
                 let truncated = match unit {
-                    "second" => chrono::Utc.with_ymd_and_hms(dt.year(), dt.month(), dt.day(), dt.hour(), dt.minute(), dt.second()).single(),
-                    "minute" => chrono::Utc.with_ymd_and_hms(dt.year(), dt.month(), dt.day(), dt.hour(), dt.minute(), 0).single(),
-                    "hour" => chrono::Utc.with_ymd_and_hms(dt.year(), dt.month(), dt.day(), dt.hour(), 0, 0).single(),
-                    "day" => chrono::Utc.with_ymd_and_hms(dt.year(), dt.month(), dt.day(), 0, 0, 0).single(),
-                    "month" => chrono::Utc.with_ymd_and_hms(dt.year(), dt.month(), 1, 0, 0, 0).single(),
-                    "year" => chrono::Utc.with_ymd_and_hms(dt.year(), 1, 1, 0, 0, 0).single(),
+                    "second" => chrono::Utc
+                        .with_ymd_and_hms(
+                            dt.year(),
+                            dt.month(),
+                            dt.day(),
+                            dt.hour(),
+                            dt.minute(),
+                            dt.second(),
+                        )
+                        .single(),
+                    "minute" => chrono::Utc
+                        .with_ymd_and_hms(
+                            dt.year(),
+                            dt.month(),
+                            dt.day(),
+                            dt.hour(),
+                            dt.minute(),
+                            0,
+                        )
+                        .single(),
+                    "hour" => chrono::Utc
+                        .with_ymd_and_hms(dt.year(), dt.month(), dt.day(), dt.hour(), 0, 0)
+                        .single(),
+                    "day" => chrono::Utc
+                        .with_ymd_and_hms(dt.year(), dt.month(), dt.day(), 0, 0, 0)
+                        .single(),
+                    "month" => chrono::Utc
+                        .with_ymd_and_hms(dt.year(), dt.month(), 1, 0, 0, 0)
+                        .single(),
+                    "year" => chrono::Utc
+                        .with_ymd_and_hms(dt.year(), 1, 1, 0, 0, 0)
+                        .single(),
                     _ => return Err(runtime_err(format!("Unknown truncation unit: {unit}"))),
                 };
-                Ok(VmValue::DateTime(truncated.ok_or_else(|| runtime_err("Invalid truncation"))?.timestamp_millis()))
+                Ok(VmValue::DateTime(
+                    truncated
+                        .ok_or_else(|| runtime_err("Invalid truncation"))?
+                        .timestamp_millis(),
+                ))
             }
             BuiltinId::DateExtract => {
                 if args.len() < 2 {
@@ -6025,7 +6147,9 @@ impl Vm {
                 };
                 use chrono::{Datelike, TimeZone, Timelike};
                 let secs = ms / 1000;
-                let dt = chrono::Utc.timestamp_opt(secs, 0).single()
+                let dt = chrono::Utc
+                    .timestamp_opt(secs, 0)
+                    .single()
                     .ok_or_else(|| runtime_err("Invalid timestamp"))?;
                 let val = match part {
                     "year" => dt.year() as i64,
@@ -6366,15 +6490,9 @@ impl Vm {
         let mut output_format = None;
         let mut tools = Vec::new();
 
-        if let Constant::AstExprList(args) =
-            &frame.prototype.constants[config_const as usize]
-        {
+        if let Constant::AstExprList(args) = &frame.prototype.constants[config_const as usize] {
             for arg in args {
-                if let AstExpr::NamedArg {
-                    name: key,
-                    value,
-                } = arg
-                {
+                if let AstExpr::NamedArg { name: key, value } = arg {
                     if let Some(tool_name) = key.strip_prefix("tool:") {
                         // Tool definition — extract description and parameters from map expr
                         let (desc, params) = Self::extract_tool_from_ast(value);
@@ -6565,18 +6683,24 @@ impl Vm {
                     messages.push(serde_json::json!({"role": "assistant", "content": &text}));
 
                     // Build conversation history as list of [role, content] pairs
-                    let history_list: Vec<VmValue> = messages.iter().filter_map(|m| {
-                        let role = m["role"].as_str()?;
-                        let content = m["content"].as_str()?;
-                        Some(VmValue::List(Box::new(vec![
-                            VmValue::String(Arc::from(role)),
-                            VmValue::String(Arc::from(content)),
-                        ])))
-                    }).collect();
+                    let history_list: Vec<VmValue> = messages
+                        .iter()
+                        .filter_map(|m| {
+                            let role = m["role"].as_str()?;
+                            let content = m["content"].as_str()?;
+                            Some(VmValue::List(Box::new(vec![
+                                VmValue::String(Arc::from(role)),
+                                VmValue::String(Arc::from(content)),
+                            ])))
+                        })
+                        .collect();
 
                     // Agent completed — return result map with history
                     let result = VmValue::Map(Box::new(vec![
-                        (Arc::from("response"), VmValue::String(Arc::from(text.as_str()))),
+                        (
+                            Arc::from("response"),
+                            VmValue::String(Arc::from(text.as_str())),
+                        ),
                         (Arc::from("turns"), VmValue::Int(turn as i64 + 1)),
                         (Arc::from("history"), VmValue::List(Box::new(history_list))),
                     ]));
@@ -6610,11 +6734,15 @@ impl Vm {
                     }));
 
                     // Execute each tool call
-                    let declared: Vec<&str> = agent_def.tools.iter().map(|t| t.name.as_str()).collect();
+                    let declared: Vec<&str> =
+                        agent_def.tools.iter().map(|t| t.name.as_str()).collect();
                     let mut results: Vec<(String, String)> = Vec::new();
                     for tc in &tool_calls {
                         if !declared.contains(&tc.name.as_str()) {
-                            results.push((tc.name.clone(), format!("Error: '{}' not in declared tools", tc.name)));
+                            results.push((
+                                tc.name.clone(),
+                                format!("Error: '{}' not in declared tools", tc.name),
+                            ));
                             continue;
                         }
                         let result_str = self.execute_tool_call(&tc.name, &tc.input)?;
@@ -6634,8 +6762,7 @@ impl Vm {
                     }
 
                     // Format tool results and add to messages
-                    let result_msgs =
-                        format_tool_result_messages(provider, &tool_calls, &results);
+                    let result_msgs = format_tool_result_messages(provider, &tool_calls, &results);
                     messages.extend(result_msgs);
                 }
             }
@@ -6657,9 +6784,7 @@ impl Vm {
         let func = self
             .globals
             .get(tool_name)
-            .ok_or_else(|| {
-                runtime_err(format!("Agent tool function '{tool_name}' not found"))
-            })?
+            .ok_or_else(|| runtime_err(format!("Agent tool function '{tool_name}' not found")))?
             .clone();
 
         // Convert JSON args to VmValues
@@ -6679,9 +6804,7 @@ impl Vm {
                 // Pass values in order as positional args
                 map.values().map(|v| self.json_value_to_vm(v)).collect()
             }
-            serde_json::Value::Array(arr) => {
-                arr.iter().map(|v| self.json_value_to_vm(v)).collect()
-            }
+            serde_json::Value::Array(arr) => arr.iter().map(|v| self.json_value_to_vm(v)).collect(),
             _ => vec![self.json_value_to_vm(input)],
         }
     }
@@ -6701,9 +6824,9 @@ impl Vm {
             }
             serde_json::Value::Bool(b) => VmValue::Bool(*b),
             serde_json::Value::Null => VmValue::None,
-            serde_json::Value::Array(arr) => {
-                VmValue::List(Box::new(arr.iter().map(|v| self.json_value_to_vm(v)).collect()))
-            }
+            serde_json::Value::Array(arr) => VmValue::List(Box::new(
+                arr.iter().map(|v| self.json_value_to_vm(v)).collect(),
+            )),
             serde_json::Value::Object(map) => {
                 let pairs: Vec<(Arc<str>, VmValue)> = map
                     .iter()
@@ -6715,11 +6838,7 @@ impl Vm {
     }
 
     #[cfg(feature = "native")]
-    fn call_value(
-        &mut self,
-        func: VmValue,
-        args: &[VmValue],
-    ) -> Result<VmValue, TlError> {
+    fn call_value(&mut self, func: VmValue, args: &[VmValue]) -> Result<VmValue, TlError> {
         match &func {
             VmValue::Function(_) => {
                 // Set up a synthetic call: push args to stack, do_call
@@ -6732,13 +6851,7 @@ impl Vm {
                 }
                 self.ensure_stack(self.stack.len() + 256);
 
-                self.do_call(
-                    func,
-                    func_slot,
-                    0,
-                    1,
-                    args.len() as u8,
-                )?;
+                self.do_call(func, func_slot, 0, 1, args.len() as u8)?;
 
                 // Run until the function returns
                 let entry_depth = self.frames.len() - 1;
@@ -7487,8 +7600,13 @@ impl Vm {
                 }
             }
             "is_empty" => Ok(VmValue::Bool(s.is_empty())),
-            "is_numeric" => Ok(VmValue::Bool(s.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-'))),
-            "is_alpha" => Ok(VmValue::Bool(!s.is_empty() && s.chars().all(|c| c.is_alphabetic()))),
+            "is_numeric" => Ok(VmValue::Bool(
+                s.chars()
+                    .all(|c| c.is_ascii_digit() || c == '.' || c == '-'),
+            )),
+            "is_alpha" => Ok(VmValue::Bool(
+                !s.is_empty() && s.chars().all(|c| c.is_alphabetic()),
+            )),
             "strip_prefix" => {
                 if args.is_empty() {
                     return Err(runtime_err("strip_prefix() expects a string"));
@@ -7682,7 +7800,9 @@ impl Vm {
                     (VmValue::String(x), VmValue::String(y)) => x.cmp(y),
                     _ => std::cmp::Ordering::Equal,
                 });
-                Ok(VmValue::List(Box::new(keyed.into_iter().map(|(_, v)| v).collect())))
+                Ok(VmValue::List(Box::new(
+                    keyed.into_iter().map(|(_, v)| v).collect(),
+                )))
             }
             "group_by" => {
                 if args.is_empty() {
@@ -7937,7 +8057,9 @@ impl Vm {
                 if let VmValue::Map(other) = &args[0] {
                     let mut merged = pairs;
                     for (k, v) in other.iter() {
-                        if let Some(existing) = merged.iter_mut().find(|(mk, _)| mk.as_ref() == k.as_ref()) {
+                        if let Some(existing) =
+                            merged.iter_mut().find(|(mk, _)| mk.as_ref() == k.as_ref())
+                        {
                             existing.1 = v.clone();
                         } else {
                             merged.push((k.clone(), v.clone()));
@@ -7951,7 +8073,9 @@ impl Vm {
             "entries" => {
                 let entries: Vec<VmValue> = pairs
                     .iter()
-                    .map(|(k, v)| VmValue::List(Box::new(vec![VmValue::String(k.clone()), v.clone()])))
+                    .map(|(k, v)| {
+                        VmValue::List(Box::new(vec![VmValue::String(k.clone()), v.clone()]))
+                    })
                     .collect();
                 Ok(VmValue::List(Box::new(entries)))
             }
@@ -7974,7 +8098,8 @@ impl Vm {
                 let func = &args[0];
                 let mut result = Vec::new();
                 for (k, v) in pairs {
-                    let val = self.call_vm_function(func, &[VmValue::String(k.clone()), v.clone()])?;
+                    let val =
+                        self.call_vm_function(func, &[VmValue::String(k.clone()), v.clone()])?;
                     if val.is_truthy() {
                         result.push((k, v));
                     }
@@ -7987,7 +8112,10 @@ impl Vm {
                 }
                 if let VmValue::String(key) = &args[0] {
                     let mut new_pairs = pairs;
-                    if let Some(existing) = new_pairs.iter_mut().find(|(k, _)| k.as_ref() == key.as_ref()) {
+                    if let Some(existing) = new_pairs
+                        .iter_mut()
+                        .find(|(k, _)| k.as_ref() == key.as_ref())
+                    {
                         existing.1 = args[1].clone();
                     } else {
                         new_pairs.push((key.clone(), args[1].clone()));
@@ -8815,11 +8943,13 @@ impl Vm {
             // Phase F2: Window functions
             "window" => {
                 use tl_data::datafusion::logical_expr::{
-                    expr::{WindowFunction as WinFunc, Sort as DfSort},
-                    WindowFunctionDefinition, WindowFrame,
+                    WindowFrame, WindowFunctionDefinition,
+                    expr::{Sort as DfSort, WindowFunction as WinFunc},
                 };
                 if ast_args.is_empty() {
-                    return Err(runtime_err("window() expects named arguments: fn, partition_by, order_by, alias"));
+                    return Err(runtime_err(
+                        "window() expects named arguments: fn, partition_by, order_by, alias",
+                    ));
                 }
                 let mut win_fn_name = String::new();
                 let mut partition_by_cols: Vec<String> = Vec::new();
@@ -8868,7 +8998,9 @@ impl Vm {
                 }
 
                 if win_fn_name.is_empty() {
-                    return Err(runtime_err("window() requires fn: parameter (rank, row_number, dense_rank, lag, lead, ntile)"));
+                    return Err(runtime_err(
+                        "window() requires fn: parameter (rank, row_number, dense_rank, lag, lead, ntile)",
+                    ));
                 }
                 if alias_name.is_empty() {
                     alias_name = win_fn_name.clone();
@@ -8887,25 +9019,38 @@ impl Vm {
                     "lead" => session.udwf("lead"),
                     "first_value" => session.udwf("first_value"),
                     "last_value" => session.udwf("last_value"),
-                    _ => return Err(runtime_err(format!("Unknown window function: {win_fn_name}"))),
-                }.map_err(|e| runtime_err(format!("Window function '{win_fn_name}' not available: {e}")))?;
+                    _ => {
+                        return Err(runtime_err(format!(
+                            "Unknown window function: {win_fn_name}"
+                        )));
+                    }
+                }
+                .map_err(|e| {
+                    runtime_err(format!(
+                        "Window function '{win_fn_name}' not available: {e}"
+                    ))
+                })?;
 
                 let fun = WindowFunctionDefinition::WindowUDF(win_udf);
 
                 // Build function args (for lag/lead/ntile)
-                let func_args: Vec<tl_data::datafusion::prelude::Expr> = win_args.iter().map(|a| {
-                    if let Ok(n) = a.parse::<i64>() {
-                        lit(n)
-                    } else {
-                        col(a.as_str())
-                    }
-                }).collect();
+                let func_args: Vec<tl_data::datafusion::prelude::Expr> = win_args
+                    .iter()
+                    .map(|a| {
+                        if let Ok(n) = a.parse::<i64>() {
+                            lit(n)
+                        } else {
+                            col(a.as_str())
+                        }
+                    })
+                    .collect();
 
                 let partition_exprs: Vec<tl_data::datafusion::prelude::Expr> =
                     partition_by_cols.iter().map(|c| col(c.as_str())).collect();
-                let order_exprs: Vec<DfSort> = order_by_cols.iter().map(|c| {
-                    DfSort::new(col(c.as_str()), !descending, true)
-                }).collect();
+                let order_exprs: Vec<DfSort> = order_by_cols
+                    .iter()
+                    .map(|c| DfSort::new(col(c.as_str()), !descending, true))
+                    .collect();
 
                 let has_order = !order_exprs.is_empty();
                 let win_expr = tl_data::datafusion::prelude::Expr::WindowFunction(WinFunc {
@@ -8915,15 +9060,20 @@ impl Vm {
                     order_by: order_exprs,
                     window_frame: WindowFrame::new(if has_order { Some(true) } else { None }),
                     null_treatment: None,
-                }).alias(&alias_name);
+                })
+                .alias(&alias_name);
 
                 // Get all existing columns and add the window column
                 let schema = df.schema();
-                let mut select_exprs: Vec<tl_data::datafusion::prelude::Expr> =
-                    schema.fields().iter().map(|f| col(f.name().as_str())).collect();
+                let mut select_exprs: Vec<tl_data::datafusion::prelude::Expr> = schema
+                    .fields()
+                    .iter()
+                    .map(|f| col(f.name().as_str()))
+                    .collect();
                 select_exprs.push(win_expr);
 
-                let result_df = df.select(select_exprs)
+                let result_df = df
+                    .select(select_exprs)
                     .map_err(|e| runtime_err(format!("Window function error: {e}")))?;
                 Ok(VmValue::Table(VmTable { df: result_df }))
             }
@@ -8937,7 +9087,8 @@ impl Vm {
                     VmValue::Table(t) => t.df,
                     _ => return Err(runtime_err("union() argument must be a table")),
                 };
-                let result_df = df.union(right_df)
+                let result_df = df
+                    .union(right_df)
                     .map_err(|e| runtime_err(format!("Union error: {e}")))?;
                 Ok(VmValue::Table(VmTable { df: result_df }))
             }
@@ -8957,15 +9108,22 @@ impl Vm {
                     }
                     _ => {
                         let val = self.eval_ast_to_string(&ast_args[0])?;
-                        val.parse::<usize>().map_err(|_| runtime_err("sample() expects integer count or float fraction"))?
+                        val.parse::<usize>().map_err(|_| {
+                            runtime_err("sample() expects integer count or float fraction")
+                        })?
                     }
                 };
                 if total_rows == 0 || sample_count == 0 {
                     let schema = batches[0].schema();
-                    let empty = tl_data::datafusion::arrow::record_batch::RecordBatch::new_empty(schema.clone());
+                    let empty = tl_data::datafusion::arrow::record_batch::RecordBatch::new_empty(
+                        schema.clone(),
+                    );
                     let mem_table = MemTable::try_new(schema, vec![vec![empty]])
                         .map_err(|e| runtime_err(format!("{e}")))?;
-                    let new_df = self.engine().session_ctx().read_table(Arc::new(mem_table))
+                    let new_df = self
+                        .engine()
+                        .session_ctx()
+                        .read_table(Arc::new(mem_table))
                         .map_err(|e| runtime_err(format!("{e}")))?;
                     return Ok(VmValue::Table(VmTable { df: new_df }));
                 }
@@ -8977,23 +9135,29 @@ impl Vm {
                 indices.truncate(sample_count);
                 indices.sort();
                 // Concatenate and take
-                let combined = compute::concat_batches(
-                    &batches[0].schema(), &batches
-                ).map_err(|e| runtime_err(format!("{e}")))?;
-                let idx_array = UInt32Array::from(
-                    indices.iter().map(|&i| i as u32).collect::<Vec<_>>()
-                );
-                let sampled_cols: Vec<tl_data::datafusion::arrow::array::ArrayRef> = (0..combined.num_columns())
-                    .map(|c| compute::take(combined.column(c), &idx_array, None)
-                        .map_err(|e| runtime_err(format!("{e}"))))
+                let combined = compute::concat_batches(&batches[0].schema(), &batches)
+                    .map_err(|e| runtime_err(format!("{e}")))?;
+                let idx_array =
+                    UInt32Array::from(indices.iter().map(|&i| i as u32).collect::<Vec<_>>());
+                let sampled_cols: Vec<tl_data::datafusion::arrow::array::ArrayRef> = (0..combined
+                    .num_columns())
+                    .map(|c| {
+                        compute::take(combined.column(c), &idx_array, None)
+                            .map_err(|e| runtime_err(format!("{e}")))
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 let sampled_batch = tl_data::datafusion::arrow::record_batch::RecordBatch::try_new(
-                    combined.schema(), sampled_cols
-                ).map_err(|e| runtime_err(format!("{e}")))?;
-                let mem_table = MemTable::try_new(
-                    sampled_batch.schema(), vec![vec![sampled_batch]]
-                ).map_err(|e| runtime_err(format!("{e}")))?;
-                let new_df = self.engine().session_ctx().read_table(Arc::new(mem_table))
+                    combined.schema(),
+                    sampled_cols,
+                )
+                .map_err(|e| runtime_err(format!("{e}")))?;
+                let mem_table =
+                    MemTable::try_new(sampled_batch.schema(), vec![vec![sampled_batch]])
+                        .map_err(|e| runtime_err(format!("{e}")))?;
+                let new_df = self
+                    .engine()
+                    .session_ctx()
+                    .read_table(Arc::new(mem_table))
                     .map_err(|e| runtime_err(format!("{e}")))?;
                 Ok(VmValue::Table(VmTable { df: new_df }))
             }

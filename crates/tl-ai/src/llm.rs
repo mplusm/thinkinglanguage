@@ -156,14 +156,26 @@ pub fn chat_with_tools(
             let url = effective_base_url
                 .clone()
                 .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
-            call_openai(&http, model, system, messages, tools, &resolved_key, &url, output_format)
+            call_openai(
+                &http,
+                model,
+                system,
+                messages,
+                tools,
+                &resolved_key,
+                &url,
+                output_format,
+            )
         };
         match result {
             Ok(resp) => return Ok(resp),
             Err(e) => {
-                let is_transient = e.contains("429") || e.contains("500")
-                    || e.contains("502") || e.contains("503")
-                    || e.contains("rate limit") || e.contains("overloaded");
+                let is_transient = e.contains("429")
+                    || e.contains("500")
+                    || e.contains("502")
+                    || e.contains("503")
+                    || e.contains("rate limit")
+                    || e.contains("overloaded");
                 if is_transient && attempt < max_retries {
                     let delay_ms = 1000 * 2u64.pow(attempt); // 1s, 2s, 4s
                     std::thread::sleep(std::time::Duration::from_millis(delay_ms));
@@ -417,8 +429,7 @@ pub fn stream_chat(
     if use_anthropic {
         stream_anthropic(&http, model, system, messages, &resolved_key)
     } else {
-        let url = effective_base_url
-            .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+        let url = effective_base_url.unwrap_or_else(|| "https://api.openai.com/v1".to_string());
         stream_openai(&http, model, system, messages, &resolved_key, &url)
     }
 }
@@ -440,15 +451,25 @@ impl StreamReader {
         loop {
             let mut line = String::new();
             match self.lines.read_line(&mut line) {
-                Ok(0) => { self.done = true; return Ok(None); }
+                Ok(0) => {
+                    self.done = true;
+                    return Ok(None);
+                }
                 Ok(_) => {}
                 Err(e) => return Err(format!("Stream read error: {e}")),
             }
             let line = line.trim();
-            if line.is_empty() { continue; }
-            if !line.starts_with("data: ") { continue; }
+            if line.is_empty() {
+                continue;
+            }
+            if !line.starts_with("data: ") {
+                continue;
+            }
             let data = &line[6..];
-            if data == "[DONE]" { self.done = true; return Ok(None); }
+            if data == "[DONE]" {
+                self.done = true;
+                return Ok(None);
+            }
 
             let json: serde_json::Value = match serde_json::from_str(data) {
                 Ok(v) => v,
@@ -459,7 +480,9 @@ impl StreamReader {
                 // Anthropic SSE: {"type":"content_block_delta","delta":{"type":"text_delta","text":"..."}}
                 if json["type"].as_str() == Some("content_block_delta") {
                     if let Some(text) = json["delta"]["text"].as_str() {
-                        if !text.is_empty() { return Ok(Some(text.to_string())); }
+                        if !text.is_empty() {
+                            return Ok(Some(text.to_string()));
+                        }
                     }
                 } else if json["type"].as_str() == Some("message_stop") {
                     self.done = true;
@@ -468,7 +491,9 @@ impl StreamReader {
             } else {
                 // OpenAI SSE: {"choices":[{"delta":{"content":"..."}}]}
                 if let Some(content) = json["choices"][0]["delta"]["content"].as_str() {
-                    if !content.is_empty() { return Ok(Some(content.to_string())); }
+                    if !content.is_empty() {
+                        return Ok(Some(content.to_string()));
+                    }
                 }
                 // Check for finish_reason
                 if json["choices"][0]["finish_reason"].as_str().is_some() {

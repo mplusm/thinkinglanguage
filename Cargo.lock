@@ -5741,7 +5741,7 @@ dependencies = [
 
 [[package]]
 name = "thinkinglanguage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "clap",
@@ -5769,7 +5769,7 @@ dependencies = [
 
 [[package]]
 name = "thinkinglanguage-types"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "tl-ast",
  "tl-errors",
@@ -5902,7 +5902,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tl-ai"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "linfa",
  "linfa-linear",
@@ -5919,14 +5919,14 @@ dependencies = [
 
 [[package]]
 name = "tl-ast"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "tl-errors",
 ]
 
 [[package]]
 name = "tl-benchmarks"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "criterion",
  "tempfile",
@@ -5938,7 +5938,7 @@ dependencies = [
 
 [[package]]
 name = "tl-compiler"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -5974,7 +5974,7 @@ dependencies = [
 
 [[package]]
 name = "tl-data"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "datafusion",
  "mysql",
@@ -5994,7 +5994,7 @@ dependencies = [
 
 [[package]]
 name = "tl-errors"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ariadne",
  "thiserror 2.0.18",
@@ -6002,7 +6002,7 @@ dependencies = [
 
 [[package]]
 name = "tl-gpu"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "env_logger",
@@ -6014,7 +6014,7 @@ dependencies = [
 
 [[package]]
 name = "tl-interpreter"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "md-5",
@@ -6039,14 +6039,14 @@ dependencies = [
 
 [[package]]
 name = "tl-ir"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "tl-ast",
 ]
 
 [[package]]
 name = "tl-lexer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "logos",
  "tl-errors",
@@ -6054,7 +6054,7 @@ dependencies = [
 
 [[package]]
 name = "tl-llvm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "inkwell",
  "llvm-sys",
@@ -6067,7 +6067,7 @@ dependencies = [
 
 [[package]]
 name = "tl-lsp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "log",
  "lsp-server",
@@ -6083,7 +6083,7 @@ dependencies = [
 
 [[package]]
 name = "tl-package"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "flate2",
@@ -6101,7 +6101,7 @@ dependencies = [
 
 [[package]]
 name = "tl-parser"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "tl-ast",
  "tl-errors",
@@ -6110,7 +6110,7 @@ dependencies = [
 
 [[package]]
 name = "tl-registry"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -6128,7 +6128,7 @@ dependencies = [
 
 [[package]]
 name = "tl-stream"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "rdkafka",
@@ -6142,7 +6142,7 @@ dependencies = [
 
 [[package]]
 name = "tl-wasm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
  "thinkinglanguage-types",

@@ -15,8 +15,8 @@ pub mod train;
 
 pub use embed::similarity;
 pub use llm::{
-    LlmResponse, StreamReader, ToolCall, chat as ai_chat, chat_with_tools,
-    complete as ai_complete, format_tool_result_messages, stream_chat,
+    LlmResponse, StreamReader, ToolCall, chat as ai_chat, chat_with_tools, complete as ai_complete,
+    format_tool_result_messages, stream_chat,
 };
 pub use model::{LinfaKind, ModelMeta, TlModel};
 pub use predict::{predict, predict_batch};

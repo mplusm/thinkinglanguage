@@ -12,4 +12,4 @@ readme = "../../README.md"
 description = "Intermediate Representation for ThinkingLanguage table pipe optimization"
 
 [dependencies]
-tl-ast = { path = "../tl-ast", version = "0.1.0" }
+tl-ast = { path = "../tl-ast", version = "0.2.0" }

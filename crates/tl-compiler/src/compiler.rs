@@ -1547,13 +1547,8 @@ impl Compiler {
             .add_constant(Constant::AstExprList(config_exprs));
 
         // Emit AgentExec opcode
-        self.current().emit_abc(
-            Op::AgentExec,
-            dest,
-            name_const as u8,
-            config_idx as u8,
-            0,
-        );
+        self.current()
+            .emit_abc(Op::AgentExec, dest, name_const as u8, config_idx as u8, 0);
 
         // Set as global
         let gname = self
@@ -1565,17 +1560,27 @@ impl Compiler {
         if let Some(stmts) = on_tool_call {
             let hook_name = format!("__agent_{name}_on_tool_call__");
             let params = vec![
-                tl_ast::Param { name: "tool_name".into(), type_ann: None },
-                tl_ast::Param { name: "tool_args".into(), type_ann: None },
-                tl_ast::Param { name: "tool_result".into(), type_ann: None },
+                tl_ast::Param {
+                    name: "tool_name".into(),
+                    type_ann: None,
+                },
+                tl_ast::Param {
+                    name: "tool_args".into(),
+                    type_ann: None,
+                },
+                tl_ast::Param {
+                    name: "tool_result".into(),
+                    type_ann: None,
+                },
             ];
             self.compile_agent_hook(&hook_name, &params, stmts)?;
         }
         if let Some(stmts) = on_complete {
             let hook_name = format!("__agent_{name}_on_complete__");
-            let params = vec![
-                tl_ast::Param { name: "result".into(), type_ann: None },
-            ];
+            let params = vec![tl_ast::Param {
+                name: "result".into(),
+                type_ann: None,
+            }];
             self.compile_agent_hook(&hook_name, &params, stmts)?;
         }
 
@@ -2070,7 +2075,8 @@ impl Compiler {
                 self.compile_expr(start, start_reg)?;
                 self.compile_expr(end, end_reg)?;
                 // CallBuiltin Range with 2 args (ABx: dest, builtin_id; next: argc, first_arg)
-                self.current().emit_abx(Op::CallBuiltin, dest, BuiltinId::Range as u16, 0);
+                self.current()
+                    .emit_abx(Op::CallBuiltin, dest, BuiltinId::Range as u16, 0);
                 self.current().emit_abc(Op::Move, 2, start_reg, 0, 0);
                 self.current().free_register();
                 self.current().free_register();
@@ -2292,7 +2298,8 @@ impl Compiler {
         self.current()
             .emit_abx(Op::CallBuiltin, dest, builtin_id as u16, 0);
         // Next instruction: A=arg_count, B=first_arg_reg
-        self.current().emit_abc(Op::Move, args.len() as u8, args_start, 0, 0);
+        self.current()
+            .emit_abc(Op::Move, args.len() as u8, args_start, 0, 0);
 
         for _ in args {
             self.current().free_register();
@@ -2496,7 +2503,8 @@ impl Compiler {
                             let r = self.current().alloc_register();
                             self.compile_expr(arg, r)?;
                         }
-                        self.current().emit_abx(Op::CallBuiltin, dest, builtin_id as u16, 0);
+                        self.current()
+                            .emit_abx(Op::CallBuiltin, dest, builtin_id as u16, 0);
                         self.current()
                             .emit_abc(Op::Move, (args.len() + 1) as u8, args_start, 0, 0);
                         for _ in args {
@@ -2838,7 +2846,8 @@ impl Compiler {
                 // Check list length
                 let len_builtin_reg = self.current().alloc_register();
                 // Call len(subj)
-                self.current().emit_abx(Op::CallBuiltin, len_builtin_reg, BuiltinId::Len as u16, 0);
+                self.current()
+                    .emit_abx(Op::CallBuiltin, len_builtin_reg, BuiltinId::Len as u16, 0);
                 self.current().emit_abc(Op::Move, 1, subj_reg, 0, 0); // arg count = 1
 
                 let expected_len_reg = self.current().alloc_register();

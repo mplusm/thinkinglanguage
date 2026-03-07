@@ -13,4 +13,4 @@ description = "Lexer/tokenizer for ThinkingLanguage"
 
 [dependencies]
 logos.workspace = true
-tl-errors = { path = "../tl-errors", version = "0.1.0" }
+tl-errors = { path = "../tl-errors", version = "0.2.0" }

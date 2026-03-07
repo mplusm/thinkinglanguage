@@ -35,7 +35,14 @@ impl std::fmt::Debug for AgentDef {
             .field("temperature", &self.temperature)
             .field("max_tokens", &self.max_tokens)
             .field("base_url", &self.base_url)
-            .field("api_key", &if self.api_key.is_some() { "***".to_string() } else { "None".to_string() })
+            .field(
+                "api_key",
+                &if self.api_key.is_some() {
+                    "***".to_string()
+                } else {
+                    "None".to_string()
+                },
+            )
             .finish()
     }
 }

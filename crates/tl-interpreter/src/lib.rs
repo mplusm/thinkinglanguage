@@ -11,10 +11,10 @@ use std::fmt;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 use tl_ast::*;
-use tl_errors::security::SecurityPolicy;
-use tl_data::translate::{LocalValue, TranslateContext, translate_expr};
 use tl_data::datafusion::execution::FunctionRegistry;
+use tl_data::translate::{LocalValue, TranslateContext, translate_expr};
 use tl_data::{ArrowDataType, ArrowField, ArrowSchema, DataEngine, DataFrame, JoinType, col, lit};
+use tl_errors::security::SecurityPolicy;
 use tl_errors::{RuntimeError, TlError};
 use tl_stream::{ConnectorConfig, PipelineDef, PipelineRunner, PipelineStatus, StreamDef};
 
@@ -739,11 +739,26 @@ impl Environment {
             Value::Builtin("assert_table_eq".to_string()),
         );
         global.insert("today".to_string(), Value::Builtin("today".to_string()));
-        global.insert("date_add".to_string(), Value::Builtin("date_add".to_string()));
-        global.insert("date_diff".to_string(), Value::Builtin("date_diff".to_string()));
-        global.insert("date_trunc".to_string(), Value::Builtin("date_trunc".to_string()));
-        global.insert("date_extract".to_string(), Value::Builtin("date_extract".to_string()));
-        global.insert("extract".to_string(), Value::Builtin("date_extract".to_string()));
+        global.insert(
+            "date_add".to_string(),
+            Value::Builtin("date_add".to_string()),
+        );
+        global.insert(
+            "date_diff".to_string(),
+            Value::Builtin("date_diff".to_string()),
+        );
+        global.insert(
+            "date_trunc".to_string(),
+            Value::Builtin("date_trunc".to_string()),
+        );
+        global.insert(
+            "date_extract".to_string(),
+            Value::Builtin("date_extract".to_string()),
+        );
+        global.insert(
+            "extract".to_string(),
+            Value::Builtin("date_extract".to_string()),
+        );
         // HTTP builtins
         global.insert(
             "http_get".to_string(),
@@ -849,11 +864,17 @@ impl Environment {
         global.insert("dedup".to_string(), Value::Builtin("dedup".to_string()));
         global.insert("clamp".to_string(), Value::Builtin("clamp".to_string()));
         global.insert("random".to_string(), Value::Builtin("random".to_string()));
-        global.insert("random_int".to_string(), Value::Builtin("random_int".to_string()));
+        global.insert(
+            "random_int".to_string(),
+            Value::Builtin("random_int".to_string()),
+        );
         global.insert("sample".to_string(), Value::Builtin("sample".to_string()));
         global.insert("exp".to_string(), Value::Builtin("exp".to_string()));
         global.insert("is_nan".to_string(), Value::Builtin("is_nan".to_string()));
-        global.insert("is_infinite".to_string(), Value::Builtin("is_infinite".to_string()));
+        global.insert(
+            "is_infinite".to_string(),
+            Value::Builtin("is_infinite".to_string()),
+        );
         global.insert("sign".to_string(), Value::Builtin("sign".to_string()));
         global.insert(
             "data_profile".to_string(),
@@ -1481,7 +1502,20 @@ impl Interpreter {
                 output_format,
                 on_tool_call,
                 on_complete,
-            } => self.exec_agent(name, model, system_prompt, tools, max_turns, temperature, max_tokens, base_url, api_key, output_format, on_tool_call, on_complete),
+            } => self.exec_agent(
+                name,
+                model,
+                system_prompt,
+                tools,
+                max_turns,
+                temperature,
+                max_tokens,
+                base_url,
+                api_key,
+                output_format,
+                on_tool_call,
+                on_complete,
+            ),
             StmtKind::SourceDecl {
                 name,
                 connector_type,
@@ -1564,7 +1598,9 @@ impl Interpreter {
                             // Run finally before returning
                             if let Some(finally_stmts) = finally_body {
                                 self.env.push_scope();
-                                for fs in finally_stmts { let _ = self.exec_stmt(fs); }
+                                for fs in finally_stmts {
+                                    let _ = self.exec_stmt(fs);
+                                }
                                 self.env.pop_scope();
                             }
                             return Ok(Signal::Return(v));
@@ -1584,7 +1620,9 @@ impl Interpreter {
                             // Run finally before propagating error
                             if let Some(finally_stmts) = finally_body {
                                 self.env.push_scope();
-                                for fs in finally_stmts { let _ = self.exec_stmt(fs); }
+                                for fs in finally_stmts {
+                                    let _ = self.exec_stmt(fs);
+                                }
                                 self.env.pop_scope();
                             }
                             return Err(e);
@@ -1602,7 +1640,9 @@ impl Interpreter {
                                 // Run finally before returning
                                 if let Some(finally_stmts) = finally_body {
                                     self.env.push_scope();
-                                    for fs in finally_stmts { let _ = self.exec_stmt(fs); }
+                                    for fs in finally_stmts {
+                                        let _ = self.exec_stmt(fs);
+                                    }
                                     self.env.pop_scope();
                                 }
                                 return Ok(Signal::Return(v));
@@ -1612,7 +1652,9 @@ impl Interpreter {
                                 self.env.pop_scope();
                                 if let Some(finally_stmts) = finally_body {
                                     self.env.push_scope();
-                                    for fs in finally_stmts { let _ = self.exec_stmt(fs); }
+                                    for fs in finally_stmts {
+                                        let _ = self.exec_stmt(fs);
+                                    }
                                     self.env.pop_scope();
                                 }
                                 return Ok(sig);
@@ -2117,7 +2159,8 @@ impl Interpreter {
                             if adjusted < 0 {
                                 return Err(runtime_err(format!(
                                     "Index {} out of bounds for list of length {}",
-                                    i, items.len()
+                                    i,
+                                    items.len()
                                 )));
                             }
                             adjusted as usize
@@ -2127,7 +2170,8 @@ impl Interpreter {
                         items.get(idx).cloned().ok_or_else(|| {
                             runtime_err(format!(
                                 "Index {} out of bounds for list of length {}",
-                                i, items.len()
+                                i,
+                                items.len()
                             ))
                         })
                     }
@@ -2262,7 +2306,8 @@ impl Interpreter {
                                         if adjusted < 0 {
                                             return Err(runtime_err(format!(
                                                 "Index {} out of bounds for list of length {}",
-                                                i, items.len()
+                                                i,
+                                                items.len()
                                             )));
                                         }
                                         adjusted as usize
@@ -2276,7 +2321,8 @@ impl Interpreter {
                                     } else {
                                         Err(runtime_err(format!(
                                             "Index {} out of bounds for list of length {}",
-                                            i, items.len()
+                                            i,
+                                            items.len()
                                         )))
                                     }
                                 }
@@ -2449,13 +2495,16 @@ impl Interpreter {
         match (left, right) {
             // Int operations
             (Value::Int(a), Value::Int(b)) => match op {
-                BinOp::Add => Ok(a.checked_add(*b)
+                BinOp::Add => Ok(a
+                    .checked_add(*b)
                     .map(Value::Int)
                     .unwrap_or_else(|| Value::Float(*a as f64 + *b as f64))),
-                BinOp::Sub => Ok(a.checked_sub(*b)
+                BinOp::Sub => Ok(a
+                    .checked_sub(*b)
                     .map(Value::Int)
                     .unwrap_or_else(|| Value::Float(*a as f64 - *b as f64))),
-                BinOp::Mul => Ok(a.checked_mul(*b)
+                BinOp::Mul => Ok(a
+                    .checked_mul(*b)
                     .map(Value::Int)
                     .unwrap_or_else(|| Value::Float(*a as f64 * *b as f64))),
                 BinOp::Div => {
@@ -2537,10 +2586,14 @@ impl Interpreter {
             // String repeat
             (Value::String(a), Value::Int(b)) if *op == BinOp::Mul => {
                 if *b < 0 {
-                    return Err(runtime_err("Cannot repeat string a negative number of times".to_string()));
+                    return Err(runtime_err(
+                        "Cannot repeat string a negative number of times".to_string(),
+                    ));
                 }
                 if *b > 10_000_000 {
-                    return Err(runtime_err("String repeat count too large (max 10,000,000)".to_string()));
+                    return Err(runtime_err(
+                        "String repeat count too large (max 10,000,000)".to_string(),
+                    ));
                 }
                 Ok(Value::String(a.repeat(*b as usize)))
             }
@@ -3056,7 +3109,9 @@ impl Interpreter {
                 if args.len() == 1 {
                     if let Value::Int(n) = &args[0] {
                         if *n > 10_000_000 {
-                            return Err(runtime_err("range() size too large (max 10,000,000)".to_string()));
+                            return Err(runtime_err(
+                                "range() size too large (max 10,000,000)".to_string(),
+                            ));
                         }
                         if *n < 0 {
                             return Ok(Value::List(vec![]));
@@ -3069,7 +3124,9 @@ impl Interpreter {
                     if let (Value::Int(start), Value::Int(end)) = (&args[0], &args[1]) {
                         let size = (*end - *start).max(0);
                         if size > 10_000_000 {
-                            return Err(runtime_err("range() size too large (max 10,000,000)".to_string()));
+                            return Err(runtime_err(
+                                "range() size too large (max 10,000,000)".to_string(),
+                            ));
                         }
                         Ok(Value::List((*start..*end).map(Value::Int).collect()))
                     } else {
@@ -3443,13 +3500,32 @@ impl Interpreter {
                     Value::String(s) => s.clone(),
                     _ => return Err(runtime_err("embed() expects a string".to_string())),
                 };
-                let model = args.get(1)
-                    .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                let model = args
+                    .get(1)
+                    .and_then(|v| {
+                        if let Value::String(s) = v {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
                     .unwrap_or_else(|| "text-embedding-3-small".to_string());
-                let api_key = args.get(2)
-                    .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                let api_key = args
+                    .get(2)
+                    .and_then(|v| {
+                        if let Value::String(s) = v {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
                     .or_else(|| std::env::var("TL_OPENAI_KEY").ok())
-                    .ok_or_else(|| runtime_err("embed() requires an API key. Set TL_OPENAI_KEY or pass as 3rd arg".to_string()))?;
+                    .ok_or_else(|| {
+                        runtime_err(
+                            "embed() requires an API key. Set TL_OPENAI_KEY or pass as 3rd arg"
+                                .to_string(),
+                        )
+                    })?;
                 let tensor = tl_ai::embed::embed_api(&text, "openai", &model, &api_key)
                     .map_err(|e| runtime_err(format!("embed error: {e}")))?;
                 Ok(Value::Tensor(tensor))
@@ -3644,7 +3720,9 @@ impl Interpreter {
             }
             "assert_table_eq" => {
                 // Table comparison not available in interpreter (DataFusion is VM-only)
-                Err(runtime_err("assert_table_eq() is only available in the VM backend".to_string()))
+                Err(runtime_err(
+                    "assert_table_eq() is only available in the VM backend".to_string(),
+                ))
             }
             // HTTP builtins
             "http_get" => {
@@ -3682,7 +3760,9 @@ impl Interpreter {
             }
             "http_request" => {
                 if args.len() < 2 {
-                    return Err(runtime_err_s("http_request(method, url, headers?, body?) expects at least 2 args"));
+                    return Err(runtime_err_s(
+                        "http_request(method, url, headers?, body?) expects at least 2 args",
+                    ));
                 }
                 let method = match &args[0] {
                     Value::String(s) => s.clone(),
@@ -3712,10 +3792,12 @@ impl Interpreter {
                 if let Some(Value::String(body)) = args.get(3) {
                     builder = builder.body(body.clone());
                 }
-                let resp = builder.send()
+                let resp = builder
+                    .send()
                     .map_err(|e| runtime_err(format!("HTTP error: {e}")))?;
                 let status = resp.status().as_u16() as i64;
-                let body = resp.text()
+                let body = resp
+                    .text()
                     .map_err(|e| runtime_err(format!("HTTP response error: {e}")))?;
                 Ok(Value::Map(vec![
                     ("status".to_string(), Value::Int(status)),
@@ -3724,7 +3806,9 @@ impl Interpreter {
             }
             "run_agent" => {
                 if args.len() < 2 {
-                    return Err(runtime_err_s("run_agent(agent, message, [history]) expects at least 2 arguments"));
+                    return Err(runtime_err_s(
+                        "run_agent(agent, message, [history]) expects at least 2 arguments",
+                    ));
                 }
                 let agent_def = match &args[0] {
                     Value::Agent(def) => def.clone(),
@@ -3766,7 +3850,9 @@ impl Interpreter {
             // Phase G4: Streaming agent responses
             "stream_agent" => {
                 if args.len() < 3 {
-                    return Err(runtime_err_s("stream_agent(agent, message, callback) expects 3 arguments"));
+                    return Err(runtime_err_s(
+                        "stream_agent(agent, message, callback) expects 3 arguments",
+                    ));
                 }
                 let agent_def = match &args[0] {
                     Value::Agent(def) => def.clone(),
@@ -4223,7 +4309,8 @@ impl Interpreter {
                             match task {
                                 Value::Task(t) => {
                                     let rx = {
-                                        let mut guard = t.receiver.lock().unwrap_or_else(|e| e.into_inner());
+                                        let mut guard =
+                                            t.receiver.lock().unwrap_or_else(|e| e.into_inner());
                                         guard.take()
                                     };
                                     match rx {
@@ -5800,7 +5887,11 @@ impl Interpreter {
                 for (i, arg) in args.iter().enumerate() {
                     match arg {
                         Value::Task(task) => {
-                            let rx = task.receiver.lock().unwrap_or_else(|e| e.into_inner()).take();
+                            let rx = task
+                                .receiver
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .take();
                             match rx {
                                 Some(r) => receivers.push(r),
                                 None => {
@@ -5846,7 +5937,11 @@ impl Interpreter {
                 for (i, task_val) in tasks.iter().enumerate() {
                     match task_val {
                         Value::Task(task) => {
-                            let rx = task.receiver.lock().unwrap_or_else(|e| e.into_inner()).take();
+                            let rx = task
+                                .receiver
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .take();
                             match rx {
                                 Some(r) => receivers.push(r),
                                 None => {
@@ -6092,7 +6187,9 @@ impl Interpreter {
                     _ => 1,
                 };
                 if k > items.len() {
-                    return Err(runtime_err("sample() count exceeds list length".to_string()));
+                    return Err(runtime_err(
+                        "sample() count exceeds list length".to_string(),
+                    ));
                 }
                 let mut rng = rand::thread_rng();
                 let mut indices: Vec<usize> = (0..items.len()).collect();
@@ -6126,37 +6223,56 @@ impl Interpreter {
                 };
                 Ok(Value::Bool(result))
             }
-            "sign" => {
-                match args.first() {
-                    Some(Value::Int(n)) => {
-                        if *n > 0 { Ok(Value::Int(1)) }
-                        else if *n < 0 { Ok(Value::Int(-1)) }
-                        else { Ok(Value::Int(0)) }
+            "sign" => match args.first() {
+                Some(Value::Int(n)) => {
+                    if *n > 0 {
+                        Ok(Value::Int(1))
+                    } else if *n < 0 {
+                        Ok(Value::Int(-1))
+                    } else {
+                        Ok(Value::Int(0))
                     }
-                    Some(Value::Float(f)) => {
-                        if f.is_nan() { Ok(Value::Float(f64::NAN)) }
-                        else if *f > 0.0 { Ok(Value::Int(1)) }
-                        else if *f < 0.0 { Ok(Value::Int(-1)) }
-                        else { Ok(Value::Int(0)) }
-                    }
-                    _ => Err(runtime_err("sign() expects a number".to_string())),
                 }
-            }
+                Some(Value::Float(f)) => {
+                    if f.is_nan() {
+                        Ok(Value::Float(f64::NAN))
+                    } else if *f > 0.0 {
+                        Ok(Value::Int(1))
+                    } else if *f < 0.0 {
+                        Ok(Value::Int(-1))
+                    } else {
+                        Ok(Value::Int(0))
+                    }
+                }
+                _ => Err(runtime_err("sign() expects a number".to_string())),
+            },
             "today" => {
                 use chrono::{Datelike, TimeZone};
                 let now = chrono::Utc::now();
-                let midnight = chrono::Utc.with_ymd_and_hms(now.year(), now.month(), now.day(), 0, 0, 0)
+                let midnight = chrono::Utc
+                    .with_ymd_and_hms(now.year(), now.month(), now.day(), 0, 0, 0)
                     .single()
                     .ok_or_else(|| runtime_err("Failed to compute today".to_string()))?;
                 Ok(Value::Int(midnight.timestamp_millis()))
             }
             "date_add" => {
                 if args.len() < 3 {
-                    return Err(runtime_err("date_add() expects datetime, amount, unit".to_string()));
+                    return Err(runtime_err(
+                        "date_add() expects datetime, amount, unit".to_string(),
+                    ));
                 }
-                let ms = match &args[0] { Value::Int(n) => *n, _ => return Err(runtime_err("date_add() first arg must be int".to_string())) };
-                let amount = match &args[1] { Value::Int(n) => *n, _ => return Err(runtime_err("date_add() amount must be int".to_string())) };
-                let unit = match &args[2] { Value::String(s) => s.as_str(), _ => return Err(runtime_err("date_add() unit must be string".to_string())) };
+                let ms = match &args[0] {
+                    Value::Int(n) => *n,
+                    _ => return Err(runtime_err("date_add() first arg must be int".to_string())),
+                };
+                let amount = match &args[1] {
+                    Value::Int(n) => *n,
+                    _ => return Err(runtime_err("date_add() amount must be int".to_string())),
+                };
+                let unit = match &args[2] {
+                    Value::String(s) => s.as_str(),
+                    _ => return Err(runtime_err("date_add() unit must be string".to_string())),
+                };
                 let offset_ms = match unit {
                     "second" | "seconds" => amount * 1000,
                     "minute" | "minutes" => amount * 60 * 1000,
@@ -6169,11 +6285,22 @@ impl Interpreter {
             }
             "date_diff" => {
                 if args.len() < 3 {
-                    return Err(runtime_err("date_diff() expects datetime1, datetime2, unit".to_string()));
+                    return Err(runtime_err(
+                        "date_diff() expects datetime1, datetime2, unit".to_string(),
+                    ));
                 }
-                let ms1 = match &args[0] { Value::Int(n) => *n, _ => return Err(runtime_err("date_diff() args must be ints".to_string())) };
-                let ms2 = match &args[1] { Value::Int(n) => *n, _ => return Err(runtime_err("date_diff() args must be ints".to_string())) };
-                let unit = match &args[2] { Value::String(s) => s.as_str(), _ => return Err(runtime_err("date_diff() unit must be string".to_string())) };
+                let ms1 = match &args[0] {
+                    Value::Int(n) => *n,
+                    _ => return Err(runtime_err("date_diff() args must be ints".to_string())),
+                };
+                let ms2 = match &args[1] {
+                    Value::Int(n) => *n,
+                    _ => return Err(runtime_err("date_diff() args must be ints".to_string())),
+                };
+                let unit = match &args[2] {
+                    Value::String(s) => s.as_str(),
+                    _ => return Err(runtime_err("date_diff() unit must be string".to_string())),
+                };
                 let diff_ms = ms1 - ms2;
                 let result = match unit {
                     "second" | "seconds" => diff_ms / 1000,
@@ -6187,34 +6314,88 @@ impl Interpreter {
             }
             "date_trunc" => {
                 if args.len() < 2 {
-                    return Err(runtime_err("date_trunc() expects datetime and unit".to_string()));
+                    return Err(runtime_err(
+                        "date_trunc() expects datetime and unit".to_string(),
+                    ));
                 }
-                let ms = match &args[0] { Value::Int(n) => *n, _ => return Err(runtime_err("date_trunc() first arg must be int".to_string())) };
-                let unit = match &args[1] { Value::String(s) => s.as_str(), _ => return Err(runtime_err("date_trunc() unit must be string".to_string())) };
+                let ms = match &args[0] {
+                    Value::Int(n) => *n,
+                    _ => {
+                        return Err(runtime_err(
+                            "date_trunc() first arg must be int".to_string(),
+                        ));
+                    }
+                };
+                let unit = match &args[1] {
+                    Value::String(s) => s.as_str(),
+                    _ => return Err(runtime_err("date_trunc() unit must be string".to_string())),
+                };
                 use chrono::{Datelike, TimeZone, Timelike};
                 let secs = ms / 1000;
-                let dt = chrono::Utc.timestamp_opt(secs, 0).single()
+                let dt = chrono::Utc
+                    .timestamp_opt(secs, 0)
+                    .single()
                     .ok_or_else(|| runtime_err("Invalid timestamp".to_string()))?;
                 let truncated = match unit {
-                    "second" => chrono::Utc.with_ymd_and_hms(dt.year(), dt.month(), dt.day(), dt.hour(), dt.minute(), dt.second()).single(),
-                    "minute" => chrono::Utc.with_ymd_and_hms(dt.year(), dt.month(), dt.day(), dt.hour(), dt.minute(), 0).single(),
-                    "hour" => chrono::Utc.with_ymd_and_hms(dt.year(), dt.month(), dt.day(), dt.hour(), 0, 0).single(),
-                    "day" => chrono::Utc.with_ymd_and_hms(dt.year(), dt.month(), dt.day(), 0, 0, 0).single(),
-                    "month" => chrono::Utc.with_ymd_and_hms(dt.year(), dt.month(), 1, 0, 0, 0).single(),
-                    "year" => chrono::Utc.with_ymd_and_hms(dt.year(), 1, 1, 0, 0, 0).single(),
+                    "second" => chrono::Utc
+                        .with_ymd_and_hms(
+                            dt.year(),
+                            dt.month(),
+                            dt.day(),
+                            dt.hour(),
+                            dt.minute(),
+                            dt.second(),
+                        )
+                        .single(),
+                    "minute" => chrono::Utc
+                        .with_ymd_and_hms(
+                            dt.year(),
+                            dt.month(),
+                            dt.day(),
+                            dt.hour(),
+                            dt.minute(),
+                            0,
+                        )
+                        .single(),
+                    "hour" => chrono::Utc
+                        .with_ymd_and_hms(dt.year(), dt.month(), dt.day(), dt.hour(), 0, 0)
+                        .single(),
+                    "day" => chrono::Utc
+                        .with_ymd_and_hms(dt.year(), dt.month(), dt.day(), 0, 0, 0)
+                        .single(),
+                    "month" => chrono::Utc
+                        .with_ymd_and_hms(dt.year(), dt.month(), 1, 0, 0, 0)
+                        .single(),
+                    "year" => chrono::Utc
+                        .with_ymd_and_hms(dt.year(), 1, 1, 0, 0, 0)
+                        .single(),
                     _ => return Err(runtime_err(format!("Unknown truncation unit: {unit}"))),
                 };
-                Ok(Value::Int(truncated.ok_or_else(|| runtime_err("Invalid truncation".to_string()))?.timestamp_millis()))
+                Ok(Value::Int(
+                    truncated
+                        .ok_or_else(|| runtime_err("Invalid truncation".to_string()))?
+                        .timestamp_millis(),
+                ))
             }
             "date_extract" => {
                 if args.len() < 2 {
-                    return Err(runtime_err("extract() expects datetime and part".to_string()));
+                    return Err(runtime_err(
+                        "extract() expects datetime and part".to_string(),
+                    ));
                 }
-                let ms = match &args[0] { Value::Int(n) => *n, _ => return Err(runtime_err("extract() first arg must be int".to_string())) };
-                let part = match &args[1] { Value::String(s) => s.as_str(), _ => return Err(runtime_err("extract() part must be string".to_string())) };
+                let ms = match &args[0] {
+                    Value::Int(n) => *n,
+                    _ => return Err(runtime_err("extract() first arg must be int".to_string())),
+                };
+                let part = match &args[1] {
+                    Value::String(s) => s.as_str(),
+                    _ => return Err(runtime_err("extract() part must be string".to_string())),
+                };
                 use chrono::{Datelike, TimeZone, Timelike};
                 let secs = ms / 1000;
-                let dt = chrono::Utc.timestamp_opt(secs, 0).single()
+                let dt = chrono::Utc
+                    .timestamp_opt(secs, 0)
+                    .single()
                     .ok_or_else(|| runtime_err("Invalid timestamp".to_string()))?;
                 let val = match part {
                     "year" => dt.year() as i64,
@@ -6448,8 +6629,13 @@ impl Interpreter {
                     Ok(Value::Int(s.matches(needle).count() as i64))
                 }
                 "is_empty" => Ok(Value::Bool(s.is_empty())),
-                "is_numeric" => Ok(Value::Bool(s.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-'))),
-                "is_alpha" => Ok(Value::Bool(!s.is_empty() && s.chars().all(|c| c.is_alphabetic()))),
+                "is_numeric" => Ok(Value::Bool(
+                    s.chars()
+                        .all(|c| c.is_ascii_digit() || c == '.' || c == '-'),
+                )),
+                "is_alpha" => Ok(Value::Bool(
+                    !s.is_empty() && s.chars().all(|c| c.is_alphabetic()),
+                )),
                 "strip_prefix" => {
                     let prefix = match args.first() {
                         Some(Value::String(p)) => p.as_str(),
@@ -6621,13 +6807,13 @@ impl Interpreter {
                             let key = self.call_function(func, std::slice::from_ref(item))?;
                             indexed.push((item.clone(), key));
                         }
-                        indexed.sort_by(|(_, ka), (_, kb)| {
-                            match (ka, kb) {
-                                (Value::Int(a), Value::Int(b)) => a.cmp(b),
-                                (Value::Float(a), Value::Float(b)) => a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal),
-                                (Value::String(a), Value::String(b)) => a.cmp(b),
-                                _ => std::cmp::Ordering::Equal,
+                        indexed.sort_by(|(_, ka), (_, kb)| match (ka, kb) {
+                            (Value::Int(a), Value::Int(b)) => a.cmp(b),
+                            (Value::Float(a), Value::Float(b)) => {
+                                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
                             }
+                            (Value::String(a), Value::String(b)) => a.cmp(b),
+                            _ => std::cmp::Ordering::Equal,
                         });
                         Ok(Value::List(indexed.into_iter().map(|(v, _)| v).collect()))
                     } else {
@@ -6681,7 +6867,8 @@ impl Interpreter {
                     if n == 0 {
                         return Err(runtime_err_s("chunk() size must be > 0"));
                     }
-                    let chunks: Vec<Value> = items.chunks(n).map(|c| Value::List(c.to_vec())).collect();
+                    let chunks: Vec<Value> =
+                        items.chunks(n).map(|c| Value::List(c.to_vec())).collect();
                     Ok(Value::List(chunks))
                 }
                 "insert" => {
@@ -6718,32 +6905,62 @@ impl Interpreter {
                     let mut float_sum: f64 = 0.0;
                     for item in items {
                         match item {
-                            Value::Int(n) => { int_sum += n; float_sum += *n as f64; }
-                            Value::Float(f) => { has_float = true; float_sum += f; }
+                            Value::Int(n) => {
+                                int_sum += n;
+                                float_sum += *n as f64;
+                            }
+                            Value::Float(f) => {
+                                has_float = true;
+                                float_sum += f;
+                            }
                             _ => return Err(runtime_err_s("sum() expects numeric list")),
                         }
                     }
-                    if has_float { Ok(Value::Float(float_sum)) } else { Ok(Value::Int(int_sum)) }
+                    if has_float {
+                        Ok(Value::Float(float_sum))
+                    } else {
+                        Ok(Value::Int(int_sum))
+                    }
                 }
                 "min" => {
-                    if items.is_empty() { return Err(runtime_err_s("min() on empty list")); }
+                    if items.is_empty() {
+                        return Err(runtime_err_s("min() on empty list"));
+                    }
                     let mut result = items[0].clone();
                     for item in &items[1..] {
                         match (&result, item) {
-                            (Value::Int(a), Value::Int(b)) => if b < a { result = item.clone(); },
-                            (Value::Float(a), Value::Float(b)) => if b < a { result = item.clone(); },
+                            (Value::Int(a), Value::Int(b)) => {
+                                if b < a {
+                                    result = item.clone();
+                                }
+                            }
+                            (Value::Float(a), Value::Float(b)) => {
+                                if b < a {
+                                    result = item.clone();
+                                }
+                            }
                             _ => {}
                         }
                     }
                     Ok(result)
                 }
                 "max" => {
-                    if items.is_empty() { return Err(runtime_err_s("max() on empty list")); }
+                    if items.is_empty() {
+                        return Err(runtime_err_s("max() on empty list"));
+                    }
                     let mut result = items[0].clone();
                     for item in &items[1..] {
                         match (&result, item) {
-                            (Value::Int(a), Value::Int(b)) => if b > a { result = item.clone(); },
-                            (Value::Float(a), Value::Float(b)) => if b > a { result = item.clone(); },
+                            (Value::Int(a), Value::Int(b)) => {
+                                if b > a {
+                                    result = item.clone();
+                                }
+                            }
+                            (Value::Float(a), Value::Float(b)) => {
+                                if b > a {
+                                    result = item.clone();
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -6764,7 +6981,9 @@ impl Interpreter {
                         return Err(runtime_err_s("zip() expects a list"));
                     }
                     if let Value::List(other) = &args[0] {
-                        let result: Vec<Value> = items.iter().zip(other.iter())
+                        let result: Vec<Value> = items
+                            .iter()
+                            .zip(other.iter())
                             .map(|(a, b)| Value::List(vec![a.clone(), b.clone()]))
                             .collect();
                         Ok(Value::List(result))
@@ -6847,7 +7066,8 @@ impl Interpreter {
                     }
                 }
                 "entries" => {
-                    let result: Vec<Value> = pairs.iter()
+                    let result: Vec<Value> = pairs
+                        .iter()
                         .map(|(k, v)| Value::List(vec![Value::String(k.clone()), v.clone()]))
                         .collect();
                     Ok(Value::List(result))
@@ -6869,7 +7089,10 @@ impl Interpreter {
                         let mut result = Vec::new();
                         for (k, v) in pairs {
                             let pair = Value::List(vec![Value::String(k.clone()), v.clone()]);
-                            if self.call_function(func, std::slice::from_ref(&pair))?.is_truthy() {
+                            if self
+                                .call_function(func, std::slice::from_ref(&pair))?
+                                .is_truthy()
+                            {
                                 result.push((k.clone(), v.clone()));
                             }
                         }
@@ -7523,8 +7746,8 @@ impl Interpreter {
                     // Phase F2: Window functions
                     "window" => {
                         use tl_data::datafusion::logical_expr::{
-                            expr::{WindowFunction as WinFunc, Sort as DfSort},
-                            WindowFunctionDefinition, WindowFrame,
+                            WindowFrame, WindowFunctionDefinition,
+                            expr::{Sort as DfSort, WindowFunction as WinFunc},
                         };
                         if args.is_empty() {
                             return Err(runtime_err("window() expects named arguments: fn, partition_by, order_by, alias".into()));
@@ -7539,11 +7762,17 @@ impl Interpreter {
                         for arg in args {
                             if let Expr::NamedArg { name, value } = arg {
                                 match name.as_str() {
-                                    "fn" => { if let Value::String(s) = self.eval_expr(value)? { win_fn_name = s; } }
+                                    "fn" => {
+                                        if let Value::String(s) = self.eval_expr(value)? {
+                                            win_fn_name = s;
+                                        }
+                                    }
                                     "partition_by" => match self.eval_expr(value)? {
                                         Value::List(items) => {
                                             for item in &items {
-                                                if let Value::String(s) = item { partition_by_cols.push(s.clone()); }
+                                                if let Value::String(s) = item {
+                                                    partition_by_cols.push(s.clone());
+                                                }
                                             }
                                         }
                                         Value::String(s) => partition_by_cols.push(s),
@@ -7552,25 +7781,39 @@ impl Interpreter {
                                     "order_by" => match self.eval_expr(value)? {
                                         Value::List(items) => {
                                             for item in &items {
-                                                if let Value::String(s) = item { order_by_cols.push(s.clone()); }
+                                                if let Value::String(s) = item {
+                                                    order_by_cols.push(s.clone());
+                                                }
                                             }
                                         }
                                         Value::String(s) => order_by_cols.push(s),
                                         _ => {}
                                     },
-                                    "alias" | "as" => { if let Value::String(s) = self.eval_expr(value)? { alias_name = s; } }
+                                    "alias" | "as" => {
+                                        if let Value::String(s) = self.eval_expr(value)? {
+                                            alias_name = s;
+                                        }
+                                    }
                                     "args" => match self.eval_expr(value)? {
                                         Value::List(items) => {
                                             for item in &items {
-                                                if let Value::String(s) = item { win_args.push(s.clone()); }
-                                                else { win_args.push(format!("{item}")); }
+                                                if let Value::String(s) = item {
+                                                    win_args.push(s.clone());
+                                                } else {
+                                                    win_args.push(format!("{item}"));
+                                                }
                                             }
                                         }
                                         Value::String(s) => win_args.push(s),
-                                        _ => { let v = self.eval_expr(value)?; win_args.push(format!("{v}")); }
+                                        _ => {
+                                            let v = self.eval_expr(value)?;
+                                            win_args.push(format!("{v}"));
+                                        }
                                     },
                                     "desc" => {
-                                        if let Value::Bool(b) = self.eval_expr(value)? { descending = b; }
+                                        if let Value::Bool(b) = self.eval_expr(value)? {
+                                            descending = b;
+                                        }
                                     }
                                     _ => {}
                                 }
@@ -7580,7 +7823,9 @@ impl Interpreter {
                         if win_fn_name.is_empty() {
                             return Err(runtime_err("window() requires fn: parameter".into()));
                         }
-                        if alias_name.is_empty() { alias_name = win_fn_name.clone(); }
+                        if alias_name.is_empty() {
+                            alias_name = win_fn_name.clone();
+                        }
 
                         let session = self.engine().session_ctx();
                         let win_udf = match win_fn_name.as_str() {
@@ -7594,36 +7839,63 @@ impl Interpreter {
                             "lead" => session.udwf("lead"),
                             "first_value" => session.udwf("first_value"),
                             "last_value" => session.udwf("last_value"),
-                            _ => return Err(runtime_err(format!("Unknown window function: {win_fn_name}"))),
-                        }.map_err(|e| runtime_err(format!("Window function '{win_fn_name}' not available: {e}")))?;
+                            _ => {
+                                return Err(runtime_err(format!(
+                                    "Unknown window function: {win_fn_name}"
+                                )));
+                            }
+                        }
+                        .map_err(|e| {
+                            runtime_err(format!(
+                                "Window function '{win_fn_name}' not available: {e}"
+                            ))
+                        })?;
 
                         let fun = WindowFunctionDefinition::WindowUDF(win_udf);
-                        let func_args: Vec<tl_data::datafusion::prelude::Expr> = win_args.iter().map(|a| {
-                            if let Ok(n) = a.parse::<i64>() { lit(n) } else { col(a.as_str()) }
-                        }).collect();
+                        let func_args: Vec<tl_data::datafusion::prelude::Expr> = win_args
+                            .iter()
+                            .map(|a| {
+                                if let Ok(n) = a.parse::<i64>() {
+                                    lit(n)
+                                } else {
+                                    col(a.as_str())
+                                }
+                            })
+                            .collect();
 
                         let partition_exprs: Vec<tl_data::datafusion::prelude::Expr> =
                             partition_by_cols.iter().map(|c| col(c.as_str())).collect();
-                        let order_exprs: Vec<DfSort> = order_by_cols.iter().map(|c| {
-                            DfSort::new(col(c.as_str()), !descending, true)
-                        }).collect();
+                        let order_exprs: Vec<DfSort> = order_by_cols
+                            .iter()
+                            .map(|c| DfSort::new(col(c.as_str()), !descending, true))
+                            .collect();
 
                         let has_order = !order_exprs.is_empty();
-                        let win_expr = tl_data::datafusion::prelude::Expr::WindowFunction(WinFunc {
-                            fun,
-                            args: func_args,
-                            partition_by: partition_exprs,
-                            order_by: order_exprs,
-                            window_frame: WindowFrame::new(if has_order { Some(true) } else { None }),
-                            null_treatment: None,
-                        }).alias(&alias_name);
+                        let win_expr =
+                            tl_data::datafusion::prelude::Expr::WindowFunction(WinFunc {
+                                fun,
+                                args: func_args,
+                                partition_by: partition_exprs,
+                                order_by: order_exprs,
+                                window_frame: WindowFrame::new(if has_order {
+                                    Some(true)
+                                } else {
+                                    None
+                                }),
+                                null_treatment: None,
+                            })
+                            .alias(&alias_name);
 
                         let schema = df.schema();
-                        let mut select_exprs: Vec<tl_data::datafusion::prelude::Expr> =
-                            schema.fields().iter().map(|f| col(f.name().as_str())).collect();
+                        let mut select_exprs: Vec<tl_data::datafusion::prelude::Expr> = schema
+                            .fields()
+                            .iter()
+                            .map(|f| col(f.name().as_str()))
+                            .collect();
                         select_exprs.push(win_expr);
 
-                        let result_df = df.select(select_exprs)
+                        let result_df = df
+                            .select(select_exprs)
                             .map_err(|e| runtime_err(format!("Window function error: {e}")))?;
                         Ok(Value::Table(TlTable { df: result_df }))
                     }
@@ -7635,9 +7907,12 @@ impl Interpreter {
                         let right_table = self.eval_expr(&args[0])?;
                         let right_df = match right_table {
                             Value::Table(t) => t.df,
-                            _ => return Err(runtime_err("union() argument must be a table".into())),
+                            _ => {
+                                return Err(runtime_err("union() argument must be a table".into()));
+                            }
                         };
-                        let result_df = df.union(right_df)
+                        let result_df = df
+                            .union(right_df)
                             .map_err(|e| runtime_err(format!("Union error: {e}")))?;
                         Ok(Value::Table(TlTable { df: result_df }))
                     }
@@ -9155,9 +9430,18 @@ impl Interpreter {
             let hook = Value::Function {
                 name: format!("__agent_{name}_on_tool_call__"),
                 params: vec![
-                    Param { name: "tool_name".into(), type_ann: None },
-                    Param { name: "tool_args".into(), type_ann: None },
-                    Param { name: "tool_result".into(), type_ann: None },
+                    Param {
+                        name: "tool_name".into(),
+                        type_ann: None,
+                    },
+                    Param {
+                        name: "tool_args".into(),
+                        type_ann: None,
+                    },
+                    Param {
+                        name: "tool_result".into(),
+                        type_ann: None,
+                    },
                 ],
                 body: stmts.clone(),
                 is_generator: false,
@@ -9167,9 +9451,10 @@ impl Interpreter {
         if let Some(stmts) = on_complete {
             let hook = Value::Function {
                 name: format!("__agent_{name}_on_complete__"),
-                params: vec![
-                    Param { name: "result".into(), type_ann: None },
-                ],
+                params: vec![Param {
+                    name: "result".into(),
+                    type_ann: None,
+                }],
                 body: stmts.clone(),
                 is_generator: false,
             };
@@ -9186,7 +9471,9 @@ impl Interpreter {
             for (key, v) in pairs {
                 match key.as_str() {
                     "description" => {
-                        if let Value::String(s) = v { desc = s.clone(); }
+                        if let Value::String(s) = v {
+                            desc = s.clone();
+                        }
                     }
                     "parameters" => {
                         params = self.agent_value_to_json(v);
@@ -9205,7 +9492,9 @@ impl Interpreter {
             Value::Float(f) => serde_json::json!(*f),
             Value::Bool(b) => serde_json::Value::Bool(*b),
             Value::None => serde_json::Value::Null,
-            Value::List(items) => serde_json::Value::Array(items.iter().map(|v| self.agent_value_to_json(v)).collect()),
+            Value::List(items) => serde_json::Value::Array(
+                items.iter().map(|v| self.agent_value_to_json(v)).collect(),
+            ),
             Value::Map(pairs) => {
                 let mut map = serde_json::Map::new();
                 for (k, v) in pairs {
@@ -9217,25 +9506,38 @@ impl Interpreter {
         }
     }
 
-    fn exec_agent_loop(&mut self, agent_def: &tl_stream::AgentDef, user_message: &str, history: Option<&[(String, String)]>) -> Result<Value, TlError> {
+    fn exec_agent_loop(
+        &mut self,
+        agent_def: &tl_stream::AgentDef,
+        user_message: &str,
+        history: Option<&[(String, String)]>,
+    ) -> Result<Value, TlError> {
         use tl_ai::{LlmResponse, chat_with_tools, format_tool_result_messages};
 
         let model = &agent_def.model;
         let system = agent_def.system_prompt.as_deref();
         let base_url = agent_def.base_url.as_deref();
         let api_key = agent_def.api_key.as_deref();
-        let provider = if model.starts_with("claude") { "anthropic" } else { "openai" };
+        let provider = if model.starts_with("claude") {
+            "anthropic"
+        } else {
+            "openai"
+        };
 
-        let tools_json: Vec<serde_json::Value> = agent_def.tools.iter().map(|t| {
-            serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.parameters
-                }
+        let tools_json: Vec<serde_json::Value> = agent_def
+            .tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters
+                    }
+                })
             })
-        }).collect();
+            .collect();
 
         // Seed messages with history if provided
         let mut messages: Vec<serde_json::Value> = Vec::new();
@@ -9248,8 +9550,16 @@ impl Interpreter {
         messages.push(serde_json::json!({"role": "user", "content": user_message}));
 
         for turn in 0..agent_def.max_turns {
-            let response = chat_with_tools(model, system, &messages, &tools_json, base_url, api_key, agent_def.output_format.as_deref())
-                .map_err(|e| runtime_err(format!("Agent LLM error: {e}")))?;
+            let response = chat_with_tools(
+                model,
+                system,
+                &messages,
+                &tools_json,
+                base_url,
+                api_key,
+                agent_def.output_format.as_deref(),
+            )
+            .map_err(|e| runtime_err(format!("Agent LLM error: {e}")))?;
 
             match response {
                 LlmResponse::Text(text) => {
@@ -9257,14 +9567,17 @@ impl Interpreter {
                     messages.push(serde_json::json!({"role": "assistant", "content": &text}));
 
                     // Build conversation history as list of [role, content] pairs
-                    let history_list: Vec<Value> = messages.iter().filter_map(|m| {
-                        let role = m["role"].as_str()?;
-                        let content = m["content"].as_str()?;
-                        Some(Value::List(vec![
-                            Value::String(role.to_string()),
-                            Value::String(content.to_string()),
-                        ]))
-                    }).collect();
+                    let history_list: Vec<Value> = messages
+                        .iter()
+                        .filter_map(|m| {
+                            let role = m["role"].as_str()?;
+                            let content = m["content"].as_str()?;
+                            Some(Value::List(vec![
+                                Value::String(role.to_string()),
+                                Value::String(content.to_string()),
+                            ]))
+                        })
+                        .collect();
 
                     let result = Value::Map(vec![
                         ("response".to_string(), Value::String(text)),
@@ -9293,16 +9606,24 @@ impl Interpreter {
                     }).collect();
                     messages.push(serde_json::json!({"role": "assistant", "tool_calls": tc_json}));
 
-                    let declared: Vec<&str> = agent_def.tools.iter().map(|t| t.name.as_str()).collect();
+                    let declared: Vec<&str> =
+                        agent_def.tools.iter().map(|t| t.name.as_str()).collect();
                     let mut results: Vec<(String, String)> = Vec::new();
                     for tc in &tool_calls {
                         if !declared.contains(&tc.name.as_str()) {
-                            results.push((tc.name.clone(), format!("Error: '{}' not in declared tools", tc.name)));
+                            results.push((
+                                tc.name.clone(),
+                                format!("Error: '{}' not in declared tools", tc.name),
+                            ));
                             continue;
                         }
-                        let func = self.env.get(&tc.name).ok_or_else(|| {
-                            runtime_err(format!("Agent tool function '{}' not found", tc.name))
-                        })?.clone();
+                        let func = self
+                            .env
+                            .get(&tc.name)
+                            .ok_or_else(|| {
+                                runtime_err(format!("Agent tool function '{}' not found", tc.name))
+                            })?
+                            .clone();
                         let call_args = self.agent_json_to_values(&tc.input);
                         let result = self.call_function_value(&func, &call_args)?;
                         let result_str = format!("{result}");
@@ -9312,9 +9633,18 @@ impl Interpreter {
                         if let Some(hook) = self.env.get(&hook_name).cloned() {
                             let hook_args = vec![
                                 Value::String(tc.name.clone()),
-                                Value::Map(tc.input.as_object().map(|m| {
-                                    m.iter().map(|(k, v)| (k.clone(), self.agent_json_to_value(v))).collect()
-                                }).unwrap_or_default()),
+                                Value::Map(
+                                    tc.input
+                                        .as_object()
+                                        .map(|m| {
+                                            m.iter()
+                                                .map(|(k, v)| {
+                                                    (k.clone(), self.agent_json_to_value(v))
+                                                })
+                                                .collect()
+                                        })
+                                        .unwrap_or_default(),
+                                ),
                                 Value::String(result_str.clone()),
                             ];
                             let _ = self.call_function_value(&hook, &hook_args);
@@ -9329,13 +9659,20 @@ impl Interpreter {
             }
         }
 
-        Err(runtime_err(format!("Agent '{}' exceeded max_turns ({})", agent_def.name, agent_def.max_turns)))
+        Err(runtime_err(format!(
+            "Agent '{}' exceeded max_turns ({})",
+            agent_def.name, agent_def.max_turns
+        )))
     }
 
     fn agent_json_to_values(&self, input: &serde_json::Value) -> Vec<Value> {
         match input {
-            serde_json::Value::Object(map) => map.values().map(|v| self.agent_json_to_value(v)).collect(),
-            serde_json::Value::Array(arr) => arr.iter().map(|v| self.agent_json_to_value(v)).collect(),
+            serde_json::Value::Object(map) => {
+                map.values().map(|v| self.agent_json_to_value(v)).collect()
+            }
+            serde_json::Value::Array(arr) => {
+                arr.iter().map(|v| self.agent_json_to_value(v)).collect()
+            }
             _ => vec![self.agent_json_to_value(input)],
         }
     }
@@ -9344,16 +9681,24 @@ impl Interpreter {
         match val {
             serde_json::Value::String(s) => Value::String(s.clone()),
             serde_json::Value::Number(n) => {
-                if let Some(i) = n.as_i64() { Value::Int(i) }
-                else if let Some(f) = n.as_f64() { Value::Float(f) }
-                else { Value::None }
+                if let Some(i) = n.as_i64() {
+                    Value::Int(i)
+                } else if let Some(f) = n.as_f64() {
+                    Value::Float(f)
+                } else {
+                    Value::None
+                }
             }
             serde_json::Value::Bool(b) => Value::Bool(*b),
             serde_json::Value::Null => Value::None,
-            serde_json::Value::Array(arr) => Value::List(arr.iter().map(|v| self.agent_json_to_value(v)).collect()),
-            serde_json::Value::Object(map) => {
-                Value::Map(map.iter().map(|(k, v)| (k.clone(), self.agent_json_to_value(v))).collect())
+            serde_json::Value::Array(arr) => {
+                Value::List(arr.iter().map(|v| self.agent_json_to_value(v)).collect())
             }
+            serde_json::Value::Object(map) => Value::Map(
+                map.iter()
+                    .map(|(k, v)| (k.clone(), self.agent_json_to_value(v)))
+                    .collect(),
+            ),
         }
     }
 
@@ -9375,7 +9720,10 @@ impl Interpreter {
                 let mut result = Value::None;
                 for stmt in body {
                     match self.exec_stmt(stmt)? {
-                        Signal::Return(v) => { result = v; break; }
+                        Signal::Return(v) => {
+                            result = v;
+                            break;
+                        }
                         Signal::None => {}
                         _ => {}
                     }
@@ -9423,7 +9771,10 @@ impl Interpreter {
                 result
             }
             Value::Builtin(name) => self.call_builtin(name, args),
-            _ => Err(runtime_err(format!("Agent tool is not callable: {}", func.type_name()))),
+            _ => Err(runtime_err(format!(
+                "Agent tool is not callable: {}",
+                func.type_name()
+            ))),
         }
     }
 

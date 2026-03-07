@@ -349,16 +349,22 @@ fn lex_triple_string(lex: &mut logos::Lexer<Token>) -> Option<String> {
         }
         // Skip first line if it's just whitespace after opening """
         let start = if lines[0].trim().is_empty() { 1 } else { 0 };
-        let min_indent = lines[start..].iter()
+        let min_indent = lines[start..]
+            .iter()
             .filter(|l| !l.trim().is_empty())
             .map(|l| l.len() - l.trim_start().len())
             .min()
             .unwrap_or(0);
-        let dedented: Vec<&str> = lines[start..].iter()
+        let dedented: Vec<&str> = lines[start..]
+            .iter()
             .map(|l| {
-                if l.trim().is_empty() { "" }
-                else if l.len() >= min_indent { &l[min_indent..] }
-                else { l }
+                if l.trim().is_empty() {
+                    ""
+                } else if l.len() >= min_indent {
+                    &l[min_indent..]
+                } else {
+                    l
+                }
             })
             .collect();
         // Strip trailing empty line

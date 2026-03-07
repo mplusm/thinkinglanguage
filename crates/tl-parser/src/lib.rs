@@ -32,7 +32,11 @@ const MAX_PARSER_DEPTH: usize = 256;
 
 impl Parser {
     pub fn new(tokens: Vec<SpannedToken>) -> Self {
-        Self { tokens, pos: 0, depth: 0 }
+        Self {
+            tokens,
+            pos: 0,
+            depth: 0,
+        }
     }
 
     fn enter_depth(&mut self) -> Result<(), TlError> {

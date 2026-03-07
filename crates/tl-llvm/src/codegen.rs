@@ -566,7 +566,15 @@ impl<'ctx> LlvmCodegen<'ctx> {
                     let next_inst = proto.code[ip + 1];
                     let arg_count = decode_a(next_inst) as usize;
                     let first_arg = decode_b(next_inst) as usize;
-                    self.emit_call_builtin(a, builtin_id, first_arg, arg_count, &reg_slots, ctx_param, error_block)?;
+                    self.emit_call_builtin(
+                        a,
+                        builtin_id,
+                        first_arg,
+                        arg_count,
+                        &reg_slots,
+                        ctx_param,
+                        error_block,
+                    )?;
                     ip += 1; // skip extra instruction word
                 }
 

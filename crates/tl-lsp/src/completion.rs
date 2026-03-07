@@ -159,15 +159,50 @@ const STRING_METHODS: &[&str] = &[
 
 /// List methods for dot-completion
 const LIST_METHODS: &[&str] = &[
-    "len", "push", "map", "filter", "sort", "reverse", "contains", "index_of", "slice", "flat_map",
-    "reduce", "sum", "min", "max", "any", "all", "find", "sort_by", "group_by", "unique",
-    "flatten", "chunk", "insert", "remove_at", "is_empty", "each", "zip", "join",
+    "len",
+    "push",
+    "map",
+    "filter",
+    "sort",
+    "reverse",
+    "contains",
+    "index_of",
+    "slice",
+    "flat_map",
+    "reduce",
+    "sum",
+    "min",
+    "max",
+    "any",
+    "all",
+    "find",
+    "sort_by",
+    "group_by",
+    "unique",
+    "flatten",
+    "chunk",
+    "insert",
+    "remove_at",
+    "is_empty",
+    "each",
+    "zip",
+    "join",
 ];
 
 /// Map methods for dot-completion
 const MAP_METHODS: &[&str] = &[
-    "keys", "values", "contains_key", "remove", "len", "get", "merge", "entries",
-    "map_values", "filter", "set", "is_empty",
+    "keys",
+    "values",
+    "contains_key",
+    "remove",
+    "len",
+    "get",
+    "merge",
+    "entries",
+    "map_values",
+    "filter",
+    "set",
+    "is_empty",
 ];
 
 /// Set methods for dot-completion

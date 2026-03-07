@@ -12,8 +12,8 @@ readme = "../../README.md"
 description = "Data engine for ThinkingLanguage — DataFusion, connectors, I/O"
 
 [dependencies]
-tl-ast = { path = "../tl-ast", version = "0.1.0" }
-tl-errors = { path = "../tl-errors", version = "0.1.0" }
+tl-ast = { path = "../tl-ast", version = "0.2.0" }
+tl-errors = { path = "../tl-errors", version = "0.2.0" }
 
 datafusion = "44"
 tokio = { version = "1", features = ["rt-multi-thread"] }

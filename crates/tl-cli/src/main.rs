@@ -1954,7 +1954,9 @@ fn run_debug(path: &str) {
         match readline {
             Ok(input) => {
                 let input = input.trim();
-                if input.is_empty() { continue; }
+                if input.is_empty() {
+                    continue;
+                }
                 let _ = rl.add_history_entry(input);
 
                 let parts: Vec<&str> = input.splitn(2, ' ').collect();
@@ -1991,23 +1993,21 @@ fn run_debug(path: &str) {
                             }
                         }
                     }
-                    "c" | "continue" => {
-                        match vm.debug_continue(&breakpoints) {
-                            Ok(Some(val)) => {
-                                println!("Program finished with: {val}");
-                                break;
-                            }
-                            Ok(None) => {
-                                let line = vm.debug_current_line();
-                                println!("Hit breakpoint at line {line}");
-                                show_current_line(&vm, &source_lines);
-                            }
-                            Err(e) => {
-                                eprintln!("Runtime error: {e}");
-                                break;
-                            }
+                    "c" | "continue" => match vm.debug_continue(&breakpoints) {
+                        Ok(Some(val)) => {
+                            println!("Program finished with: {val}");
+                            break;
                         }
-                    }
+                        Ok(None) => {
+                            let line = vm.debug_current_line();
+                            println!("Hit breakpoint at line {line}");
+                            show_current_line(&vm, &source_lines);
+                        }
+                        Err(e) => {
+                            eprintln!("Runtime error: {e}");
+                            break;
+                        }
+                    },
                     "b" | "break" => {
                         if let Some(line_str) = parts.get(1) {
                             if let Ok(line) = line_str.parse::<u32>() {
@@ -2059,7 +2059,11 @@ fn run_debug(path: &str) {
                         for i in start..end {
                             if i <= source_lines.len() {
                                 let marker = if i == current { "=>" } else { "  " };
-                                let bp = if breakpoints.contains(&(i as u32)) { "*" } else { " " };
+                                let bp = if breakpoints.contains(&(i as u32)) {
+                                    "*"
+                                } else {
+                                    " "
+                                };
                                 println!("{marker}{bp}{:>4} | {}", i, source_lines[i - 1]);
                             }
                         }
@@ -2068,18 +2072,27 @@ fn run_debug(path: &str) {
                         let func = vm.debug_current_function();
                         let line = vm.debug_current_line();
                         let ip = vm.debug_current_ip();
-                        println!("  in {} at line {}, ip={}", if func.is_empty() { "<top>" } else { &func }, line, ip);
+                        println!(
+                            "  in {} at line {}, ip={}",
+                            if func.is_empty() { "<top>" } else { &func },
+                            line,
+                            ip
+                        );
                     }
                     "q" | "quit" => {
                         println!("Debugger exited.");
                         break;
                     }
                     _ => {
-                        println!("Unknown command: '{}'. Commands: s(tep), n(ext), c(ontinue), b <line>, d <line>, p <var>, l(ist), w(here), q(uit)", parts[0]);
+                        println!(
+                            "Unknown command: '{}'. Commands: s(tep), n(ext), c(ontinue), b <line>, d <line>, p <var>, l(ist), w(here), q(uit)",
+                            parts[0]
+                        );
                     }
                 }
             }
-            Err(rustyline::error::ReadlineError::Eof) | Err(rustyline::error::ReadlineError::Interrupted) => {
+            Err(rustyline::error::ReadlineError::Eof)
+            | Err(rustyline::error::ReadlineError::Interrupted) => {
                 println!("Debugger exited.");
                 break;
             }

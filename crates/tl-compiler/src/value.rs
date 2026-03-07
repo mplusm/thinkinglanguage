@@ -104,7 +104,9 @@ impl PartialEq for VmValue {
             (VmValue::None, VmValue::None) => true,
             (VmValue::Decimal(a), VmValue::Decimal(b)) => a == b,
             (VmValue::DateTime(a), VmValue::DateTime(b)) => a == b,
-            (VmValue::DateTime(a), VmValue::Int(b)) | (VmValue::Int(a), VmValue::DateTime(b)) => a == b,
+            (VmValue::DateTime(a), VmValue::Int(b)) | (VmValue::Int(a), VmValue::DateTime(b)) => {
+                a == b
+            }
             (VmValue::List(a), VmValue::List(b)) => a == b,
             (VmValue::Map(a), VmValue::Map(b)) => a == b,
             (VmValue::Set(a), VmValue::Set(b)) => a == b,

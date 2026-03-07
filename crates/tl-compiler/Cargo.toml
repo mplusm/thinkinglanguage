@@ -13,24 +13,24 @@ description = "Bytecode compiler and VM for ThinkingLanguage (Phase 2)"
 
 [dependencies]
 # Always needed (WASM-safe)
-tl-ast = { path = "../tl-ast", version = "0.1.0" }
-tl-errors = { path = "../tl-errors", version = "0.1.0" }
-tl-ir = { path = "../tl-ir", version = "0.1.0" }
-tl-parser = { path = "../tl-parser", version = "0.1.0" }
-tl-lexer = { path = "../tl-lexer", version = "0.1.0" }
+tl-ast = { path = "../tl-ast", version = "0.2.0" }
+tl-errors = { path = "../tl-errors", version = "0.2.0" }
+tl-ir = { path = "../tl-ir", version = "0.2.0" }
+tl-parser = { path = "../tl-parser", version = "0.2.0" }
+tl-lexer = { path = "../tl-lexer", version = "0.2.0" }
 serde_json = "1"
 regex = "1"
 chrono = "0.4"
 rust_decimal = "1"
 sha2 = "0.10"
 md-5 = "0.10"
-rand = "0.8"
+rand = { version = "0.8", optional = true }
 
 # Native-only (excluded in WASM builds)
-tl-data = { path = "../tl-data", version = "0.1.0", optional = true }
-tl-ai = { path = "../tl-ai", version = "0.1.0", optional = true }
-tl-stream = { path = "../tl-stream", version = "0.1.0", optional = true }
-tl-package = { path = "../tl-package", version = "0.1.0", optional = true }
+tl-data = { path = "../tl-data", version = "0.2.0", optional = true }
+tl-ai = { path = "../tl-ai", version = "0.2.0", optional = true }
+tl-stream = { path = "../tl-stream", version = "0.2.0", optional = true }
+tl-package = { path = "../tl-package", version = "0.2.0", optional = true }
 cranelift-codegen = { version = "0.116", optional = true }
 cranelift-frontend = { version = "0.116", optional = true }
 cranelift-jit = { version = "0.116", optional = true }
@@ -45,7 +45,7 @@ arrow-ipc = { version = "53", optional = true }
 arrow-array = { version = "53", optional = true }
 arrow-schema = { version = "53", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "time", "fs", "sync"], optional = true }
-tl-gpu = { path = "../tl-gpu", version = "0.1.0", optional = true }
+tl-gpu = { path = "../tl-gpu", version = "0.2.0", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -55,7 +55,7 @@ default = ["native"]
 native = [
     "dep:tl-data", "dep:tl-ai", "dep:tl-stream", "dep:tl-package",
     "dep:cranelift-codegen", "dep:cranelift-frontend", "dep:cranelift-jit", "dep:cranelift-module",
-    "dep:target-lexicon", "dep:rayon", "dep:reqwest",
+    "dep:target-lexicon", "dep:rayon", "dep:reqwest", "dep:rand",
 ]
 mysql = ["tl-data/mysql"]
 s3 = ["tl-data/s3"]
