@@ -1668,12 +1668,9 @@ impl Interpreter {
                 if let Some(finally_stmts) = finally_body {
                     self.env.push_scope();
                     for fs in finally_stmts {
-                        match self.exec_stmt(fs)? {
-                            Signal::Return(v) => {
-                                self.env.pop_scope();
-                                return Ok(Signal::Return(v));
-                            }
-                            _ => {}
+                        if let Signal::Return(v) = self.exec_stmt(fs)? {
+                            self.env.pop_scope();
+                            return Ok(Signal::Return(v));
                         }
                     }
                     self.env.pop_scope();
@@ -3824,18 +3821,18 @@ impl Interpreter {
                         Value::List(items) => {
                             let mut hist = Vec::new();
                             for item in items {
-                                if let Value::List(pair) = item {
-                                    if pair.len() >= 2 {
-                                        let role = match &pair[0] {
-                                            Value::String(s) => s.clone(),
-                                            _ => continue,
-                                        };
-                                        let content = match &pair[1] {
-                                            Value::String(s) => s.clone(),
-                                            _ => continue,
-                                        };
-                                        hist.push((role, content));
-                                    }
+                                if let Value::List(pair) = item
+                                    && pair.len() >= 2
+                                {
+                                    let role = match &pair[0] {
+                                        Value::String(s) => s.clone(),
+                                        _ => continue,
+                                    };
+                                    let content = match &pair[1] {
+                                        Value::String(s) => s.clone(),
+                                        _ => continue,
+                                    };
+                                    hist.push((role, content));
                                 }
                             }
                             Some(hist)
@@ -9588,7 +9585,7 @@ impl Interpreter {
                     // Call on_complete lifecycle hook if defined
                     let hook_name = format!("__agent_{}_on_complete__", agent_def.name);
                     if let Some(hook) = self.env.get(&hook_name).cloned() {
-                        let _ = self.call_function_value(&hook, &[result.clone()]);
+                        let _ = self.call_function_value(&hook, std::slice::from_ref(&result));
                     }
 
                     return Ok(result);

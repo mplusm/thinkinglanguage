@@ -320,6 +320,7 @@ fn parse_anthropic_response(json: &serde_json::Value) -> Result<LlmResponse, Str
 
 // --- Internal: OpenAI-compatible API with tools ---
 
+#[allow(clippy::too_many_arguments)]
 fn call_openai(
     http: &reqwest::blocking::Client,
     model: &str,
@@ -377,25 +378,25 @@ fn parse_openai_response(json: &serde_json::Value) -> Result<LlmResponse, String
     let message = &json["choices"][0]["message"];
 
     // Check for tool calls
-    if let Some(tool_calls_arr) = message["tool_calls"].as_array() {
-        if !tool_calls_arr.is_empty() {
-            let tool_calls: Vec<ToolCall> = tool_calls_arr
-                .iter()
-                .filter_map(|tc| {
-                    let func = tc.get("function")?;
-                    let input: serde_json::Value = func["arguments"]
-                        .as_str()
-                        .and_then(|s| serde_json::from_str(s).ok())
-                        .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
-                    Some(ToolCall {
-                        id: tc["id"].as_str().unwrap_or("").to_string(),
-                        name: func["name"].as_str().unwrap_or("").to_string(),
-                        input,
-                    })
+    if let Some(tool_calls_arr) = message["tool_calls"].as_array()
+        && !tool_calls_arr.is_empty()
+    {
+        let tool_calls: Vec<ToolCall> = tool_calls_arr
+            .iter()
+            .filter_map(|tc| {
+                let func = tc.get("function")?;
+                let input: serde_json::Value = func["arguments"]
+                    .as_str()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+                Some(ToolCall {
+                    id: tc["id"].as_str().unwrap_or("").to_string(),
+                    name: func["name"].as_str().unwrap_or("").to_string(),
+                    input,
                 })
-                .collect();
-            return Ok(LlmResponse::ToolUse(tool_calls));
-        }
+            })
+            .collect();
+        return Ok(LlmResponse::ToolUse(tool_calls));
     }
 
     // Text response
@@ -479,10 +480,10 @@ impl StreamReader {
             if self.is_anthropic {
                 // Anthropic SSE: {"type":"content_block_delta","delta":{"type":"text_delta","text":"..."}}
                 if json["type"].as_str() == Some("content_block_delta") {
-                    if let Some(text) = json["delta"]["text"].as_str() {
-                        if !text.is_empty() {
-                            return Ok(Some(text.to_string()));
-                        }
+                    if let Some(text) = json["delta"]["text"].as_str()
+                        && !text.is_empty()
+                    {
+                        return Ok(Some(text.to_string()));
                     }
                 } else if json["type"].as_str() == Some("message_stop") {
                     self.done = true;
@@ -490,10 +491,10 @@ impl StreamReader {
                 }
             } else {
                 // OpenAI SSE: {"choices":[{"delta":{"content":"..."}}]}
-                if let Some(content) = json["choices"][0]["delta"]["content"].as_str() {
-                    if !content.is_empty() {
-                        return Ok(Some(content.to_string()));
-                    }
+                if let Some(content) = json["choices"][0]["delta"]["content"].as_str()
+                    && !content.is_empty()
+                {
+                    return Ok(Some(content.to_string()));
                 }
                 // Check for finish_reason
                 if json["choices"][0]["finish_reason"].as_str().is_some() {

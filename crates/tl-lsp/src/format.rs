@@ -464,14 +464,14 @@ impl Formatter {
                 self.format_body(catch_body);
                 self.indent -= 1;
                 self.push_indent();
-                self.output.push_str("}");
+                self.output.push('}');
                 if let Some(finally_stmts) = finally_body {
                     self.output.push_str(" finally {\n");
                     self.indent += 1;
                     self.format_body(finally_stmts);
                     self.indent -= 1;
                     self.push_indent();
-                    self.output.push_str("}");
+                    self.output.push('}');
                 }
                 self.output.push('\n');
             }

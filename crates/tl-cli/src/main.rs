@@ -2025,11 +2025,11 @@ fn run_debug(path: &str) {
                         }
                     }
                     "d" | "delete" => {
-                        if let Some(line_str) = parts.get(1) {
-                            if let Ok(line) = line_str.parse::<u32>() {
-                                breakpoints.retain(|&l| l != line);
-                                println!("Breakpoint removed at line {line}");
-                            }
+                        if let Some(line_str) = parts.get(1)
+                            && let Ok(line) = line_str.parse::<u32>()
+                        {
+                            breakpoints.retain(|&l| l != line);
+                            println!("Breakpoint removed at line {line}");
                         }
                     }
                     "p" | "print" => {

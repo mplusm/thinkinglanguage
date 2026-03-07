@@ -1760,10 +1760,10 @@ impl Vm {
                             if idx < l.len() {
                                 VmValue::List(Box::new(l[idx..].to_vec()))
                             } else {
-                                VmValue::List(Box::new(vec![]))
+                                VmValue::List(Box::default())
                             }
                         }
-                        _ => VmValue::List(Box::new(vec![])),
+                        _ => VmValue::List(Box::default()),
                     }
                 } else {
                     match &source {
@@ -1940,7 +1940,7 @@ impl Vm {
     fn value_may_need_closing(val: &VmValue) -> bool {
         match val {
             VmValue::Function(_) => true,
-            VmValue::List(items) => items.iter().any(|v| Self::value_may_need_closing(v)),
+            VmValue::List(items) => items.iter().any(Self::value_may_need_closing),
             VmValue::Map(entries) => entries.iter().any(|(_, v)| Self::value_may_need_closing(v)),
             _ => false,
         }
@@ -1972,7 +1972,7 @@ impl Vm {
                 }))
             }
             VmValue::List(items) => {
-                if !items.iter().any(|v| Self::value_may_need_closing(v)) {
+                if !items.iter().any(Self::value_may_need_closing) {
                     return VmValue::List(items);
                 }
                 VmValue::List(Box::new(
@@ -2445,10 +2445,10 @@ impl Vm {
     // ── Security helpers ──
 
     fn check_permission(&self, perm: &str) -> Result<(), TlError> {
-        if let Some(ref policy) = self.security_policy {
-            if !policy.check(perm) {
-                return Err(runtime_err(format!("{perm} blocked by security policy")));
-            }
+        if let Some(ref policy) = self.security_policy
+            && !policy.check(perm)
+        {
+            return Err(runtime_err(format!("{perm} blocked by security policy")));
         }
         Ok(())
     }
@@ -2565,7 +2565,7 @@ impl Vm {
                             return Err(runtime_err("range() size too large (max 10,000,000)"));
                         }
                         if *n < 0 {
-                            return Ok(VmValue::List(Box::new(vec![])));
+                            return Ok(VmValue::List(Box::default()));
                         }
                         Ok(VmValue::List(Box::new((0..*n).map(VmValue::Int).collect())))
                     } else {
@@ -4378,7 +4378,7 @@ impl Vm {
                     _ => return Err(runtime_err("set_from() expects a list")),
                 };
                 if list.is_empty() {
-                    return Ok(VmValue::Set(Box::new(Vec::new())));
+                    return Ok(VmValue::Set(Box::default()));
                 }
                 let mut result = Vec::new();
                 for item in list.iter() {
@@ -5745,18 +5745,18 @@ impl Vm {
                         VmValue::List(items) => {
                             let mut hist = Vec::new();
                             for item in items.iter() {
-                                if let VmValue::List(pair) = item {
-                                    if pair.len() >= 2 {
-                                        let role = match &pair[0] {
-                                            VmValue::String(s) => s.to_string(),
-                                            _ => continue,
-                                        };
-                                        let content = match &pair[1] {
-                                            VmValue::String(s) => s.to_string(),
-                                            _ => continue,
-                                        };
-                                        hist.push((role, content));
-                                    }
+                                if let VmValue::List(pair) = item
+                                    && pair.len() >= 2
+                                {
+                                    let role = match &pair[0] {
+                                        VmValue::String(s) => s.to_string(),
+                                        _ => continue,
+                                    };
+                                    let content = match &pair[1] {
+                                        VmValue::String(s) => s.to_string(),
+                                        _ => continue,
+                                    };
+                                    hist.push((role, content));
                                 }
                             }
                             Some(hist)
@@ -6708,7 +6708,7 @@ impl Vm {
                     // Call on_complete lifecycle hook if defined
                     let hook_name = format!("__agent_{}_on_complete__", agent_def.name);
                     if let Some(hook) = self.globals.get(&hook_name).cloned() {
-                        let _ = self.call_value(hook, &[result.clone()]);
+                        let _ = self.call_value(hook, std::slice::from_ref(&result));
                     }
 
                     return Ok(result);
@@ -8394,7 +8394,7 @@ impl Vm {
     #[cfg(feature = "native")]
     fn resolve_use_path(&self, segments: &[&str]) -> Result<String, TlError> {
         // Reject path traversal attempts
-        if segments.iter().any(|s| *s == "..") {
+        if segments.contains(&"..") {
             return Err(runtime_err("Import paths cannot contain '..'"));
         }
 

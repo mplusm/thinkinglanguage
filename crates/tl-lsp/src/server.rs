@@ -196,6 +196,7 @@ fn handle_request(
                             new_text: params.new_name.clone(),
                         })
                         .collect();
+                    #[allow(clippy::mutable_key_type)]
                     let mut changes = std::collections::HashMap::new();
                     changes.insert(uri, edits);
                     Some(lsp_types::WorkspaceEdit {
