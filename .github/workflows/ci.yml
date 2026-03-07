@@ -9,6 +9,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -C link-arg=-fuse-ld=mold
+  RUST_MIN_STACK: 16777216
 
 jobs:
   check:
