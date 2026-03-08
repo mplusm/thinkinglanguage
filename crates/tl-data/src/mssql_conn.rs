@@ -270,7 +270,9 @@ fn extract_mssql_value(
 fn parse_mssql_config(conn_str: &str) -> Result<Config, String> {
     // Try ADO-style first
     if conn_str.contains("Server=") || conn_str.contains("server=") {
-        Config::from_ado_string(conn_str).map_err(|e| format!("MSSQL config parse error: {e}"))
+        let mut config = Config::from_ado_string(conn_str).map_err(|e| format!("MSSQL config parse error: {e}"))?;
+        config.encryption(tiberius::EncryptionLevel::Off);
+        Ok(config)
     } else {
         // Simple format: host=X port=Y user=U password=P database=D
         let mut config = Config::new();
@@ -304,6 +306,7 @@ fn parse_mssql_config(conn_str: &str) -> Result<Config, String> {
             .find_map(|p| p.strip_prefix("password="))
             .unwrap_or("");
         config.authentication(AuthMethod::sql_server(user, pass));
+        config.encryption(tiberius::EncryptionLevel::Off);
 
         Ok(config)
     }
