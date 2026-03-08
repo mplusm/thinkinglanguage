@@ -101,6 +101,35 @@ impl DataEngine {
         Ok(())
     }
 
+    /// Register multiple RecordBatches as a single named table.
+    /// Each batch becomes a separate partition, enabling DataFusion parallelism.
+    pub fn register_batches(
+        &self,
+        name: &str,
+        schema: Arc<datafusion::arrow::datatypes::Schema>,
+        batches: Vec<RecordBatch>,
+    ) -> Result<(), String> {
+        if batches.is_empty() {
+            // Register an empty table with the given schema
+            let provider = datafusion::datasource::MemTable::try_new(schema, vec![])
+                .map_err(|e| format!("MemTable error: {e}"))?;
+            self.ctx
+                .register_table(name, Arc::new(provider))
+                .map_err(|e| format!("Register table error: {e}"))?;
+            return Ok(());
+        }
+        // Each batch is its own partition for DataFusion parallelism
+        let partitions: Vec<Vec<RecordBatch>> = batches.into_iter().map(|b| vec![b]).collect();
+        let provider = datafusion::datasource::MemTable::try_new(schema, partitions)
+            .map_err(|e| format!("MemTable error: {e}"))?;
+        // Deregister previous table if it exists
+        let _ = self.ctx.deregister_table(name);
+        self.ctx
+            .register_table(name, Arc::new(provider))
+            .map_err(|e| format!("Register table error: {e}"))?;
+        Ok(())
+    }
+
     /// Run a SQL query and return results.
     pub fn sql(&self, query: &str) -> Result<DataFrame, String> {
         self.rt

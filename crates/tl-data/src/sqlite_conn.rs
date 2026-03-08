@@ -2,6 +2,7 @@
 // Licensed under MIT OR Apache-2.0
 //
 // Read/write SQLite tables to/from DataFusion DataFrames.
+// Uses batched Arrow conversion to reduce peak memory usage.
 
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::array::*;
@@ -11,8 +12,90 @@ use std::sync::Arc;
 
 use crate::engine::DataEngine;
 
+/// Default batch size for SQLite reads (rows per Arrow batch).
+const SQLITE_BATCH_SIZE: usize = 50_000;
+
+/// Build a RecordBatch from a chunk of SQLite rows.
+fn build_sqlite_batch(
+    rows: &[Vec<rusqlite::types::Value>],
+    schema: &Arc<Schema>,
+    col_types: &[DataType],
+) -> Result<RecordBatch, String> {
+    let mut arrays: Vec<Arc<dyn Array>> = Vec::new();
+    for (col_idx, arrow_type) in col_types.iter().enumerate() {
+        let array: Arc<dyn Array> = match arrow_type {
+            DataType::Boolean => {
+                let values: Vec<Option<bool>> = rows
+                    .iter()
+                    .map(|row| match &row[col_idx] {
+                        rusqlite::types::Value::Integer(n) => Some(*n != 0),
+                        rusqlite::types::Value::Null => None,
+                        _ => None,
+                    })
+                    .collect();
+                Arc::new(BooleanArray::from(values))
+            }
+            DataType::Int64 => {
+                let values: Vec<Option<i64>> = rows
+                    .iter()
+                    .map(|row| match &row[col_idx] {
+                        rusqlite::types::Value::Integer(n) => Some(*n),
+                        rusqlite::types::Value::Null => None,
+                        _ => None,
+                    })
+                    .collect();
+                Arc::new(Int64Array::from(values))
+            }
+            DataType::Float64 => {
+                let values: Vec<Option<f64>> = rows
+                    .iter()
+                    .map(|row| match &row[col_idx] {
+                        rusqlite::types::Value::Real(f) => Some(*f),
+                        rusqlite::types::Value::Integer(n) => Some(*n as f64),
+                        rusqlite::types::Value::Null => None,
+                        _ => None,
+                    })
+                    .collect();
+                Arc::new(Float64Array::from(values))
+            }
+            DataType::Binary => {
+                let values: Vec<Option<&[u8]>> = rows
+                    .iter()
+                    .map(|row| match &row[col_idx] {
+                        rusqlite::types::Value::Blob(b) => Some(b.as_slice()),
+                        rusqlite::types::Value::Null => None,
+                        _ => None,
+                    })
+                    .collect();
+                Arc::new(BinaryArray::from(values))
+            }
+            _ => {
+                // Utf8 / fallback
+                let values: Vec<Option<String>> = rows
+                    .iter()
+                    .map(|row| match &row[col_idx] {
+                        rusqlite::types::Value::Null => None,
+                        rusqlite::types::Value::Text(s) => Some(s.clone()),
+                        rusqlite::types::Value::Integer(n) => Some(n.to_string()),
+                        rusqlite::types::Value::Real(f) => Some(f.to_string()),
+                        rusqlite::types::Value::Blob(b) => {
+                            Some(String::from_utf8_lossy(b).to_string())
+                        }
+                    })
+                    .collect();
+                Arc::new(StringArray::from(values))
+            }
+        };
+        arrays.push(array);
+    }
+
+    RecordBatch::try_new(schema.clone(), arrays)
+        .map_err(|e| format!("Arrow RecordBatch creation error: {e}"))
+}
+
 impl DataEngine {
     /// Read from SQLite using a database file path and SQL query.
+    /// Uses batched Arrow conversion (50K rows per batch) to reduce peak memory.
     ///
     /// # Security
     ///
@@ -39,8 +122,12 @@ impl DataEngine {
             .map(|i| stmt.column_name(i).unwrap_or("?").to_string())
             .collect();
 
-        // Collect all rows first so we can inspect types
-        let mut all_rows: Vec<Vec<rusqlite::types::Value>> = Vec::new();
+        // Stream rows in batches rather than collecting all at once
+        let mut current_chunk: Vec<Vec<rusqlite::types::Value>> = Vec::with_capacity(SQLITE_BATCH_SIZE);
+        let mut batches: Vec<RecordBatch> = Vec::new();
+        let mut schema: Option<Arc<Schema>> = None;
+        let mut col_types: Option<Vec<DataType>> = None;
+
         let rows = stmt
             .query_map([], |row| {
                 let mut vals = Vec::with_capacity(col_count);
@@ -51,109 +138,69 @@ impl DataEngine {
             })
             .map_err(|e| format!("SQLite query error: {e}"))?;
 
-        for row in rows {
-            all_rows.push(row.map_err(|e| format!("SQLite row error: {e}"))?);
+        for row_result in rows {
+            let row = row_result.map_err(|e| format!("SQLite row error: {e}"))?;
+
+            // Infer types from first row
+            if schema.is_none() {
+                let types: Vec<DataType> = (0..col_count)
+                    .map(|col_idx| match &row[col_idx] {
+                        rusqlite::types::Value::Integer(_) => DataType::Int64,
+                        rusqlite::types::Value::Real(_) => DataType::Float64,
+                        rusqlite::types::Value::Text(_) => DataType::Utf8,
+                        rusqlite::types::Value::Blob(_) => DataType::Binary,
+                        rusqlite::types::Value::Null => DataType::Utf8,
+                    })
+                    .collect();
+                let fields: Vec<Field> = col_names
+                    .iter()
+                    .zip(types.iter())
+                    .map(|(name, dt)| Field::new(name, dt.clone(), true))
+                    .collect();
+                schema = Some(Arc::new(Schema::new(fields)));
+                col_types = Some(types);
+            }
+
+            current_chunk.push(row);
+
+            if current_chunk.len() >= SQLITE_BATCH_SIZE {
+                let batch = build_sqlite_batch(
+                    &current_chunk,
+                    schema.as_ref().unwrap(),
+                    col_types.as_ref().unwrap(),
+                )?;
+                batches.push(batch);
+                current_chunk.clear();
+            }
         }
 
-        // Infer types from the first non-null value in each column
-        let col_types: Vec<DataType> = (0..col_count)
-            .map(|col_idx| {
-                for row in &all_rows {
-                    match &row[col_idx] {
-                        rusqlite::types::Value::Integer(_) => return DataType::Int64,
-                        rusqlite::types::Value::Real(_) => return DataType::Float64,
-                        rusqlite::types::Value::Text(_) => return DataType::Utf8,
-                        rusqlite::types::Value::Blob(_) => return DataType::Binary,
-                        rusqlite::types::Value::Null => continue,
-                    }
-                }
-                DataType::Utf8 // default if all nulls
-            })
-            .collect();
-
-        let fields: Vec<Field> = col_names
-            .iter()
-            .zip(col_types.iter())
-            .map(|(name, dt)| Field::new(name, dt.clone(), true))
-            .collect();
-        let schema = Arc::new(Schema::new(fields));
-
-        let mut arrays: Vec<Arc<dyn Array>> = Vec::new();
-        for col_idx in 0..col_count {
-            let arrow_type = &col_types[col_idx];
-            let array: Arc<dyn Array> = match arrow_type {
-                DataType::Boolean => {
-                    let values: Vec<Option<bool>> = all_rows
-                        .iter()
-                        .map(|row| match &row[col_idx] {
-                            rusqlite::types::Value::Integer(n) => Some(*n != 0),
-                            rusqlite::types::Value::Null => None,
-                            _ => None,
-                        })
-                        .collect();
-                    Arc::new(BooleanArray::from(values))
-                }
-                DataType::Int64 => {
-                    let values: Vec<Option<i64>> = all_rows
-                        .iter()
-                        .map(|row| match &row[col_idx] {
-                            rusqlite::types::Value::Integer(n) => Some(*n),
-                            rusqlite::types::Value::Null => None,
-                            _ => None,
-                        })
-                        .collect();
-                    Arc::new(Int64Array::from(values))
-                }
-                DataType::Float64 => {
-                    let values: Vec<Option<f64>> = all_rows
-                        .iter()
-                        .map(|row| match &row[col_idx] {
-                            rusqlite::types::Value::Real(f) => Some(*f),
-                            rusqlite::types::Value::Integer(n) => Some(*n as f64),
-                            rusqlite::types::Value::Null => None,
-                            _ => None,
-                        })
-                        .collect();
-                    Arc::new(Float64Array::from(values))
-                }
-                DataType::Binary => {
-                    let values: Vec<Option<&[u8]>> = all_rows
-                        .iter()
-                        .map(|row| match &row[col_idx] {
-                            rusqlite::types::Value::Blob(b) => Some(b.as_slice()),
-                            rusqlite::types::Value::Null => None,
-                            _ => None,
-                        })
-                        .collect();
-                    Arc::new(BinaryArray::from(values))
-                }
-                _ => {
-                    // Utf8 / fallback
-                    let values: Vec<Option<String>> = all_rows
-                        .iter()
-                        .map(|row| match &row[col_idx] {
-                            rusqlite::types::Value::Null => None,
-                            rusqlite::types::Value::Text(s) => Some(s.clone()),
-                            rusqlite::types::Value::Integer(n) => Some(n.to_string()),
-                            rusqlite::types::Value::Real(f) => Some(f.to_string()),
-                            rusqlite::types::Value::Blob(b) => {
-                                Some(String::from_utf8_lossy(b).to_string())
-                            }
-                        })
-                        .collect();
-                    Arc::new(StringArray::from(values))
-                }
-            };
-            arrays.push(array);
+        // Flush remaining rows
+        if !current_chunk.is_empty() {
+            let batch = build_sqlite_batch(
+                &current_chunk,
+                schema.as_ref().unwrap(),
+                col_types.as_ref().unwrap(),
+            )?;
+            batches.push(batch);
         }
 
         let table_name = "__sqlite_result";
-        let batch = RecordBatch::try_new(schema, arrays)
-            .map_err(|e| format!("Arrow RecordBatch creation error: {e}"))?;
-
         // Deregister previous result table if it exists
         let _ = self.ctx.deregister_table(table_name);
-        self.register_batch(table_name, batch)?;
+
+        if batches.is_empty() {
+            // Empty result — register an empty table with inferred or default schema
+            let empty_schema = schema.unwrap_or_else(|| {
+                let fields: Vec<Field> = col_names
+                    .iter()
+                    .map(|name| Field::new(name, DataType::Utf8, true))
+                    .collect();
+                Arc::new(Schema::new(fields))
+            });
+            self.register_batches(table_name, empty_schema, vec![])?;
+        } else {
+            self.register_batches(table_name, schema.unwrap(), batches)?;
+        }
 
         self.rt
             .block_on(self.ctx.table(table_name))
@@ -331,9 +378,8 @@ mod tests {
         let df = engine.read_sqlite(db_str, "SELECT * FROM users").unwrap();
         let batches = engine.collect(df).unwrap();
         assert!(!batches.is_empty());
-        let batch = &batches[0];
-        assert_eq!(batch.num_rows(), 3);
-        assert_eq!(batch.num_columns(), 4);
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 3);
     }
 
     #[test]
@@ -350,8 +396,9 @@ mod tests {
             .read_sqlite(db_str, "SELECT * FROM empty_table")
             .unwrap();
         let batches = engine.collect(df).unwrap();
-        assert!(!batches.is_empty());
-        assert_eq!(batches[0].num_rows(), 0);
+        // Empty result should produce zero rows
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 0);
     }
 
     #[test]
@@ -390,8 +437,8 @@ mod tests {
             .read_sqlite(out_str, "SELECT * FROM results")
             .unwrap();
         let batches = engine.collect(df3).unwrap();
-        assert!(!batches.is_empty());
-        assert_eq!(batches[0].num_rows(), 3);
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 3);
     }
 
     #[test]

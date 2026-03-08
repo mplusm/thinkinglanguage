@@ -4915,6 +4915,253 @@ impl Vm {
                 Err(runtime_err("write_sqlite() requires the 'sqlite' feature"))
             }
             #[cfg(feature = "native")]
+            BuiltinId::ReadDuckDb => {
+                #[cfg(feature = "duckdb")]
+                {
+                    if args.len() < 2 {
+                        return Err(runtime_err("duckdb() expects (db_path, query)"));
+                    }
+                    let db_path = match &args[0] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("duckdb() db_path must be a string")),
+                    };
+                    let query = match &args[1] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("duckdb() query must be a string")),
+                    };
+                    let df = self
+                        .engine()
+                        .read_duckdb(&db_path, &query)
+                        .map_err(|e| runtime_err(e))?;
+                    Ok(VmValue::Table(VmTable { df }))
+                }
+                #[cfg(not(feature = "duckdb"))]
+                Err(runtime_err("duckdb() requires the 'duckdb' feature"))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::WriteDuckDb => {
+                #[cfg(feature = "duckdb")]
+                {
+                    if args.len() < 3 {
+                        return Err(runtime_err(
+                            "write_duckdb() expects (table, db_path, table_name)",
+                        ));
+                    }
+                    let df = match &args[0] {
+                        VmValue::Table(t) => t.df.clone(),
+                        _ => return Err(runtime_err("write_duckdb() first arg must be a table")),
+                    };
+                    let db_path = match &args[1] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("write_duckdb() db_path must be a string")),
+                    };
+                    let table_name = match &args[2] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("write_duckdb() table_name must be a string")),
+                    };
+                    self.engine()
+                        .write_duckdb(df, &db_path, &table_name)
+                        .map_err(|e| runtime_err(e))?;
+                    Ok(VmValue::None)
+                }
+                #[cfg(not(feature = "duckdb"))]
+                Err(runtime_err("write_duckdb() requires the 'duckdb' feature"))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::ReadRedshift => {
+                if args.len() < 2 {
+                    return Err(runtime_err("redshift() expects (conn_str, query)"));
+                }
+                let conn_str = match &args[0] {
+                    VmValue::String(s) => {
+                        let s_str = s.to_string();
+                        resolve_tl_config_connection(&s_str)
+                    }
+                    _ => return Err(runtime_err("redshift() conn_str must be a string")),
+                };
+                let query = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("redshift() query must be a string")),
+                };
+                let df = self
+                    .engine()
+                    .read_redshift(&conn_str, &query)
+                    .map_err(|e| runtime_err(e))?;
+                Ok(VmValue::Table(VmTable { df }))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::ReadMssql => {
+                #[cfg(feature = "mssql")]
+                {
+                    if args.len() < 2 {
+                        return Err(runtime_err("mssql() expects (conn_str, query)"));
+                    }
+                    let conn_str = match &args[0] {
+                        VmValue::String(s) => {
+                            let s_str = s.to_string();
+                            resolve_tl_config_connection(&s_str)
+                        }
+                        _ => return Err(runtime_err("mssql() conn_str must be a string")),
+                    };
+                    let query = match &args[1] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("mssql() query must be a string")),
+                    };
+                    let df = self
+                        .engine()
+                        .read_mssql(&conn_str, &query)
+                        .map_err(|e| runtime_err(e))?;
+                    Ok(VmValue::Table(VmTable { df }))
+                }
+                #[cfg(not(feature = "mssql"))]
+                Err(runtime_err("mssql() requires the 'mssql' feature"))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::ReadSnowflake => {
+                #[cfg(feature = "snowflake")]
+                {
+                    if args.len() < 2 {
+                        return Err(runtime_err("snowflake() expects (config, query)"));
+                    }
+                    let config = match &args[0] {
+                        VmValue::String(s) => {
+                            let s_str = s.to_string();
+                            resolve_tl_config_connection(&s_str)
+                        }
+                        _ => return Err(runtime_err("snowflake() config must be a string")),
+                    };
+                    let query = match &args[1] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("snowflake() query must be a string")),
+                    };
+                    let df = self
+                        .engine()
+                        .read_snowflake(&config, &query)
+                        .map_err(|e| runtime_err(e))?;
+                    Ok(VmValue::Table(VmTable { df }))
+                }
+                #[cfg(not(feature = "snowflake"))]
+                Err(runtime_err("snowflake() requires the 'snowflake' feature"))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::ReadBigQuery => {
+                #[cfg(feature = "bigquery")]
+                {
+                    if args.len() < 2 {
+                        return Err(runtime_err("bigquery() expects (config, query)"));
+                    }
+                    let config = match &args[0] {
+                        VmValue::String(s) => {
+                            let s_str = s.to_string();
+                            resolve_tl_config_connection(&s_str)
+                        }
+                        _ => return Err(runtime_err("bigquery() config must be a string")),
+                    };
+                    let query = match &args[1] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("bigquery() query must be a string")),
+                    };
+                    let df = self
+                        .engine()
+                        .read_bigquery(&config, &query)
+                        .map_err(|e| runtime_err(e))?;
+                    Ok(VmValue::Table(VmTable { df }))
+                }
+                #[cfg(not(feature = "bigquery"))]
+                Err(runtime_err("bigquery() requires the 'bigquery' feature"))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::ReadDatabricks => {
+                #[cfg(feature = "databricks")]
+                {
+                    if args.len() < 2 {
+                        return Err(runtime_err("databricks() expects (config, query)"));
+                    }
+                    let config = match &args[0] {
+                        VmValue::String(s) => {
+                            let s_str = s.to_string();
+                            resolve_tl_config_connection(&s_str)
+                        }
+                        _ => return Err(runtime_err("databricks() config must be a string")),
+                    };
+                    let query = match &args[1] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("databricks() query must be a string")),
+                    };
+                    let df = self
+                        .engine()
+                        .read_databricks(&config, &query)
+                        .map_err(|e| runtime_err(e))?;
+                    Ok(VmValue::Table(VmTable { df }))
+                }
+                #[cfg(not(feature = "databricks"))]
+                Err(runtime_err("databricks() requires the 'databricks' feature"))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::ReadClickHouse => {
+                #[cfg(feature = "clickhouse")]
+                {
+                    if args.len() < 2 {
+                        return Err(runtime_err("clickhouse() expects (url, query)"));
+                    }
+                    let url = match &args[0] {
+                        VmValue::String(s) => {
+                            let s_str = s.to_string();
+                            resolve_tl_config_connection(&s_str)
+                        }
+                        _ => return Err(runtime_err("clickhouse() url must be a string")),
+                    };
+                    let query = match &args[1] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("clickhouse() query must be a string")),
+                    };
+                    let df = self
+                        .engine()
+                        .read_clickhouse(&url, &query)
+                        .map_err(|e| runtime_err(e))?;
+                    Ok(VmValue::Table(VmTable { df }))
+                }
+                #[cfg(not(feature = "clickhouse"))]
+                Err(runtime_err("clickhouse() requires the 'clickhouse' feature"))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::ReadMongo => {
+                #[cfg(feature = "mongodb")]
+                {
+                    if args.len() < 4 {
+                        return Err(runtime_err(
+                            "mongo() expects (conn_str, database, collection, filter_json)",
+                        ));
+                    }
+                    let conn_str = match &args[0] {
+                        VmValue::String(s) => {
+                            let s_str = s.to_string();
+                            resolve_tl_config_connection(&s_str)
+                        }
+                        _ => return Err(runtime_err("mongo() conn_str must be a string")),
+                    };
+                    let database = match &args[1] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("mongo() database must be a string")),
+                    };
+                    let collection = match &args[2] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("mongo() collection must be a string")),
+                    };
+                    let filter_json = match &args[3] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("mongo() filter must be a string")),
+                    };
+                    let df = self
+                        .engine()
+                        .read_mongo(&conn_str, &database, &collection, &filter_json)
+                        .map_err(|e| runtime_err(e))?;
+                    Ok(VmValue::Table(VmTable { df }))
+                }
+                #[cfg(not(feature = "mongodb"))]
+                Err(runtime_err("mongo() requires the 'mongodb' feature"))
+            }
+            #[cfg(feature = "native")]
             BuiltinId::RedisConnect => {
                 #[cfg(feature = "redis")]
                 {
@@ -5098,6 +5345,15 @@ impl Vm {
             BuiltinId::ReadMysql
             | BuiltinId::ReadSqlite
             | BuiltinId::WriteSqlite
+            | BuiltinId::ReadDuckDb
+            | BuiltinId::WriteDuckDb
+            | BuiltinId::ReadRedshift
+            | BuiltinId::ReadMssql
+            | BuiltinId::ReadSnowflake
+            | BuiltinId::ReadBigQuery
+            | BuiltinId::ReadDatabricks
+            | BuiltinId::ReadClickHouse
+            | BuiltinId::ReadMongo
             | BuiltinId::RedisConnect
             | BuiltinId::RedisGet
             | BuiltinId::RedisSet

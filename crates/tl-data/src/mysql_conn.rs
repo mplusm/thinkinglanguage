@@ -2,6 +2,7 @@
 // Licensed under MIT OR Apache-2.0
 //
 // Read MySQL tables into DataFusion DataFrames.
+// Uses batched Arrow conversion for large result sets.
 
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::array::*;
@@ -11,6 +12,9 @@ use mysql::{Pool, Value as MysqlValue};
 use std::sync::Arc;
 
 use crate::engine::DataEngine;
+
+/// Default batch size for MySQL reads (rows per Arrow batch).
+const MYSQL_BATCH_SIZE: usize = 50_000;
 
 /// Map MySQL column types to Arrow DataTypes.
 fn mysql_type_to_arrow(col_type: mysql::consts::ColumnType) -> DataType {
@@ -26,8 +30,112 @@ fn mysql_type_to_arrow(col_type: mysql::consts::ColumnType) -> DataType {
     }
 }
 
+/// Build a RecordBatch from a chunk of MySQL rows.
+fn build_mysql_batch(
+    rows: &[mysql::Row],
+    schema: &Arc<Schema>,
+    col_types: &[DataType],
+) -> Result<RecordBatch, String> {
+    let mut arrays: Vec<Arc<dyn Array>> = Vec::new();
+    for (col_idx, arrow_type) in col_types.iter().enumerate() {
+        let array: Arc<dyn Array> = match arrow_type {
+            DataType::Boolean => {
+                let values: Vec<Option<bool>> = rows
+                    .iter()
+                    .map(|r| match &r[col_idx] {
+                        MysqlValue::Int(n) => Some(*n != 0),
+                        MysqlValue::UInt(n) => Some(*n != 0),
+                        MysqlValue::NULL => None,
+                        _ => None,
+                    })
+                    .collect();
+                Arc::new(BooleanArray::from(values))
+            }
+            DataType::Int16 => {
+                let values: Vec<Option<i16>> = rows
+                    .iter()
+                    .map(|r| match &r[col_idx] {
+                        MysqlValue::Int(n) => Some(*n as i16),
+                        MysqlValue::UInt(n) => Some(*n as i16),
+                        MysqlValue::NULL => None,
+                        _ => None,
+                    })
+                    .collect();
+                Arc::new(Int16Array::from(values))
+            }
+            DataType::Int32 => {
+                let values: Vec<Option<i32>> = rows
+                    .iter()
+                    .map(|r| match &r[col_idx] {
+                        MysqlValue::Int(n) => Some(*n as i32),
+                        MysqlValue::UInt(n) => Some(*n as i32),
+                        MysqlValue::NULL => None,
+                        _ => None,
+                    })
+                    .collect();
+                Arc::new(Int32Array::from(values))
+            }
+            DataType::Int64 => {
+                let values: Vec<Option<i64>> = rows
+                    .iter()
+                    .map(|r| match &r[col_idx] {
+                        MysqlValue::Int(n) => Some(*n),
+                        MysqlValue::UInt(n) => Some(*n as i64),
+                        MysqlValue::NULL => None,
+                        _ => None,
+                    })
+                    .collect();
+                Arc::new(Int64Array::from(values))
+            }
+            DataType::Float32 => {
+                let values: Vec<Option<f32>> = rows
+                    .iter()
+                    .map(|r| match &r[col_idx] {
+                        MysqlValue::Float(f) => Some(*f as f32),
+                        MysqlValue::Double(f) => Some(*f as f32),
+                        MysqlValue::Int(n) => Some(*n as f32),
+                        MysqlValue::NULL => None,
+                        _ => None,
+                    })
+                    .collect();
+                Arc::new(Float32Array::from(values))
+            }
+            DataType::Float64 => {
+                let values: Vec<Option<f64>> = rows
+                    .iter()
+                    .map(|r| match &r[col_idx] {
+                        MysqlValue::Float(f) => Some(*f as f64),
+                        MysqlValue::Double(f) => Some(*f),
+                        MysqlValue::Int(n) => Some(*n as f64),
+                        MysqlValue::NULL => None,
+                        _ => None,
+                    })
+                    .collect();
+                Arc::new(Float64Array::from(values))
+            }
+            _ => {
+                let values: Vec<Option<String>> = rows
+                    .iter()
+                    .map(|r| match &r[col_idx] {
+                        MysqlValue::NULL => None,
+                        MysqlValue::Bytes(b) => Some(String::from_utf8_lossy(b).to_string()),
+                        other => Some(format!("{other:?}")),
+                    })
+                    .collect();
+                Arc::new(StringArray::from(values))
+            }
+        };
+        arrays.push(array);
+    }
+
+    RecordBatch::try_new(schema.clone(), arrays)
+        .map_err(|e| format!("Arrow RecordBatch creation error: {e}"))
+}
+
 impl DataEngine {
     /// Read from MySQL using a connection string and SQL query.
+    /// Uses batched Arrow conversion (50K rows per batch) to reduce peak memory
+    /// and enable DataFusion partition parallelism on large result sets.
     pub fn read_mysql(
         &self,
         conn_str: &str,
@@ -46,7 +154,12 @@ impl DataEngine {
             return Err("MySQL query returned no rows".to_string());
         }
 
+        // Build schema from first row
         let columns = result[0].columns_ref();
+        let col_types: Vec<DataType> = columns
+            .iter()
+            .map(|c| mysql_type_to_arrow(c.column_type()))
+            .collect();
         let fields: Vec<Field> = columns
             .iter()
             .map(|c| {
@@ -59,104 +172,15 @@ impl DataEngine {
             .collect();
         let schema = Arc::new(Schema::new(fields));
 
-        let mut arrays: Vec<Arc<dyn Array>> = Vec::new();
-        for (col_idx, col) in columns.iter().enumerate() {
-            let arrow_type = mysql_type_to_arrow(col.column_type());
-            let array: Arc<dyn Array> = match arrow_type {
-                DataType::Boolean => {
-                    let values: Vec<Option<bool>> = result
-                        .iter()
-                        .map(|r| match &r[col_idx] {
-                            MysqlValue::Int(n) => Some(*n != 0),
-                            MysqlValue::UInt(n) => Some(*n != 0),
-                            MysqlValue::NULL => None,
-                            _ => None,
-                        })
-                        .collect();
-                    Arc::new(BooleanArray::from(values))
-                }
-                DataType::Int16 => {
-                    let values: Vec<Option<i16>> = result
-                        .iter()
-                        .map(|r| match &r[col_idx] {
-                            MysqlValue::Int(n) => Some(*n as i16),
-                            MysqlValue::UInt(n) => Some(*n as i16),
-                            MysqlValue::NULL => None,
-                            _ => None,
-                        })
-                        .collect();
-                    Arc::new(Int16Array::from(values))
-                }
-                DataType::Int32 => {
-                    let values: Vec<Option<i32>> = result
-                        .iter()
-                        .map(|r| match &r[col_idx] {
-                            MysqlValue::Int(n) => Some(*n as i32),
-                            MysqlValue::UInt(n) => Some(*n as i32),
-                            MysqlValue::NULL => None,
-                            _ => None,
-                        })
-                        .collect();
-                    Arc::new(Int32Array::from(values))
-                }
-                DataType::Int64 => {
-                    let values: Vec<Option<i64>> = result
-                        .iter()
-                        .map(|r| match &r[col_idx] {
-                            MysqlValue::Int(n) => Some(*n),
-                            MysqlValue::UInt(n) => Some(*n as i64),
-                            MysqlValue::NULL => None,
-                            _ => None,
-                        })
-                        .collect();
-                    Arc::new(Int64Array::from(values))
-                }
-                DataType::Float32 => {
-                    let values: Vec<Option<f32>> = result
-                        .iter()
-                        .map(|r| match &r[col_idx] {
-                            MysqlValue::Float(f) => Some(*f as f32),
-                            MysqlValue::Double(f) => Some(*f as f32),
-                            MysqlValue::Int(n) => Some(*n as f32),
-                            MysqlValue::NULL => None,
-                            _ => None,
-                        })
-                        .collect();
-                    Arc::new(Float32Array::from(values))
-                }
-                DataType::Float64 => {
-                    let values: Vec<Option<f64>> = result
-                        .iter()
-                        .map(|r| match &r[col_idx] {
-                            MysqlValue::Float(f) => Some(*f as f64),
-                            MysqlValue::Double(f) => Some(*f),
-                            MysqlValue::Int(n) => Some(*n as f64),
-                            MysqlValue::NULL => None,
-                            _ => None,
-                        })
-                        .collect();
-                    Arc::new(Float64Array::from(values))
-                }
-                _ => {
-                    let values: Vec<Option<String>> = result
-                        .iter()
-                        .map(|r| match &r[col_idx] {
-                            MysqlValue::NULL => None,
-                            MysqlValue::Bytes(b) => Some(String::from_utf8_lossy(b).to_string()),
-                            other => Some(format!("{other:?}")),
-                        })
-                        .collect();
-                    Arc::new(StringArray::from(values))
-                }
-            };
-            arrays.push(array);
+        // Build batches in chunks for large result sets
+        let mut batches: Vec<RecordBatch> = Vec::new();
+        for chunk in result.chunks(MYSQL_BATCH_SIZE) {
+            let batch = build_mysql_batch(chunk, &schema, &col_types)?;
+            batches.push(batch);
         }
 
         let table_name = "__mysql_result";
-        let batch = RecordBatch::try_new(schema, arrays)
-            .map_err(|e| format!("Arrow RecordBatch creation error: {e}"))?;
-
-        self.register_batch(table_name, batch)?;
+        self.register_batches(table_name, schema, batches)?;
 
         self.rt
             .block_on(self.ctx.table(table_name))

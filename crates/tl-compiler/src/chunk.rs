@@ -645,6 +645,16 @@ pub enum BuiltinId {
     PostgresQuery = 199,
     Fold = 200,
     TlConfigResolve = 201,
+    // Phase 35: New connectors
+    ReadDuckDb = 202,
+    WriteDuckDb = 203,
+    ReadRedshift = 204,
+    ReadMssql = 205,
+    ReadSnowflake = 206,
+    ReadBigQuery = 207,
+    ReadDatabricks = 208,
+    ReadClickHouse = 209,
+    ReadMongo = 210,
 }
 
 impl TryFrom<u16> for BuiltinId {
@@ -854,6 +864,15 @@ impl TryFrom<u16> for BuiltinId {
             199 => Ok(BuiltinId::PostgresQuery),
             200 => Ok(BuiltinId::Fold),
             201 => Ok(BuiltinId::TlConfigResolve),
+            202 => Ok(BuiltinId::ReadDuckDb),
+            203 => Ok(BuiltinId::WriteDuckDb),
+            204 => Ok(BuiltinId::ReadRedshift),
+            205 => Ok(BuiltinId::ReadMssql),
+            206 => Ok(BuiltinId::ReadSnowflake),
+            207 => Ok(BuiltinId::ReadBigQuery),
+            208 => Ok(BuiltinId::ReadDatabricks),
+            209 => Ok(BuiltinId::ReadClickHouse),
+            210 => Ok(BuiltinId::ReadMongo),
             _ => Err(value),
         }
     }
@@ -1074,6 +1093,15 @@ impl BuiltinId {
             "postgres_query" => Some(BuiltinId::PostgresQuery),
             "fold" => Some(BuiltinId::Fold),
             "tl_config_resolve" => Some(BuiltinId::TlConfigResolve),
+            "duckdb" | "read_duckdb" => Some(BuiltinId::ReadDuckDb),
+            "write_duckdb" => Some(BuiltinId::WriteDuckDb),
+            "redshift" | "read_redshift" => Some(BuiltinId::ReadRedshift),
+            "mssql" | "read_mssql" => Some(BuiltinId::ReadMssql),
+            "snowflake" | "read_snowflake" => Some(BuiltinId::ReadSnowflake),
+            "bigquery" | "read_bigquery" => Some(BuiltinId::ReadBigQuery),
+            "databricks" | "read_databricks" => Some(BuiltinId::ReadDatabricks),
+            "clickhouse" | "read_clickhouse" => Some(BuiltinId::ReadClickHouse),
+            "mongo" | "read_mongo" => Some(BuiltinId::ReadMongo),
             _ => None,
         }
     }
@@ -1293,6 +1321,15 @@ impl BuiltinId {
             BuiltinId::PostgresQuery => "postgres_query",
             BuiltinId::Fold => "fold",
             BuiltinId::TlConfigResolve => "tl_config_resolve",
+            BuiltinId::ReadDuckDb => "duckdb",
+            BuiltinId::WriteDuckDb => "write_duckdb",
+            BuiltinId::ReadRedshift => "redshift",
+            BuiltinId::ReadMssql => "mssql",
+            BuiltinId::ReadSnowflake => "snowflake",
+            BuiltinId::ReadBigQuery => "bigquery",
+            BuiltinId::ReadDatabricks => "databricks",
+            BuiltinId::ReadClickHouse => "clickhouse",
+            BuiltinId::ReadMongo => "mongo",
         }
     }
 }
@@ -1357,7 +1394,7 @@ mod tests {
 
     #[test]
     fn test_builtin_id_try_from_valid() {
-        for v in 0..=201u16 {
+        for v in 0..=210u16 {
             assert!(
                 BuiltinId::try_from(v).is_ok(),
                 "BuiltinId::try_from({v}) should succeed"
@@ -1366,11 +1403,14 @@ mod tests {
         assert_eq!(BuiltinId::try_from(0u16).unwrap(), BuiltinId::Print);
         assert_eq!(BuiltinId::try_from(198u16).unwrap(), BuiltinId::StreamAgent);
         assert_eq!(BuiltinId::try_from(201u16).unwrap(), BuiltinId::TlConfigResolve);
+        assert_eq!(BuiltinId::try_from(203u16).unwrap(), BuiltinId::WriteDuckDb);
+        assert_eq!(BuiltinId::try_from(205u16).unwrap(), BuiltinId::ReadMssql);
+        assert_eq!(BuiltinId::try_from(210u16).unwrap(), BuiltinId::ReadMongo);
     }
 
     #[test]
     fn test_builtin_id_try_from_invalid() {
-        assert_eq!(BuiltinId::try_from(202u16), Err(202u16));
+        assert_eq!(BuiltinId::try_from(211u16), Err(211u16));
         assert_eq!(BuiltinId::try_from(65535u16), Err(65535u16));
     }
 }

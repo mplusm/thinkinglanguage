@@ -935,6 +935,54 @@ impl Environment {
             Value::Builtin("write_sqlite".to_string()),
         );
         global.insert(
+            "duckdb".to_string(),
+            Value::Builtin("duckdb".to_string()),
+        );
+        global.insert(
+            "read_duckdb".to_string(),
+            Value::Builtin("duckdb".to_string()),
+        );
+        global.insert(
+            "write_duckdb".to_string(),
+            Value::Builtin("write_duckdb".to_string()),
+        );
+        global.insert(
+            "redshift".to_string(),
+            Value::Builtin("redshift".to_string()),
+        );
+        global.insert(
+            "read_redshift".to_string(),
+            Value::Builtin("redshift".to_string()),
+        );
+        global.insert(
+            "mssql".to_string(),
+            Value::Builtin("mssql".to_string()),
+        );
+        global.insert(
+            "read_mssql".to_string(),
+            Value::Builtin("mssql".to_string()),
+        );
+        global.insert(
+            "snowflake".to_string(),
+            Value::Builtin("snowflake".to_string()),
+        );
+        global.insert(
+            "bigquery".to_string(),
+            Value::Builtin("bigquery".to_string()),
+        );
+        global.insert(
+            "databricks".to_string(),
+            Value::Builtin("databricks".to_string()),
+        );
+        global.insert(
+            "clickhouse".to_string(),
+            Value::Builtin("clickhouse".to_string()),
+        );
+        global.insert(
+            "mongo".to_string(),
+            Value::Builtin("mongo".to_string()),
+        );
+        global.insert(
             "redis_connect".to_string(),
             Value::Builtin("redis_connect".to_string()),
         );
@@ -5208,6 +5256,229 @@ impl Interpreter {
                 Err(runtime_err_s(
                     "write_sqlite() requires the 'sqlite' feature",
                 ))
+            }
+            "duckdb" | "read_duckdb" => {
+                #[cfg(feature = "duckdb")]
+                {
+                    if args.len() < 2 {
+                        return Err(runtime_err_s("duckdb() expects (db_path, query)"));
+                    }
+                    let db_path = match &args[0] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("duckdb() db_path must be a string")),
+                    };
+                    let query = match &args[1] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("duckdb() query must be a string")),
+                    };
+                    let df = self
+                        .engine()
+                        .read_duckdb(&db_path, &query)
+                        .map_err(|e| runtime_err(e))?;
+                    Ok(Value::Table(TlTable { df }))
+                }
+                #[cfg(not(feature = "duckdb"))]
+                Err(runtime_err_s("duckdb() requires the 'duckdb' feature"))
+            }
+            "write_duckdb" => {
+                #[cfg(feature = "duckdb")]
+                {
+                    if args.len() < 3 {
+                        return Err(runtime_err_s(
+                            "write_duckdb() expects (table, db_path, table_name)",
+                        ));
+                    }
+                    let df = match &args[0] {
+                        Value::Table(t) => t.df.clone(),
+                        _ => return Err(runtime_err_s("write_duckdb() first arg must be a table")),
+                    };
+                    let db_path = match &args[1] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("write_duckdb() db_path must be a string")),
+                    };
+                    let table_name = match &args[2] {
+                        Value::String(s) => s.clone(),
+                        _ => {
+                            return Err(runtime_err_s(
+                                "write_duckdb() table_name must be a string",
+                            ));
+                        }
+                    };
+                    self.engine()
+                        .write_duckdb(df, &db_path, &table_name)
+                        .map_err(|e| runtime_err(e))?;
+                    Ok(Value::None)
+                }
+                #[cfg(not(feature = "duckdb"))]
+                Err(runtime_err_s(
+                    "write_duckdb() requires the 'duckdb' feature",
+                ))
+            }
+            "redshift" | "read_redshift" => {
+                if args.len() < 2 {
+                    return Err(runtime_err_s("redshift() expects (conn_str, query)"));
+                }
+                let conn_str = match &args[0] {
+                    Value::String(s) => resolve_tl_config_connection_interp(s),
+                    _ => return Err(runtime_err_s("redshift() conn_str must be a string")),
+                };
+                let query = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err_s("redshift() query must be a string")),
+                };
+                let df = self
+                    .engine()
+                    .read_redshift(&conn_str, &query)
+                    .map_err(|e| runtime_err(e))?;
+                Ok(Value::Table(TlTable { df }))
+            }
+            "mssql" | "read_mssql" => {
+                #[cfg(feature = "mssql")]
+                {
+                    if args.len() < 2 {
+                        return Err(runtime_err_s("mssql() expects (conn_str, query)"));
+                    }
+                    let conn_str = match &args[0] {
+                        Value::String(s) => resolve_tl_config_connection_interp(s),
+                        _ => return Err(runtime_err_s("mssql() conn_str must be a string")),
+                    };
+                    let query = match &args[1] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("mssql() query must be a string")),
+                    };
+                    let df = self
+                        .engine()
+                        .read_mssql(&conn_str, &query)
+                        .map_err(|e| runtime_err(e))?;
+                    Ok(Value::Table(TlTable { df }))
+                }
+                #[cfg(not(feature = "mssql"))]
+                Err(runtime_err_s("mssql() requires the 'mssql' feature"))
+            }
+            "snowflake" | "read_snowflake" => {
+                #[cfg(feature = "snowflake")]
+                {
+                    if args.len() < 2 {
+                        return Err(runtime_err_s("snowflake() expects (config, query)"));
+                    }
+                    let config = match &args[0] {
+                        Value::String(s) => resolve_tl_config_connection_interp(s),
+                        _ => return Err(runtime_err_s("snowflake() config must be a string")),
+                    };
+                    let query = match &args[1] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("snowflake() query must be a string")),
+                    };
+                    let df = self
+                        .engine()
+                        .read_snowflake(&config, &query)
+                        .map_err(|e| runtime_err(e))?;
+                    Ok(Value::Table(TlTable { df }))
+                }
+                #[cfg(not(feature = "snowflake"))]
+                Err(runtime_err_s("snowflake() requires the 'snowflake' feature"))
+            }
+            "bigquery" | "read_bigquery" => {
+                #[cfg(feature = "bigquery")]
+                {
+                    if args.len() < 2 {
+                        return Err(runtime_err_s("bigquery() expects (config, query)"));
+                    }
+                    let config = match &args[0] {
+                        Value::String(s) => resolve_tl_config_connection_interp(s),
+                        _ => return Err(runtime_err_s("bigquery() config must be a string")),
+                    };
+                    let query = match &args[1] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("bigquery() query must be a string")),
+                    };
+                    let df = self
+                        .engine()
+                        .read_bigquery(&config, &query)
+                        .map_err(|e| runtime_err(e))?;
+                    Ok(Value::Table(TlTable { df }))
+                }
+                #[cfg(not(feature = "bigquery"))]
+                Err(runtime_err_s("bigquery() requires the 'bigquery' feature"))
+            }
+            "databricks" | "read_databricks" => {
+                #[cfg(feature = "databricks")]
+                {
+                    if args.len() < 2 {
+                        return Err(runtime_err_s("databricks() expects (config, query)"));
+                    }
+                    let config = match &args[0] {
+                        Value::String(s) => resolve_tl_config_connection_interp(s),
+                        _ => return Err(runtime_err_s("databricks() config must be a string")),
+                    };
+                    let query = match &args[1] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("databricks() query must be a string")),
+                    };
+                    let df = self
+                        .engine()
+                        .read_databricks(&config, &query)
+                        .map_err(|e| runtime_err(e))?;
+                    Ok(Value::Table(TlTable { df }))
+                }
+                #[cfg(not(feature = "databricks"))]
+                Err(runtime_err_s("databricks() requires the 'databricks' feature"))
+            }
+            "clickhouse" | "read_clickhouse" => {
+                #[cfg(feature = "clickhouse")]
+                {
+                    if args.len() < 2 {
+                        return Err(runtime_err_s("clickhouse() expects (url, query)"));
+                    }
+                    let url = match &args[0] {
+                        Value::String(s) => resolve_tl_config_connection_interp(s),
+                        _ => return Err(runtime_err_s("clickhouse() url must be a string")),
+                    };
+                    let query = match &args[1] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("clickhouse() query must be a string")),
+                    };
+                    let df = self
+                        .engine()
+                        .read_clickhouse(&url, &query)
+                        .map_err(|e| runtime_err(e))?;
+                    Ok(Value::Table(TlTable { df }))
+                }
+                #[cfg(not(feature = "clickhouse"))]
+                Err(runtime_err_s("clickhouse() requires the 'clickhouse' feature"))
+            }
+            "mongo" | "read_mongo" => {
+                #[cfg(feature = "mongodb")]
+                {
+                    if args.len() < 4 {
+                        return Err(runtime_err_s(
+                            "mongo() expects (conn_str, database, collection, filter_json)",
+                        ));
+                    }
+                    let conn_str = match &args[0] {
+                        Value::String(s) => resolve_tl_config_connection_interp(s),
+                        _ => return Err(runtime_err_s("mongo() conn_str must be a string")),
+                    };
+                    let database = match &args[1] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("mongo() database must be a string")),
+                    };
+                    let collection = match &args[2] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("mongo() collection must be a string")),
+                    };
+                    let filter_json = match &args[3] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("mongo() filter must be a string")),
+                    };
+                    let df = self
+                        .engine()
+                        .read_mongo(&conn_str, &database, &collection, &filter_json)
+                        .map_err(|e| runtime_err(e))?;
+                    Ok(Value::Table(TlTable { df }))
+                }
+                #[cfg(not(feature = "mongodb"))]
+                Err(runtime_err_s("mongo() requires the 'mongodb' feature"))
             }
             "redis_connect" => {
                 #[cfg(feature = "redis")]

@@ -13,6 +13,21 @@ pub mod redis_conn;
 pub mod s3;
 #[cfg(feature = "sqlite")]
 pub mod sqlite_conn;
+#[cfg(feature = "duckdb")]
+pub mod duckdb_conn;
+#[cfg(feature = "mongodb")]
+pub mod mongo_conn;
+#[cfg(feature = "mssql")]
+pub mod mssql_conn;
+#[cfg(feature = "clickhouse")]
+pub mod clickhouse_conn;
+#[cfg(feature = "snowflake")]
+pub mod snowflake;
+#[cfg(feature = "bigquery")]
+pub mod bigquery;
+#[cfg(feature = "databricks")]
+pub mod databricks;
+pub mod redshift;
 
 pub use engine::DataEngine;
 
