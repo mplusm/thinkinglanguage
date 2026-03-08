@@ -641,6 +641,10 @@ pub enum BuiltinId {
     DateTrunc = 196,
     DateExtract = 197,
     StreamAgent = 198,
+    // Aliases & new builtins
+    PostgresQuery = 199,
+    Fold = 200,
+    TlConfigResolve = 201,
 }
 
 impl TryFrom<u16> for BuiltinId {
@@ -847,6 +851,9 @@ impl TryFrom<u16> for BuiltinId {
             196 => Ok(BuiltinId::DateTrunc),
             197 => Ok(BuiltinId::DateExtract),
             198 => Ok(BuiltinId::StreamAgent),
+            199 => Ok(BuiltinId::PostgresQuery),
+            200 => Ok(BuiltinId::Fold),
+            201 => Ok(BuiltinId::TlConfigResolve),
             _ => Err(value),
         }
     }
@@ -1064,6 +1071,9 @@ impl BuiltinId {
             "date_trunc" => Some(BuiltinId::DateTrunc),
             "date_extract" | "extract" => Some(BuiltinId::DateExtract),
             "stream_agent" => Some(BuiltinId::StreamAgent),
+            "postgres_query" => Some(BuiltinId::PostgresQuery),
+            "fold" => Some(BuiltinId::Fold),
+            "tl_config_resolve" => Some(BuiltinId::TlConfigResolve),
             _ => None,
         }
     }
@@ -1280,6 +1290,9 @@ impl BuiltinId {
             BuiltinId::DateTrunc => "date_trunc",
             BuiltinId::DateExtract => "date_extract",
             BuiltinId::StreamAgent => "stream_agent",
+            BuiltinId::PostgresQuery => "postgres_query",
+            BuiltinId::Fold => "fold",
+            BuiltinId::TlConfigResolve => "tl_config_resolve",
         }
     }
 }
@@ -1344,7 +1357,7 @@ mod tests {
 
     #[test]
     fn test_builtin_id_try_from_valid() {
-        for v in 0..=198u16 {
+        for v in 0..=201u16 {
             assert!(
                 BuiltinId::try_from(v).is_ok(),
                 "BuiltinId::try_from({v}) should succeed"
@@ -1352,11 +1365,12 @@ mod tests {
         }
         assert_eq!(BuiltinId::try_from(0u16).unwrap(), BuiltinId::Print);
         assert_eq!(BuiltinId::try_from(198u16).unwrap(), BuiltinId::StreamAgent);
+        assert_eq!(BuiltinId::try_from(201u16).unwrap(), BuiltinId::TlConfigResolve);
     }
 
     #[test]
     fn test_builtin_id_try_from_invalid() {
-        assert_eq!(BuiltinId::try_from(199u16), Err(199u16));
+        assert_eq!(BuiltinId::try_from(202u16), Err(202u16));
         assert_eq!(BuiltinId::try_from(65535u16), Err(65535u16));
     }
 }

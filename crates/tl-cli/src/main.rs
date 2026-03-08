@@ -410,6 +410,9 @@ enum Commands {
         /// Output directory
         #[arg(long, default_value = "./deploy")]
         output: String,
+        /// Output format: "text" or "json"
+        #[arg(long, default_value = "text")]
+        format: String,
     },
     /// Show data lineage for a pipeline
     Lineage {
@@ -567,11 +570,18 @@ enum Commands {
 #[derive(Subcommand)]
 enum ModelsAction {
     /// List all registered models
-    List,
+    List {
+        /// Output format: "text" or "json"
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
     /// Show model metadata
     Info {
         /// Model name
         name: String,
+        /// Output format: "text" or "json"
+        #[arg(long, default_value = "text")]
+        format: String,
     },
     /// Delete a registered model
     Delete {
@@ -698,7 +708,8 @@ fn main() {
             file,
             target,
             output,
-        }) => run_deploy(&file, &target, &output),
+            format,
+        }) => run_deploy(&file, &target, &output, &format),
         Some(Commands::Lineage { file, format }) => run_lineage(&file, &format),
         Some(Commands::Disasm { file }) => run_disasm(&file),
         Some(Commands::Check { file, strict }) => run_check(&file, strict),
@@ -1298,23 +1309,39 @@ fn run_repl_interp(editor: &mut Editor<TlHelper, DefaultHistory>) {
 fn run_models(action: ModelsAction) {
     let registry = tl_ai::ModelRegistry::default_location();
     match action {
-        ModelsAction::List => {
+        ModelsAction::List { format } => {
             let names = registry.list();
-            if names.is_empty() {
-                println!("No models registered.");
-                println!("Models are stored in ~/.tl/models/");
+            if format == "json" {
+                let json = serde_json::json!({
+                    "models": names,
+                    "count": names.len(),
+                });
+                println!("{}", serde_json::to_string_pretty(&json).unwrap());
             } else {
-                println!("Registered models:");
-                for name in &names {
-                    println!("  {name}");
+                if names.is_empty() {
+                    println!("No models registered.");
+                    println!("Models are stored in ~/.tl/models/");
+                } else {
+                    println!("Registered models:");
+                    for name in &names {
+                        println!("  {name}");
+                    }
+                    println!("\n{} model(s) total", names.len());
                 }
-                println!("\n{} model(s) total", names.len());
             }
         }
-        ModelsAction::Info { name } => match registry.get(&name) {
+        ModelsAction::Info { name, format } => match registry.get(&name) {
             Ok(model) => {
-                println!("Model: {name}");
-                println!("{model}");
+                if format == "json" {
+                    let json = serde_json::json!({
+                        "name": name,
+                        "model": format!("{model}"),
+                    });
+                    println!("{}", serde_json::to_string_pretty(&json).unwrap());
+                } else {
+                    println!("Model: {name}");
+                    println!("{model}");
+                }
             }
             Err(e) => {
                 eprintln!("Error: {e}");
@@ -1331,14 +1358,34 @@ fn run_models(action: ModelsAction) {
     }
 }
 
-fn run_deploy(file: &str, target: &str, output: &str) {
+fn run_deploy(file: &str, target: &str, output: &str, format: &str) {
     if !std::path::Path::new(file).exists() {
         eprintln!("File not found: {file}");
         process::exit(1);
     }
-    if let Err(e) = deploy::write_deploy(file, target, output) {
-        eprintln!("Deploy error: {e}");
-        process::exit(1);
+    if format == "json" {
+        let result = serde_json::json!({
+            "file": file,
+            "target": target,
+            "output": output,
+            "status": "generated",
+        });
+        if let Err(e) = deploy::write_deploy(file, target, output) {
+            let err = serde_json::json!({
+                "file": file,
+                "target": target,
+                "error": format!("{e}"),
+                "status": "error",
+            });
+            println!("{}", serde_json::to_string_pretty(&err).unwrap());
+            process::exit(1);
+        }
+        println!("{}", serde_json::to_string_pretty(&result).unwrap());
+    } else {
+        if let Err(e) = deploy::write_deploy(file, target, output) {
+            eprintln!("Deploy error: {e}");
+            process::exit(1);
+        }
     }
 }
 

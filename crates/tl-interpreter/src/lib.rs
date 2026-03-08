@@ -573,6 +573,18 @@ impl Environment {
             "postgres".to_string(),
             Value::Builtin("postgres".to_string()),
         );
+        global.insert(
+            "postgres_query".to_string(),
+            Value::Builtin("postgres_query".to_string()),
+        );
+        global.insert(
+            "fold".to_string(),
+            Value::Builtin("fold".to_string()),
+        );
+        global.insert(
+            "tl_config_resolve".to_string(),
+            Value::Builtin("tl_config_resolve".to_string()),
+        );
         // AI builtins
         global.insert("tensor".to_string(), Value::Builtin("tensor".to_string()));
         global.insert(
@@ -3464,11 +3476,48 @@ impl Interpreter {
                     Value::String(s) => s.clone(),
                     _ => return Err(runtime_err("postgres() table_name must be a string".into())),
                 };
+                let conn_str = resolve_tl_config_connection_interp(&conn_str);
                 let df = self
                     .engine()
                     .read_postgres(&conn_str, &table_name)
                     .map_err(runtime_err)?;
                 Ok(Value::Table(TlTable { df }))
+            }
+            "postgres_query" => {
+                if args.len() != 2 {
+                    return Err(runtime_err(
+                        "postgres_query() expects 2 arguments (conn_str, query)".into(),
+                    ));
+                }
+                let conn_str = match &args[0] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err("postgres_query() conn_str must be a string".into())),
+                };
+                let query = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err("postgres_query() query must be a string".into())),
+                };
+                let conn_str = resolve_tl_config_connection_interp(&conn_str);
+                let df = self
+                    .engine()
+                    .query_postgres(&conn_str, &query, "__pg_query_result")
+                    .map_err(runtime_err)?;
+                Ok(Value::Table(TlTable { df }))
+            }
+            "fold" => {
+                // fold is an alias for reduce
+                self.call_builtin("reduce", args)
+            }
+            "tl_config_resolve" => {
+                if args.len() != 1 {
+                    return Err(runtime_err("tl_config_resolve() expects 1 argument (name)".into()));
+                }
+                let name = match &args[0] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err("tl_config_resolve() name must be a string".into())),
+                };
+                let resolved = resolve_tl_config_connection_interp(&name);
+                Ok(Value::String(resolved))
             }
             // ── AI builtins ──
             "tensor" => self.builtin_tensor(args),
@@ -8259,6 +8308,28 @@ fn tl_type_to_arrow(ty: &TypeExpr) -> ArrowDataType {
         TypeExpr::Optional(inner) => tl_type_to_arrow(inner), // nullable is always true in Arrow
         _ => ArrowDataType::Utf8,                             // fallback for complex types
     }
+}
+
+/// Resolve a connection name via TL_CONFIG_PATH config file.
+fn resolve_tl_config_connection_interp(name: &str) -> String {
+    if name.contains('=') || name.contains("://") {
+        return name.to_string();
+    }
+    let config_path = std::env::var("TL_CONFIG_PATH")
+        .unwrap_or_else(|_| "tl_config.json".to_string());
+    let Ok(contents) = std::fs::read_to_string(&config_path) else {
+        return name.to_string();
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        return name.to_string();
+    };
+    if let Some(conn) = json.get("connections").and_then(|c| c.get(name)).and_then(|v| v.as_str()) {
+        return conn.to_string();
+    }
+    if let Some(conn) = json.get(name).and_then(|v| v.as_str()) {
+        return conn.to_string();
+    }
+    name.to_string()
 }
 
 fn runtime_err(message: String) -> TlError {

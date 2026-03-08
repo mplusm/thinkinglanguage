@@ -29,16 +29,26 @@ impl DataEngine {
         conn_str: &str,
         table_name: &str,
     ) -> Result<datafusion::prelude::DataFrame, String> {
+        let query = format!("SELECT * FROM \"{}\"", table_name.replace('"', "\"\""));
+        self.query_postgres(conn_str, &query, table_name)
+    }
+
+    /// Execute a custom SQL query against PostgreSQL and return a DataFusion DataFrame.
+    pub fn query_postgres(
+        &self,
+        conn_str: &str,
+        query: &str,
+        register_as: &str,
+    ) -> Result<datafusion::prelude::DataFrame, String> {
         let mut client = Client::connect(conn_str, NoTls)
             .map_err(|e| format!("PostgreSQL connection error: {e}"))?;
 
-        let query = format!("SELECT * FROM \"{}\"", table_name.replace('"', "\"\""));
         let rows = client
-            .query(&query, &[])
+            .query(query, &[])
             .map_err(|e| format!("PostgreSQL query error: {e}"))?;
 
         if rows.is_empty() {
-            return Err(format!("Table '{table_name}' is empty or does not exist"));
+            return Err(format!("Query returned no rows: {query}"));
         }
 
         let columns = rows[0].columns();
@@ -90,10 +100,10 @@ impl DataEngine {
         let batch = RecordBatch::try_new(schema, arrays)
             .map_err(|e| format!("Arrow RecordBatch creation error: {e}"))?;
 
-        self.register_batch(table_name, batch)?;
+        self.register_batch(register_as, batch)?;
 
         self.rt
-            .block_on(self.ctx.table(table_name))
+            .block_on(self.ctx.table(register_as))
             .map_err(|e| format!("Table reference error: {e}"))
     }
 }

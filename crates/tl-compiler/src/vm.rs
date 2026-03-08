@@ -45,6 +45,34 @@ fn runtime_err(msg: impl Into<String>) -> TlError {
     })
 }
 
+/// Resolve a connection name via TL_CONFIG_PATH config file.
+/// If `name` looks like a connection string (contains `=` or `://`), return it as-is.
+/// Otherwise, look it up in the JSON config file at `TL_CONFIG_PATH` (or `./tl_config.json`).
+fn resolve_tl_config_connection(name: &str) -> String {
+    // If it already looks like a connection string, pass through
+    if name.contains('=') || name.contains("://") {
+        return name.to_string();
+    }
+    // Try to load config
+    let config_path = std::env::var("TL_CONFIG_PATH")
+        .unwrap_or_else(|_| "tl_config.json".to_string());
+    let Ok(contents) = std::fs::read_to_string(&config_path) else {
+        return name.to_string();
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        return name.to_string();
+    };
+    // Look up in "connections" object first, then top-level
+    if let Some(conn) = json.get("connections").and_then(|c| c.get(name)).and_then(|v| v.as_str()) {
+        return conn.to_string();
+    }
+    if let Some(conn) = json.get(name).and_then(|v| v.as_str()) {
+        return conn.to_string();
+    }
+    // Not found — return original (will fail at connection time with a clear error)
+    name.to_string()
+}
+
 /// Compare two VmValues for equality (used by set operations).
 fn vm_values_equal(a: &VmValue, b: &VmValue) -> bool {
     match (a, b) {
@@ -2697,9 +2725,9 @@ impl Vm {
                 }
                 Ok(VmValue::List(Box::new(result)))
             }
-            BuiltinId::Reduce => {
+            BuiltinId::Reduce | BuiltinId::Fold => {
                 if args.len() != 3 {
-                    return Err(runtime_err("reduce() expects 3 arguments (list, init, fn)"));
+                    return Err(runtime_err("reduce()/fold() expects 3 arguments (list, init, fn)"));
                 }
                 let items = match &args[0] {
                     VmValue::List(items) => (**items).clone(),
@@ -3016,6 +3044,7 @@ impl Vm {
                     VmValue::String(s) => s.to_string(),
                     _ => return Err(runtime_err("postgres() table_name must be a string")),
                 };
+                let conn_str = resolve_tl_config_connection(&conn_str);
                 match self.engine().read_postgres(&conn_str, &table_name) {
                     Ok(df) => Ok(VmValue::Table(VmTable { df })),
                     Err(e) => {
@@ -3032,6 +3061,49 @@ impl Vm {
                     }
                 }
             }
+            #[cfg(feature = "native")]
+            BuiltinId::PostgresQuery => {
+                if args.len() != 2 {
+                    return Err(runtime_err(
+                        "postgres_query() expects 2 arguments (conn_str, query)",
+                    ));
+                }
+                let conn_str = match &args[0] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("postgres_query() conn_str must be a string")),
+                };
+                let query = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("postgres_query() query must be a string")),
+                };
+                let conn_str = resolve_tl_config_connection(&conn_str);
+                match self.engine().query_postgres(&conn_str, &query, "__pg_query_result") {
+                    Ok(df) => Ok(VmValue::Table(VmTable { df })),
+                    Err(e) => {
+                        let msg = e.to_string();
+                        self.thrown_value = Some(VmValue::EnumInstance(Arc::new(VmEnumInstance {
+                            type_name: Arc::from("ConnectorError"),
+                            variant: Arc::from("QueryError"),
+                            fields: vec![
+                                VmValue::String(Arc::from(msg.as_str())),
+                                VmValue::String(Arc::from("postgres")),
+                            ],
+                        })));
+                        Err(runtime_err(msg))
+                    }
+                }
+            }
+            BuiltinId::TlConfigResolve => {
+                if args.len() != 1 {
+                    return Err(runtime_err("tl_config_resolve() expects 1 argument (name)"));
+                }
+                let name = match &args[0] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("tl_config_resolve() name must be a string")),
+                };
+                let resolved = resolve_tl_config_connection(&name);
+                Ok(VmValue::String(Arc::from(resolved.as_str())))
+            }
             #[cfg(not(feature = "native"))]
             BuiltinId::ReadCsv
             | BuiltinId::ReadParquet
@@ -3041,7 +3113,8 @@ impl Vm {
             | BuiltinId::Show
             | BuiltinId::Describe
             | BuiltinId::Head
-            | BuiltinId::Postgres => Err(runtime_err("Data operations not available in WASM")),
+            | BuiltinId::Postgres
+            | BuiltinId::PostgresQuery => Err(runtime_err("Data operations not available in WASM")),
             // ── AI builtins ──
             #[cfg(feature = "native")]
             BuiltinId::Tensor => {
