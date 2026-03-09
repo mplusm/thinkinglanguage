@@ -995,6 +995,30 @@ impl Environment {
             Value::Builtin("mongo".to_string()),
         );
         global.insert(
+            "sftp_download".to_string(),
+            Value::Builtin("sftp_download".to_string()),
+        );
+        global.insert(
+            "sftp_upload".to_string(),
+            Value::Builtin("sftp_upload".to_string()),
+        );
+        global.insert(
+            "sftp_list".to_string(),
+            Value::Builtin("sftp_list".to_string()),
+        );
+        global.insert(
+            "sftp_ls".to_string(),
+            Value::Builtin("sftp_list".to_string()),
+        );
+        global.insert(
+            "sftp_read_csv".to_string(),
+            Value::Builtin("sftp_read_csv".to_string()),
+        );
+        global.insert(
+            "sftp_read_parquet".to_string(),
+            Value::Builtin("sftp_read_parquet".to_string()),
+        );
+        global.insert(
             "redis_connect".to_string(),
             Value::Builtin("redis_connect".to_string()),
         );
@@ -5491,6 +5515,119 @@ impl Interpreter {
                 }
                 #[cfg(not(feature = "mongodb"))]
                 Err(runtime_err_s("mongo() requires the 'mongodb' feature"))
+            }
+            "sftp_download" => {
+                #[cfg(feature = "sftp")]
+                {
+                    if args.len() < 3 {
+                        return Err(runtime_err_s("sftp_download() expects (config, remote_path, local_path)"));
+                    }
+                    let config = match &args[0] {
+                        Value::String(s) => resolve_tl_config_connection_interp(s),
+                        _ => return Err(runtime_err_s("sftp_download() config must be a string")),
+                    };
+                    let remote = match &args[1] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("sftp_download() remote_path must be a string")),
+                    };
+                    let local = match &args[2] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("sftp_download() local_path must be a string")),
+                    };
+                    let result = self.engine().sftp_download(&config, &remote, &local)
+                        .map_err(|e| runtime_err(e))?;
+                    Ok(Value::String(result))
+                }
+                #[cfg(not(feature = "sftp"))]
+                Err(runtime_err_s("sftp_download() requires the 'sftp' feature"))
+            }
+            "sftp_upload" => {
+                #[cfg(feature = "sftp")]
+                {
+                    if args.len() < 3 {
+                        return Err(runtime_err_s("sftp_upload() expects (config, local_path, remote_path)"));
+                    }
+                    let config = match &args[0] {
+                        Value::String(s) => resolve_tl_config_connection_interp(s),
+                        _ => return Err(runtime_err_s("sftp_upload() config must be a string")),
+                    };
+                    let local = match &args[1] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("sftp_upload() local_path must be a string")),
+                    };
+                    let remote = match &args[2] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("sftp_upload() remote_path must be a string")),
+                    };
+                    let result = self.engine().sftp_upload(&config, &local, &remote)
+                        .map_err(|e| runtime_err(e))?;
+                    Ok(Value::String(result))
+                }
+                #[cfg(not(feature = "sftp"))]
+                Err(runtime_err_s("sftp_upload() requires the 'sftp' feature"))
+            }
+            "sftp_list" | "sftp_ls" => {
+                #[cfg(feature = "sftp")]
+                {
+                    if args.len() < 2 {
+                        return Err(runtime_err_s("sftp_list() expects (config, remote_path)"));
+                    }
+                    let config = match &args[0] {
+                        Value::String(s) => resolve_tl_config_connection_interp(s),
+                        _ => return Err(runtime_err_s("sftp_list() config must be a string")),
+                    };
+                    let remote = match &args[1] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("sftp_list() remote_path must be a string")),
+                    };
+                    let df = self.engine().sftp_list(&config, &remote)
+                        .map_err(|e| runtime_err(e))?;
+                    Ok(Value::Table(TlTable { df }))
+                }
+                #[cfg(not(feature = "sftp"))]
+                Err(runtime_err_s("sftp_list() requires the 'sftp' feature"))
+            }
+            "sftp_read_csv" => {
+                #[cfg(feature = "sftp")]
+                {
+                    if args.len() < 2 {
+                        return Err(runtime_err_s("sftp_read_csv() expects (config, remote_path)"));
+                    }
+                    let config = match &args[0] {
+                        Value::String(s) => resolve_tl_config_connection_interp(s),
+                        _ => return Err(runtime_err_s("sftp_read_csv() config must be a string")),
+                    };
+                    let remote = match &args[1] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("sftp_read_csv() remote_path must be a string")),
+                    };
+                    let df = self.engine().sftp_read_csv(&config, &remote)
+                        .map_err(|e| runtime_err(e))?;
+                    Ok(Value::Table(TlTable { df }))
+                }
+                #[cfg(not(feature = "sftp"))]
+                Err(runtime_err_s("sftp_read_csv() requires the 'sftp' feature"))
+            }
+            "sftp_read_parquet" => {
+                #[cfg(feature = "sftp")]
+                {
+                    if args.len() < 2 {
+                        return Err(runtime_err_s("sftp_read_parquet() expects (config, remote_path)"));
+                    }
+                    let config = match &args[0] {
+                        Value::String(s) => resolve_tl_config_connection_interp(s),
+                        _ => return Err(runtime_err_s("sftp_read_parquet() config must be a string")),
+                    };
+                    let remote = match &args[1] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err_s("sftp_read_parquet() remote_path must be a string")),
+                    };
+                    let df = self.engine().sftp_read_parquet(&config, &remote)
+                        .map_err(|e| runtime_err(e))?;
+                    Ok(Value::Table(TlTable { df }))
+                }
+                #[cfg(not(feature = "sftp"))]
+                Err(runtime_err_s("sftp_read_parquet() requires the 'sftp' feature"))
             }
             "redis_connect" => {
                 #[cfg(feature = "redis")]

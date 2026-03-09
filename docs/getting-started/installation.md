@@ -56,6 +56,7 @@ ThinkingLanguage uses Cargo feature flags to control optional functionality. All
 | `databricks`     | Databricks SQL (REST API)                             | None                                   |
 | `clickhouse`     | ClickHouse analytics database (HTTP)                  | None                                   |
 | `mongodb`        | MongoDB connector (async driver)                      | None                                   |
+| `sftp`           | SFTP/SCP file transfer (ssh2)                         | libssh2 (bundled by default)           |
 | `kafka`          | Kafka streaming connector                             | librdkafka                             |
 | `python`         | Python FFI bridge via pyo3                            | Python 3.8+ with development headers   |
 | `gpu`            | GPU tensor operations via wgpu                        | Vulkan, Metal, or DX12 drivers         |
@@ -83,7 +84,7 @@ cargo install --path crates/tl-cli --features "sqlite,async-runtime,notebook"
 To enable all database connectors:
 
 ```sh
-cargo build --release --features "sqlite,duckdb,mysql,mssql,clickhouse,snowflake,bigquery,databricks,mongodb,redis"
+cargo build --release --features "sqlite,duckdb,mysql,mssql,clickhouse,snowflake,bigquery,databricks,mongodb,redis,sftp"
 ```
 
 ## Platform Notes

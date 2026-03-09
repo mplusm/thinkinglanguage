@@ -10,8 +10,8 @@ Enable connectors via Cargo feature flags:
 # Individual connectors
 cargo build --release --features "sqlite,duckdb,mssql"
 
-# All database connectors
-cargo build --release --features "sqlite,duckdb,mysql,mssql,clickhouse,snowflake,bigquery,databricks,mongodb,redis"
+# All database connectors + SFTP
+cargo build --release --features "sqlite,duckdb,mysql,mssql,clickhouse,snowflake,bigquery,databricks,mongodb,redis,sftp"
 ```
 
 ## Connection Configuration
@@ -369,6 +369,81 @@ let report = read_duckdb("analytics.duckdb", "SELECT region, SUM(amount) as tota
 report |> sort(total, "desc") |> show()
 ```
 
+## File Transfer
+
+### SFTP / SCP
+
+**Feature flag:** `sftp`
+
+Transfer files to and from remote servers over SSH. Supports password auth, SSH key auth, and ssh-agent.
+
+**Configuration** (JSON or key=value):
+
+```tl
+// JSON config
+let server = """{"host":"sftp.example.com","user":"deploy","key_path":"~/.ssh/id_rsa"}"""
+
+// Key=value config
+let server = "host=sftp.example.com user=deploy key_path=~/.ssh/id_rsa"
+
+// Password auth
+let server = "host=sftp.example.com user=etl password=secret port=2222"
+```
+
+**Config fields:** `host` (required), `user` (defaults to current system user), `port` (default 22), `password`, `key_path`/`key`/`identity_file`, `passphrase`
+
+**Download and upload files:**
+
+```tl
+// Download a file
+sftp_download(server, "/remote/data/export.csv", "./local_export.csv")
+
+// Upload a file
+sftp_upload(server, "./results.parquet", "/remote/output/results.parquet")
+```
+
+**List remote directory:**
+
+```tl
+// Returns a table with columns: name, size, type, modified
+sftp_list(server, "/remote/data/")
+    |> filter(type == "file")
+    |> sort(size, "desc")
+    |> show()
+```
+
+**Read data files directly from SFTP into tables:**
+
+```tl
+// Read CSV from SFTP — no manual download needed
+let sales = sftp_read_csv(server, "/incoming/daily_sales.csv")
+sales
+    |> filter(amount > 100)
+    |> aggregate(by: region, total: sum(amount))
+    |> show()
+
+// Read Parquet from SFTP
+let events = sftp_read_parquet(server, "/data/events.parquet")
+events |> describe()
+```
+
+**ETL from SFTP to database:**
+
+```tl
+// Pull vendor data from SFTP, clean it, load into PostgreSQL
+let feed = sftp_read_csv("host=vendor-sftp.com user=etl key_path=~/.ssh/vendor_key", "/outbox/feed.csv")
+feed
+    |> filter(status != "cancelled")
+    |> select(order_id, product, quantity, price)
+    |> write_parquet("vendor_feed_clean.parquet")
+```
+
+**Auth priority:** SSH key (`key_path`) > password > ssh-agent. If no auth is specified, the ssh-agent is tried automatically. `~` in key paths is expanded to `$HOME`.
+
+**Aliases:** `sftp_list()` / `sftp_ls()`
+
+---
+
 ## Performance Notes
 
 All connectors use batched Arrow conversion (50K rows per batch) for:
@@ -400,3 +475,4 @@ Special optimizations:
 | Databricks | `databricks` | REST API | API token |
 | ClickHouse | `clickhouse` | HTTP | URL-embedded / default |
 | MongoDB | `mongodb` | MongoDB wire protocol | Connection URI |
+| SFTP/SCP | `sftp` | SSH (libssh2) | Key / password / agent |

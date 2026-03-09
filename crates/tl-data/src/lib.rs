@@ -27,6 +27,8 @@ pub mod snowflake;
 pub mod bigquery;
 #[cfg(feature = "databricks")]
 pub mod databricks;
+#[cfg(feature = "sftp")]
+pub mod sftp_conn;
 pub mod redshift;
 
 pub use engine::DataEngine;

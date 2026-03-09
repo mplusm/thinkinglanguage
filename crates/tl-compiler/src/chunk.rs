@@ -655,6 +655,12 @@ pub enum BuiltinId {
     ReadDatabricks = 208,
     ReadClickHouse = 209,
     ReadMongo = 210,
+    // Phase 35: SFTP/SCP
+    SftpDownload = 211,
+    SftpUpload = 212,
+    SftpList = 213,
+    SftpReadCsv = 214,
+    SftpReadParquet = 215,
 }
 
 impl TryFrom<u16> for BuiltinId {
@@ -873,6 +879,11 @@ impl TryFrom<u16> for BuiltinId {
             208 => Ok(BuiltinId::ReadDatabricks),
             209 => Ok(BuiltinId::ReadClickHouse),
             210 => Ok(BuiltinId::ReadMongo),
+            211 => Ok(BuiltinId::SftpDownload),
+            212 => Ok(BuiltinId::SftpUpload),
+            213 => Ok(BuiltinId::SftpList),
+            214 => Ok(BuiltinId::SftpReadCsv),
+            215 => Ok(BuiltinId::SftpReadParquet),
             _ => Err(value),
         }
     }
@@ -1102,6 +1113,11 @@ impl BuiltinId {
             "databricks" | "read_databricks" => Some(BuiltinId::ReadDatabricks),
             "clickhouse" | "read_clickhouse" => Some(BuiltinId::ReadClickHouse),
             "mongo" | "read_mongo" | "read_mongodb" => Some(BuiltinId::ReadMongo),
+            "sftp_download" => Some(BuiltinId::SftpDownload),
+            "sftp_upload" => Some(BuiltinId::SftpUpload),
+            "sftp_list" | "sftp_ls" => Some(BuiltinId::SftpList),
+            "sftp_read_csv" => Some(BuiltinId::SftpReadCsv),
+            "sftp_read_parquet" => Some(BuiltinId::SftpReadParquet),
             _ => None,
         }
     }
@@ -1330,6 +1346,11 @@ impl BuiltinId {
             BuiltinId::ReadDatabricks => "databricks",
             BuiltinId::ReadClickHouse => "clickhouse",
             BuiltinId::ReadMongo => "mongo",
+            BuiltinId::SftpDownload => "sftp_download",
+            BuiltinId::SftpUpload => "sftp_upload",
+            BuiltinId::SftpList => "sftp_list",
+            BuiltinId::SftpReadCsv => "sftp_read_csv",
+            BuiltinId::SftpReadParquet => "sftp_read_parquet",
         }
     }
 }
@@ -1394,7 +1415,7 @@ mod tests {
 
     #[test]
     fn test_builtin_id_try_from_valid() {
-        for v in 0..=210u16 {
+        for v in 0..=215u16 {
             assert!(
                 BuiltinId::try_from(v).is_ok(),
                 "BuiltinId::try_from({v}) should succeed"
@@ -1410,7 +1431,7 @@ mod tests {
 
     #[test]
     fn test_builtin_id_try_from_invalid() {
-        assert_eq!(BuiltinId::try_from(211u16), Err(211u16));
+        assert_eq!(BuiltinId::try_from(216u16), Err(216u16));
         assert_eq!(BuiltinId::try_from(65535u16), Err(65535u16));
     }
 }

@@ -382,6 +382,17 @@ All notable changes to ThinkingLanguage are documented here, organized by implem
   - Async driver with BSON-to-Arrow flattening
   - Schema inference from first 100 documents
   - `mongo(uri, db, collection, filter)` / `read_mongo()` / `read_mongodb()`
+- **SFTP/SCP file transfer** (feature-gated `sftp`)
+  - ssh2 (libssh2) for SSH-based file transfer
+  - `sftp_download(config, remote, local)` and `sftp_upload(config, local, remote)`
+  - `sftp_list(config, path)` — remote directory listing as table (name, size, type, modified)
+  - `sftp_read_csv(config, remote)` — read CSV directly from SFTP into table
+  - `sftp_read_parquet(config, remote)` — read Parquet directly from SFTP into table
+  - Auth: SSH key, password, ssh-agent with automatic fallback
+  - JSON and key=value config format
+- **PostgreSQL TLS support** — native-tls with fallback to NoTls for cloud/remote servers
+- **PostgreSQL error detail** — full error messages via `as_db_error()` (severity, message, SQLSTATE)
+- **PostgreSQL fetch optimization** — 1M row cursor fetch + 100K local RecordBatch split
 - All connectors support `TL_CONFIG_PATH` / `tl_config.json` named connection resolution
-- BuiltinId 202-210 allocated for new connectors
+- BuiltinId 202-215 allocated for new connectors
 - Structured `ConnectorError` with `AuthError`, `QueryError`, `ConfigError` variants

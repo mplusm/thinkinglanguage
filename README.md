@@ -200,6 +200,7 @@ TL uses Cargo feature flags for optional integrations:
 | `databricks` | Databricks SQL | reqwest |
 | `clickhouse` | ClickHouse analytics DB | reqwest |
 | `mongodb` | MongoDB connector | mongodb driver |
+| `sftp` | SFTP/SCP file transfer | ssh2 (libssh2) |
 | `kafka` | Kafka streaming | rdkafka |
 | `python` | Python FFI bridge | pyo3 |
 | `gpu` | GPU tensor operations | wgpu, bytemuck |
@@ -214,11 +215,11 @@ PostgreSQL and Redshift connectors are always available (no feature flag needed)
 # Build with specific features
 cargo build --release --features "sqlite,gpu,async-runtime"
 
-# Build with all database connectors
-cargo build --release --features "sqlite,duckdb,mysql,mssql,clickhouse,snowflake,bigquery,databricks,mongodb,redis"
+# Build with all database connectors + SFTP
+cargo build --release --features "sqlite,duckdb,mysql,mssql,clickhouse,snowflake,bigquery,databricks,mongodb,redis,sftp"
 
 # Build with all features (except llvm-backend which needs LLVM 19 installed)
-cargo build --release --features "sqlite,duckdb,mysql,mssql,redis,s3,snowflake,bigquery,databricks,clickhouse,mongodb,kafka,python,gpu,async-runtime,notebook,registry"
+cargo build --release --features "sqlite,duckdb,mysql,mssql,redis,s3,sftp,snowflake,bigquery,databricks,clickhouse,mongodb,kafka,python,gpu,async-runtime,notebook,registry"
 ```
 
 ## CLI Commands
