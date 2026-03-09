@@ -5232,7 +5232,7 @@ impl Interpreter {
                     let df = self
                         .engine()
                         .read_mysql(&conn_str, &query)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(Value::Table(TlTable { df }))
                 }
                 #[cfg(not(feature = "mysql"))]
@@ -5255,7 +5255,7 @@ impl Interpreter {
                     let df = self
                         .engine()
                         .read_sqlite(&db_path, &query)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(Value::Table(TlTable { df }))
                 }
                 #[cfg(not(feature = "sqlite"))]
@@ -5287,7 +5287,7 @@ impl Interpreter {
                     };
                     self.engine()
                         .write_sqlite(df, &db_path, &table_name)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(Value::None)
                 }
                 #[cfg(not(feature = "sqlite"))]
@@ -5312,7 +5312,7 @@ impl Interpreter {
                     let df = self
                         .engine()
                         .read_duckdb(&db_path, &query)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(Value::Table(TlTable { df }))
                 }
                 #[cfg(not(feature = "duckdb"))]
@@ -5344,7 +5344,7 @@ impl Interpreter {
                     };
                     self.engine()
                         .write_duckdb(df, &db_path, &table_name)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(Value::None)
                 }
                 #[cfg(not(feature = "duckdb"))]
@@ -5367,7 +5367,7 @@ impl Interpreter {
                 let df = self
                     .engine()
                     .read_redshift(&conn_str, &query)
-                    .map_err(|e| runtime_err(e))?;
+                    .map_err(runtime_err)?;
                 Ok(Value::Table(TlTable { df }))
             }
             "mssql" | "read_mssql" => {
@@ -5387,7 +5387,7 @@ impl Interpreter {
                     let df = self
                         .engine()
                         .read_mssql(&conn_str, &query)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(Value::Table(TlTable { df }))
                 }
                 #[cfg(not(feature = "mssql"))]
@@ -5410,7 +5410,7 @@ impl Interpreter {
                     let df = self
                         .engine()
                         .read_snowflake(&config, &query)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(Value::Table(TlTable { df }))
                 }
                 #[cfg(not(feature = "snowflake"))]
@@ -5435,7 +5435,7 @@ impl Interpreter {
                     let df = self
                         .engine()
                         .read_bigquery(&config, &query)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(Value::Table(TlTable { df }))
                 }
                 #[cfg(not(feature = "bigquery"))]
@@ -5458,7 +5458,7 @@ impl Interpreter {
                     let df = self
                         .engine()
                         .read_databricks(&config, &query)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(Value::Table(TlTable { df }))
                 }
                 #[cfg(not(feature = "databricks"))]
@@ -5483,7 +5483,7 @@ impl Interpreter {
                     let df = self
                         .engine()
                         .read_clickhouse(&url, &query)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(Value::Table(TlTable { df }))
                 }
                 #[cfg(not(feature = "clickhouse"))]
@@ -5518,7 +5518,7 @@ impl Interpreter {
                     let df = self
                         .engine()
                         .read_mongo(&conn_str, &database, &collection, &filter_json)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(Value::Table(TlTable { df }))
                 }
                 #[cfg(not(feature = "mongodb"))]
@@ -5555,7 +5555,7 @@ impl Interpreter {
                     let result = self
                         .engine()
                         .sftp_download(&config, &remote, &local)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(Value::String(result))
                 }
                 #[cfg(not(feature = "sftp"))]
@@ -5590,7 +5590,7 @@ impl Interpreter {
                     let result = self
                         .engine()
                         .sftp_upload(&config, &local, &remote)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(Value::String(result))
                 }
                 #[cfg(not(feature = "sftp"))]
@@ -5613,7 +5613,7 @@ impl Interpreter {
                     let df = self
                         .engine()
                         .sftp_list(&config, &remote)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(Value::Table(TlTable { df }))
                 }
                 #[cfg(not(feature = "sftp"))]
@@ -5642,7 +5642,7 @@ impl Interpreter {
                     let df = self
                         .engine()
                         .sftp_read_csv(&config, &remote)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(Value::Table(TlTable { df }))
                 }
                 #[cfg(not(feature = "sftp"))]
@@ -5675,7 +5675,7 @@ impl Interpreter {
                     let df = self
                         .engine()
                         .sftp_read_parquet(&config, &remote)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(Value::Table(TlTable { df }))
                 }
                 #[cfg(not(feature = "sftp"))]
@@ -5693,8 +5693,7 @@ impl Interpreter {
                         Value::String(s) => s.clone(),
                         _ => return Err(runtime_err_s("redis_connect() url must be a string")),
                     };
-                    let result =
-                        tl_data::redis_conn::redis_connect(&url).map_err(|e| runtime_err(e))?;
+                    let result = tl_data::redis_conn::redis_connect(&url).map_err(runtime_err)?;
                     Ok(Value::String(result))
                 }
                 #[cfg(not(feature = "redis"))]
@@ -5716,7 +5715,7 @@ impl Interpreter {
                         Value::String(s) => s.clone(),
                         _ => return Err(runtime_err_s("redis_get() key must be a string")),
                     };
-                    match tl_data::redis_conn::redis_get(&url, &key).map_err(|e| runtime_err(e))? {
+                    match tl_data::redis_conn::redis_get(&url, &key).map_err(runtime_err)? {
                         Some(v) => Ok(Value::String(v)),
                         None => Ok(Value::None),
                     }
@@ -5742,8 +5741,7 @@ impl Interpreter {
                         Value::String(s) => s.clone(),
                         _ => format!("{}", &args[2]),
                     };
-                    tl_data::redis_conn::redis_set(&url, &key, &value)
-                        .map_err(|e| runtime_err(e))?;
+                    tl_data::redis_conn::redis_set(&url, &key, &value).map_err(runtime_err)?;
                     Ok(Value::None)
                 }
                 #[cfg(not(feature = "redis"))]
@@ -5764,7 +5762,7 @@ impl Interpreter {
                         _ => return Err(runtime_err_s("redis_del() key must be a string")),
                     };
                     let deleted =
-                        tl_data::redis_conn::redis_del(&url, &key).map_err(|e| runtime_err(e))?;
+                        tl_data::redis_conn::redis_del(&url, &key).map_err(runtime_err)?;
                     Ok(Value::Bool(deleted))
                 }
                 #[cfg(not(feature = "redis"))]
@@ -5853,7 +5851,7 @@ impl Interpreter {
                             secret_key.as_deref(),
                             endpoint.as_deref(),
                         )
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(Value::None)
                 }
                 #[cfg(not(feature = "s3"))]
