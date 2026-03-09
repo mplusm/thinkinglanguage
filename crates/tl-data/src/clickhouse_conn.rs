@@ -4,8 +4,8 @@
 // Uses ClickHouse HTTP interface with JSONEachRow format.
 // No additional crate dependency — uses reqwest (already in workspace).
 
-use datafusion::arrow::array::*;
 use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use std::sync::Arc;
 
@@ -126,9 +126,7 @@ impl DataEngine {
             let body = response
                 .text()
                 .unwrap_or_else(|_| "<unreadable body>".to_string());
-            return Err(format!(
-                "ClickHouse query error (HTTP {status}): {body}"
-            ));
+            return Err(format!("ClickHouse query error (HTTP {status}): {body}"));
         }
 
         let body = response
@@ -149,7 +147,7 @@ impl DataEngine {
                 _ => {
                     return Err(format!(
                         "ClickHouse returned non-object JSON line: {trimmed}"
-                    ))
+                    ));
                 }
             }
         }
@@ -246,14 +244,12 @@ mod tests {
 
     #[test]
     fn test_build_clickhouse_batch() {
-        let row1: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
-            r#"{"id": 1, "name": "Alice", "score": 95.5, "active": true}"#,
-        )
-        .unwrap();
-        let row2: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
-            r#"{"id": 2, "name": "Bob", "score": 87.3, "active": false}"#,
-        )
-        .unwrap();
+        let row1: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(r#"{"id": 1, "name": "Alice", "score": 95.5, "active": true}"#)
+                .unwrap();
+        let row2: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(r#"{"id": 2, "name": "Bob", "score": 87.3, "active": false}"#)
+                .unwrap();
         let rows = vec![row1, row2];
 
         let col_names = vec![
@@ -262,7 +258,12 @@ mod tests {
             "score".to_string(),
             "active".to_string(),
         ];
-        let col_types = vec![DataType::Int64, DataType::Utf8, DataType::Float64, DataType::Boolean];
+        let col_types = vec![
+            DataType::Int64,
+            DataType::Utf8,
+            DataType::Float64,
+            DataType::Boolean,
+        ];
         let fields: Vec<Field> = col_names
             .iter()
             .zip(col_types.iter())

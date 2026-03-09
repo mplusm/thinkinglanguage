@@ -123,7 +123,8 @@ impl DataEngine {
             .collect();
 
         // Stream rows in batches rather than collecting all at once
-        let mut current_chunk: Vec<Vec<rusqlite::types::Value>> = Vec::with_capacity(SQLITE_BATCH_SIZE);
+        let mut current_chunk: Vec<Vec<rusqlite::types::Value>> =
+            Vec::with_capacity(SQLITE_BATCH_SIZE);
         let mut batches: Vec<RecordBatch> = Vec::new();
         let mut schema: Option<Arc<Schema>> = None;
         let mut col_types: Option<Vec<DataType>> = None;

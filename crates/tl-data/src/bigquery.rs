@@ -4,8 +4,8 @@
 // Uses BigQuery REST API (jobs.query) with service account or API key auth.
 // Parses JSON result sets into Arrow RecordBatches.
 
-use datafusion::arrow::array::*;
 use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use std::sync::Arc;
 
@@ -55,10 +55,8 @@ fn build_bq_batch(
                 Arc::new(Float64Array::from(values))
             }
             _ => {
-                let values: Vec<Option<&str>> = rows
-                    .iter()
-                    .map(|r| r[col_idx].as_deref())
-                    .collect();
+                let values: Vec<Option<&str>> =
+                    rows.iter().map(|r| r[col_idx].as_deref()).collect();
                 Arc::new(StringArray::from(values))
             }
         };
@@ -81,9 +79,8 @@ impl DataEngine {
     ) -> Result<datafusion::prelude::DataFrame, String> {
         let (project_id, access_token) = parse_bq_config(config_str)?;
 
-        let url = format!(
-            "https://bigquery.googleapis.com/bigquery/v2/projects/{project_id}/queries"
-        );
+        let url =
+            format!("https://bigquery.googleapis.com/bigquery/v2/projects/{project_id}/queries");
 
         let client = reqwest::blocking::Client::new();
         let body = serde_json::json!({
@@ -183,10 +180,7 @@ fn parse_bq_config(config_str: &str) -> Result<(String, String), String> {
     let access_token;
 
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(config_str) {
-        project_id = json["project"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
+        project_id = json["project"].as_str().unwrap_or("").to_string();
         access_token = json["access_token"]
             .as_str()
             .map(|s| s.to_string())
@@ -220,8 +214,7 @@ mod tests {
 
     #[test]
     fn test_parse_bq_config() {
-        let (project, _token) =
-            parse_bq_config(r#"{"project":"my-gcp-project"}"#).unwrap();
+        let (project, _token) = parse_bq_config(r#"{"project":"my-gcp-project"}"#).unwrap();
         assert_eq!(project, "my-gcp-project");
     }
 

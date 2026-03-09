@@ -79,9 +79,8 @@ impl DataEngine {
         let _ = self.ctx.deregister_table(table_name);
 
         if batches.is_empty() {
-            let empty_schema = schema.unwrap_or_else(|| {
-                Arc::new(datafusion::arrow::datatypes::Schema::empty())
-            });
+            let empty_schema =
+                schema.unwrap_or_else(|| Arc::new(datafusion::arrow::datatypes::Schema::empty()));
             self.register_batches(table_name, empty_schema, vec![])?;
         } else {
             self.register_batches(table_name, schema.unwrap(), batches)?;
@@ -116,11 +115,7 @@ impl DataEngine {
             .iter()
             .map(|f| {
                 let duckdb_type = arrow_to_duckdb_type(f.data_type());
-                format!(
-                    "\"{}\" {}",
-                    f.name().replace('"', "\"\""),
-                    duckdb_type
-                )
+                format!("\"{}\" {}", f.name().replace('"', "\"\""), duckdb_type)
             })
             .collect();
 
@@ -320,9 +315,7 @@ mod tests {
         drop(conn);
 
         let engine = DataEngine::new();
-        let df = engine
-            .read_duckdb(src_str, "SELECT * FROM src")
-            .unwrap();
+        let df = engine.read_duckdb(src_str, "SELECT * FROM src").unwrap();
         engine.write_duckdb(df, dst_str, "dst_table").unwrap();
 
         // Read back

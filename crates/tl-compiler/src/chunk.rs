@@ -1423,7 +1423,10 @@ mod tests {
         }
         assert_eq!(BuiltinId::try_from(0u16).unwrap(), BuiltinId::Print);
         assert_eq!(BuiltinId::try_from(198u16).unwrap(), BuiltinId::StreamAgent);
-        assert_eq!(BuiltinId::try_from(201u16).unwrap(), BuiltinId::TlConfigResolve);
+        assert_eq!(
+            BuiltinId::try_from(201u16).unwrap(),
+            BuiltinId::TlConfigResolve
+        );
         assert_eq!(BuiltinId::try_from(203u16).unwrap(), BuiltinId::WriteDuckDb);
         assert_eq!(BuiltinId::try_from(205u16).unwrap(), BuiltinId::ReadMssql);
         assert_eq!(BuiltinId::try_from(210u16).unwrap(), BuiltinId::ReadMongo);

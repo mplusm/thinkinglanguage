@@ -4,12 +4,12 @@
 // Reads MongoDB collections into DataFusion DataFrames.
 // Flattens BSON documents to tabular Arrow format.
 
-use datafusion::arrow::array::*;
 use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
-use mongodb::bson::{doc, Bson, Document};
-use mongodb::options::ClientOptions;
 use mongodb::Client;
+use mongodb::bson::{Bson, Document, doc};
+use mongodb::options::ClientOptions;
 use std::sync::Arc;
 
 use crate::engine::DataEngine;
@@ -135,40 +135,48 @@ fn build_mongo_batch(
             DataType::Boolean => {
                 let values: Vec<Option<bool>> = docs
                     .iter()
-                    .map(|d| match extract_bson_value(d.get(field_name), arrow_type) {
-                        BsonScalar::Bool(b) => Some(b),
-                        _ => None,
-                    })
+                    .map(
+                        |d| match extract_bson_value(d.get(field_name), arrow_type) {
+                            BsonScalar::Bool(b) => Some(b),
+                            _ => None,
+                        },
+                    )
                     .collect();
                 Arc::new(BooleanArray::from(values))
             }
             DataType::Int32 => {
                 let values: Vec<Option<i32>> = docs
                     .iter()
-                    .map(|d| match extract_bson_value(d.get(field_name), arrow_type) {
-                        BsonScalar::I32(n) => Some(n),
-                        _ => None,
-                    })
+                    .map(
+                        |d| match extract_bson_value(d.get(field_name), arrow_type) {
+                            BsonScalar::I32(n) => Some(n),
+                            _ => None,
+                        },
+                    )
                     .collect();
                 Arc::new(Int32Array::from(values))
             }
             DataType::Int64 => {
                 let values: Vec<Option<i64>> = docs
                     .iter()
-                    .map(|d| match extract_bson_value(d.get(field_name), arrow_type) {
-                        BsonScalar::I64(n) => Some(n),
-                        _ => None,
-                    })
+                    .map(
+                        |d| match extract_bson_value(d.get(field_name), arrow_type) {
+                            BsonScalar::I64(n) => Some(n),
+                            _ => None,
+                        },
+                    )
                     .collect();
                 Arc::new(Int64Array::from(values))
             }
             DataType::Float64 => {
                 let values: Vec<Option<f64>> = docs
                     .iter()
-                    .map(|d| match extract_bson_value(d.get(field_name), arrow_type) {
-                        BsonScalar::F64(f) => Some(f),
-                        _ => None,
-                    })
+                    .map(
+                        |d| match extract_bson_value(d.get(field_name), arrow_type) {
+                            BsonScalar::F64(f) => Some(f),
+                            _ => None,
+                        },
+                    )
                     .collect();
                 Arc::new(Float64Array::from(values))
             }
@@ -176,11 +184,13 @@ fn build_mongo_batch(
                 // Utf8 fallback
                 let values: Vec<Option<String>> = docs
                     .iter()
-                    .map(|d| match extract_bson_value(d.get(field_name), arrow_type) {
-                        BsonScalar::Str(s) => Some(s),
-                        BsonScalar::Null => None,
-                        _ => None,
-                    })
+                    .map(
+                        |d| match extract_bson_value(d.get(field_name), arrow_type) {
+                            BsonScalar::Str(s) => Some(s),
+                            BsonScalar::Null => None,
+                            _ => None,
+                        },
+                    )
                     .collect();
                 Arc::new(StringArray::from(values))
             }
@@ -251,7 +261,11 @@ impl DataEngine {
             }
 
             let (schema, field_names) = infer_schema(&sample_docs);
-            let col_types: Vec<DataType> = schema.fields().iter().map(|f| f.data_type().clone()).collect();
+            let col_types: Vec<DataType> = schema
+                .fields()
+                .iter()
+                .map(|f| f.data_type().clone())
+                .collect();
 
             // Phase 2: Full cursor iteration — start fresh to include all docs
             let mut cursor = coll
@@ -293,12 +307,7 @@ mod tests {
     fn test_read_mongo() {
         let engine = DataEngine::new();
         let df = engine
-            .read_mongo(
-                "mongodb://localhost:27017",
-                "testdb",
-                "users",
-                "{}",
-            )
+            .read_mongo("mongodb://localhost:27017", "testdb", "users", "{}")
             .unwrap();
         let batches = engine.collect(df).unwrap();
         assert!(!batches.is_empty());
@@ -323,7 +332,10 @@ mod tests {
     #[test]
     fn test_bson_type_mapping() {
         assert_eq!(bson_type_to_arrow(&Bson::Double(1.0)), DataType::Float64);
-        assert_eq!(bson_type_to_arrow(&Bson::String("hi".into())), DataType::Utf8);
+        assert_eq!(
+            bson_type_to_arrow(&Bson::String("hi".into())),
+            DataType::Utf8
+        );
         assert_eq!(bson_type_to_arrow(&Bson::Boolean(true)), DataType::Boolean);
         assert_eq!(bson_type_to_arrow(&Bson::Int32(42)), DataType::Int32);
         assert_eq!(bson_type_to_arrow(&Bson::Int64(999)), DataType::Int64);
@@ -351,13 +363,21 @@ mod tests {
             doc! { "name": "Bob" }, // missing "age"
         ];
         let (schema, field_names) = infer_schema(&docs);
-        let col_types: Vec<DataType> = schema.fields().iter().map(|f| f.data_type().clone()).collect();
+        let col_types: Vec<DataType> = schema
+            .fields()
+            .iter()
+            .map(|f| f.data_type().clone())
+            .collect();
         let batch = build_mongo_batch(&docs, &schema, &field_names, &col_types).unwrap();
         assert_eq!(batch.num_rows(), 2);
         assert_eq!(batch.num_columns(), 2);
 
         // Second row's "age" should be null
-        let age_col = batch.column(1).as_any().downcast_ref::<Int32Array>().unwrap();
+        let age_col = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
         assert!(age_col.is_valid(0));
         assert!(!age_col.is_valid(1));
     }

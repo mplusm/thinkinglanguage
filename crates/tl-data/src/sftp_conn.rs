@@ -4,8 +4,8 @@
 // Uses ssh2 (libssh2 bindings) for SFTP and SCP file transfers.
 // Supports password and key-based authentication.
 
-use datafusion::arrow::array::*;
 use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use ssh2::Session;
 use std::io::{Read, Write};
@@ -110,8 +110,7 @@ fn create_session(config: &SftpConfig) -> Result<Session, String> {
     let tcp = TcpStream::connect(&addr)
         .map_err(|e| format!("SFTP TCP connection to {addr} failed: {e}"))?;
 
-    let mut session = Session::new()
-        .map_err(|e| format!("SSH session creation failed: {e}"))?;
+    let mut session = Session::new().map_err(|e| format!("SSH session creation failed: {e}"))?;
     session.set_tcp_stream(tcp);
     session
         .handshake()
@@ -122,12 +121,7 @@ fn create_session(config: &SftpConfig) -> Result<Session, String> {
         let key = Path::new(key_path);
         if key.exists() {
             session
-                .userauth_pubkey_file(
-                    &config.user,
-                    None,
-                    key,
-                    config.passphrase.as_deref(),
-                )
+                .userauth_pubkey_file(&config.user, None, key, config.passphrase.as_deref())
                 .map_err(|e| format!("SSH key auth failed: {e}"))?;
         } else {
             return Err(format!("SSH key file not found: {key_path}"));
@@ -360,10 +354,9 @@ mod tests {
 
     #[test]
     fn test_parse_sftp_config_kv() {
-        let config = parse_sftp_config(
-            "host=example.com user=deploy port=2222 key_path=~/.ssh/id_rsa",
-        )
-        .unwrap();
+        let config =
+            parse_sftp_config("host=example.com user=deploy port=2222 key_path=~/.ssh/id_rsa")
+                .unwrap();
         assert_eq!(config.host, "example.com");
         assert_eq!(config.user, "deploy");
         assert_eq!(config.port, 2222);

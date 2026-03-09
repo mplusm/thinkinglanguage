@@ -4,8 +4,8 @@
 // Uses Snowflake SQL REST API (v2/statements) with JWT or basic auth.
 // Parses JSON result sets into Arrow RecordBatches.
 
-use datafusion::arrow::array::*;
 use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use std::sync::Arc;
 
@@ -28,7 +28,11 @@ fn snowflake_type_to_arrow(type_name: &str) -> DataType {
         DataType::Int64
     } else if upper.contains("FLOAT") || upper.contains("REAL") {
         DataType::Float32
-    } else if upper.contains("DOUBLE") || upper.contains("NUMBER") || upper.contains("DECIMAL") || upper.contains("NUMERIC") {
+    } else if upper.contains("DOUBLE")
+        || upper.contains("NUMBER")
+        || upper.contains("DECIMAL")
+        || upper.contains("NUMERIC")
+    {
         DataType::Float64
     } else {
         DataType::Utf8
@@ -94,10 +98,8 @@ fn build_snowflake_batch(
                 Arc::new(Float64Array::from(values))
             }
             _ => {
-                let values: Vec<Option<&str>> = rows
-                    .iter()
-                    .map(|r| r[col_idx].as_deref())
-                    .collect();
+                let values: Vec<Option<&str>> =
+                    rows.iter().map(|r| r[col_idx].as_deref()).collect();
                 Arc::new(StringArray::from(values))
             }
         };
@@ -120,9 +122,7 @@ impl DataEngine {
         let (account, user, password, database, warehouse, schema_name) =
             parse_snowflake_config(config_str)?;
 
-        let url = format!(
-            "https://{account}.snowflakecomputing.com/api/v2/statements"
-        );
+        let url = format!("https://{account}.snowflakecomputing.com/api/v2/statements");
 
         let client = reqwest::blocking::Client::new();
         let mut body = serde_json::json!({
@@ -228,7 +228,9 @@ impl DataEngine {
 }
 
 /// Parse Snowflake config from JSON or key=value format.
-fn parse_snowflake_config(config_str: &str) -> Result<(String, String, String, String, String, String), String> {
+fn parse_snowflake_config(
+    config_str: &str,
+) -> Result<(String, String, String, String, String, String), String> {
     // Try JSON first
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(config_str) {
         let account = json["account"].as_str().unwrap_or("").to_string();
@@ -287,8 +289,9 @@ mod tests {
     #[test]
     fn test_parse_snowflake_config_kv() {
         let (account, user, _pass, db, wh, _schema) = parse_snowflake_config(
-            "account=abc123 user=ETL_USER password=secret database=ANALYTICS warehouse=COMPUTE_WH"
-        ).unwrap();
+            "account=abc123 user=ETL_USER password=secret database=ANALYTICS warehouse=COMPUTE_WH",
+        )
+        .unwrap();
         assert_eq!(account, "abc123");
         assert_eq!(user, "ETL_USER");
         assert_eq!(db, "ANALYTICS");

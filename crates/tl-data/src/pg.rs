@@ -69,10 +69,7 @@ fn pg_type_to_arrow(pg_type: &postgres::types::Type) -> DataType {
 }
 
 /// Build a RecordBatch from a slice of postgres Rows using the given schema.
-fn build_record_batch(
-    rows: &[postgres::Row],
-    schema: &Arc<Schema>,
-) -> Result<RecordBatch, String> {
+fn build_record_batch(rows: &[postgres::Row], schema: &Arc<Schema>) -> Result<RecordBatch, String> {
     let mut arrays: Vec<Arc<dyn Array>> = Vec::new();
     for (col_idx, field) in schema.fields().iter().enumerate() {
         let array: Arc<dyn Array> = match field.data_type() {

@@ -4,11 +4,11 @@
 // Uses tiberius (async) with batched Arrow conversion.
 // Streams rows via query result stream, batching 50K rows per RecordBatch.
 
-use datafusion::arrow::array::*;
 use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use std::sync::Arc;
-use tiberius::{Client, Config, AuthMethod, ColumnType};
+use tiberius::{AuthMethod, Client, ColumnType, Config};
 use tokio::net::TcpStream;
 use tokio_util::compat::TokioAsyncWriteCompatExt;
 
@@ -251,13 +251,41 @@ fn extract_mssql_value(
     arrow_type: &DataType,
 ) -> Option<MssqlValue> {
     match arrow_type {
-        DataType::Boolean => row.try_get::<bool, _>(idx).ok().flatten().map(MssqlValue::Bool),
-        DataType::Int8 => row.try_get::<i16, _>(idx).ok().flatten().map(|v| MssqlValue::I8(v as i8)),
-        DataType::Int16 => row.try_get::<i16, _>(idx).ok().flatten().map(MssqlValue::I16),
-        DataType::Int32 => row.try_get::<i32, _>(idx).ok().flatten().map(MssqlValue::I32),
-        DataType::Int64 => row.try_get::<i64, _>(idx).ok().flatten().map(MssqlValue::I64),
-        DataType::Float32 => row.try_get::<f32, _>(idx).ok().flatten().map(MssqlValue::F32),
-        DataType::Float64 => row.try_get::<f64, _>(idx).ok().flatten().map(MssqlValue::F64),
+        DataType::Boolean => row
+            .try_get::<bool, _>(idx)
+            .ok()
+            .flatten()
+            .map(MssqlValue::Bool),
+        DataType::Int8 => row
+            .try_get::<i16, _>(idx)
+            .ok()
+            .flatten()
+            .map(|v| MssqlValue::I8(v as i8)),
+        DataType::Int16 => row
+            .try_get::<i16, _>(idx)
+            .ok()
+            .flatten()
+            .map(MssqlValue::I16),
+        DataType::Int32 => row
+            .try_get::<i32, _>(idx)
+            .ok()
+            .flatten()
+            .map(MssqlValue::I32),
+        DataType::Int64 => row
+            .try_get::<i64, _>(idx)
+            .ok()
+            .flatten()
+            .map(MssqlValue::I64),
+        DataType::Float32 => row
+            .try_get::<f32, _>(idx)
+            .ok()
+            .flatten()
+            .map(MssqlValue::F32),
+        DataType::Float64 => row
+            .try_get::<f64, _>(idx)
+            .ok()
+            .flatten()
+            .map(MssqlValue::F64),
         _ => row
             .try_get::<&str, _>(idx)
             .ok()
@@ -270,7 +298,8 @@ fn extract_mssql_value(
 fn parse_mssql_config(conn_str: &str) -> Result<Config, String> {
     // Try ADO-style first
     if conn_str.contains("Server=") || conn_str.contains("server=") {
-        let mut config = Config::from_ado_string(conn_str).map_err(|e| format!("MSSQL config parse error: {e}"))?;
+        let mut config = Config::from_ado_string(conn_str)
+            .map_err(|e| format!("MSSQL config parse error: {e}"))?;
         config.encryption(tiberius::EncryptionLevel::Off);
         Ok(config)
     } else {
@@ -299,7 +328,10 @@ fn parse_mssql_config(conn_str: &str) -> Result<Config, String> {
         // Re-parse for user+password pair
         let user = conn_str
             .split_whitespace()
-            .find_map(|p| p.strip_prefix("user=").or_else(|| p.strip_prefix("username=")))
+            .find_map(|p| {
+                p.strip_prefix("user=")
+                    .or_else(|| p.strip_prefix("username="))
+            })
             .unwrap_or("");
         let pass = conn_str
             .split_whitespace()

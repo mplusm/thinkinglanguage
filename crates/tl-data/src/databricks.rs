@@ -4,8 +4,8 @@
 // Uses Databricks SQL Statement Execution API (REST).
 // Parses JSON result sets into Arrow RecordBatches.
 
-use datafusion::arrow::array::*;
 use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use std::sync::Arc;
 
@@ -94,10 +94,8 @@ fn build_databricks_batch(
                 Arc::new(Float64Array::from(values))
             }
             _ => {
-                let values: Vec<Option<&str>> = rows
-                    .iter()
-                    .map(|r| r[col_idx].as_deref())
-                    .collect();
+                let values: Vec<Option<&str>> =
+                    rows.iter().map(|r| r[col_idx].as_deref()).collect();
                 Arc::new(StringArray::from(values))
             }
         };
@@ -149,9 +147,7 @@ impl DataEngine {
             .map_err(|e| format!("Databricks JSON parse error: {e}"))?;
 
         // Check statement status
-        let status = resp_json["status"]["state"]
-            .as_str()
-            .unwrap_or("UNKNOWN");
+        let status = resp_json["status"]["state"].as_str().unwrap_or("UNKNOWN");
         if status != "SUCCEEDED" {
             return Err(format!("Databricks statement status: {status}"));
         }
