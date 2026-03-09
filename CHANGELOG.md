@@ -344,3 +344,44 @@ All notable changes to ThinkingLanguage are documented here, organized by implem
 - New builtins: `BuiltinId::Embed = 182`, `HttpRequest = 183`, `RunAgent = 184`
 - New value types: `VmValue::AgentDef`, `Value::Agent`
 - WASM: agent syntax parses but execution returns descriptive errors
+
+### Phase 35 — Connector Expansion & Performance
+
+- **Performance optimization** for all existing connectors
+  - Batched Arrow conversion (50K rows per batch) across all connectors
+  - `register_batches()` method for multi-partition MemTable registration
+  - PostgreSQL: server-side cursors (`DECLARE CURSOR` + `FETCH 50000`) for streaming
+  - MySQL: chunked batching with 50K row flush threshold
+  - SQLite: streaming `query_map` with 50K batch flush
+- **DuckDB connector** (feature-gated `duckdb`)
+  - Arrow-native reads via IPC bridge (duckdb arrow v54 to DataFusion arrow v53)
+  - `read_duckdb(path, query)` and `write_duckdb(table, path, table_name)`
+  - Supports file-backed and `:memory:` databases
+- **Redshift connector** (always available)
+  - Thin wrapper over PostgreSQL cursor code with automatic SSL enforcement
+  - `redshift(conn_str, query)` / `read_redshift(conn_str, query)`
+- **MSSQL / SQL Server connector** (feature-gated `mssql`)
+  - tiberius async client with batched 50K row streaming
+  - ADO-style and key=value connection string parsing
+  - `mssql(conn_str, query)` / `read_mssql(conn_str, query)`
+- **Snowflake connector** (feature-gated `snowflake`)
+  - REST API integration (v2/statements)
+  - JSON and key=value config format
+  - `snowflake(config, query)` / `read_snowflake(config, query)`
+- **BigQuery connector** (feature-gated `bigquery`)
+  - REST API integration (jobs.query)
+  - Access token via config or `TL_BIGQUERY_TOKEN` / `GOOGLE_ACCESS_TOKEN` env vars
+  - `bigquery(config, query)` / `read_bigquery(config, query)`
+- **Databricks connector** (feature-gated `databricks`)
+  - SQL Statement Execution API
+  - `databricks(config, query)` / `read_databricks(config, query)`
+- **ClickHouse connector** (feature-gated `clickhouse`)
+  - HTTP interface with JSONEachRow format
+  - `clickhouse(url, query)` / `read_clickhouse(url, query)`
+- **MongoDB connector** (feature-gated `mongodb`)
+  - Async driver with BSON-to-Arrow flattening
+  - Schema inference from first 100 documents
+  - `mongo(uri, db, collection, filter)` / `read_mongo()` / `read_mongodb()`
+- All connectors support `TL_CONFIG_PATH` / `tl_config.json` named connection resolution
+- BuiltinId 202-210 allocated for new connectors
+- Structured `ConnectorError` with `AuthError`, `QueryError`, `ConfigError` variants

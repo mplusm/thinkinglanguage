@@ -45,17 +45,26 @@ ThinkingLanguage uses Cargo feature flags to control optional functionality. All
 
 | Feature          | Description                                          | Extra Requirements                     |
 |------------------|------------------------------------------------------|----------------------------------------|
-| `sqlite`         | SQLite connector (rusqlite bundled)                  | None (statically linked)               |
-| `mysql`          | MySQL connector                                      | MySQL client libraries                 |
-| `redis`          | Redis connector                                      | None                                   |
-| `s3`             | S3 object storage connector                          | None                                   |
-| `kafka`          | Kafka streaming connector                            | librdkafka                             |
-| `python`         | Python FFI bridge via pyo3                           | Python 3.8+ with development headers   |
-| `gpu`            | GPU tensor operations via wgpu                       | Vulkan, Metal, or DX12 drivers         |
-| `llvm-backend`   | LLVM AOT native compilation via inkwell              | LLVM 19 installed                      |
-| `async-runtime`  | Tokio-backed async I/O (async fs, HTTP, timers)      | None                                   |
-| `notebook`       | Interactive notebook TUI (ratatui)                   | Terminal with TUI support              |
-| `registry`       | Package registry client                              | None                                   |
+| `sqlite`         | SQLite connector (rusqlite bundled)                   | None (statically linked)               |
+| `duckdb`         | DuckDB connector (Arrow-native, bundled)              | None (statically linked)               |
+| `mysql`          | MySQL connector                                       | MySQL client libraries                 |
+| `mssql`          | SQL Server / MSSQL connector (tiberius)               | None                                   |
+| `redis`          | Redis connector                                       | None                                   |
+| `s3`             | S3 object storage connector                           | None                                   |
+| `snowflake`      | Snowflake data warehouse (REST API)                   | None                                   |
+| `bigquery`       | Google BigQuery (REST API)                            | None                                   |
+| `databricks`     | Databricks SQL (REST API)                             | None                                   |
+| `clickhouse`     | ClickHouse analytics database (HTTP)                  | None                                   |
+| `mongodb`        | MongoDB connector (async driver)                      | None                                   |
+| `kafka`          | Kafka streaming connector                             | librdkafka                             |
+| `python`         | Python FFI bridge via pyo3                            | Python 3.8+ with development headers   |
+| `gpu`            | GPU tensor operations via wgpu                        | Vulkan, Metal, or DX12 drivers         |
+| `llvm-backend`   | LLVM AOT native compilation via inkwell               | LLVM 19 installed                      |
+| `async-runtime`  | Tokio-backed async I/O (async fs, HTTP, timers)       | None                                   |
+| `notebook`       | Interactive notebook TUI (ratatui)                    | Terminal with TUI support              |
+| `registry`       | Package registry client                               | None                                   |
+
+PostgreSQL and Redshift connectors are always available and do not require a feature flag.
 
 ## Building with Features
 
@@ -71,10 +80,10 @@ To install with features:
 cargo install --path crates/tl-cli --features "sqlite,async-runtime,notebook"
 ```
 
-To enable all connectors:
+To enable all database connectors:
 
 ```sh
-cargo build --release --features "sqlite,mysql,redis,s3,kafka"
+cargo build --release --features "sqlite,duckdb,mysql,mssql,clickhouse,snowflake,bigquery,databricks,mongodb,redis"
 ```
 
 ## Platform Notes

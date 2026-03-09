@@ -907,7 +907,7 @@ impl BuiltinId {
             "show" => Some(BuiltinId::Show),
             "describe" => Some(BuiltinId::Describe),
             "head" => Some(BuiltinId::Head),
-            "postgres" => Some(BuiltinId::Postgres),
+            "postgres" | "read_postgres" => Some(BuiltinId::Postgres),
             "tensor" => Some(BuiltinId::Tensor),
             "tensor_zeros" => Some(BuiltinId::TensorZeros),
             "tensor_ones" => Some(BuiltinId::TensorOnes),
@@ -1101,7 +1101,7 @@ impl BuiltinId {
             "bigquery" | "read_bigquery" => Some(BuiltinId::ReadBigQuery),
             "databricks" | "read_databricks" => Some(BuiltinId::ReadDatabricks),
             "clickhouse" | "read_clickhouse" => Some(BuiltinId::ReadClickHouse),
-            "mongo" | "read_mongo" => Some(BuiltinId::ReadMongo),
+            "mongo" | "read_mongo" | "read_mongodb" => Some(BuiltinId::ReadMongo),
             _ => None,
         }
     }

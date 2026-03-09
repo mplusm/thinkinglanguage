@@ -574,6 +574,10 @@ impl Environment {
             Value::Builtin("postgres".to_string()),
         );
         global.insert(
+            "read_postgres".to_string(),
+            Value::Builtin("postgres".to_string()),
+        );
+        global.insert(
             "postgres_query".to_string(),
             Value::Builtin("postgres_query".to_string()),
         );
@@ -980,6 +984,14 @@ impl Environment {
         );
         global.insert(
             "mongo".to_string(),
+            Value::Builtin("mongo".to_string()),
+        );
+        global.insert(
+            "read_mongo".to_string(),
+            Value::Builtin("mongo".to_string()),
+        );
+        global.insert(
+            "read_mongodb".to_string(),
             Value::Builtin("mongo".to_string()),
         );
         global.insert(
@@ -3510,7 +3522,7 @@ impl Interpreter {
                     .map_err(|e| runtime_err(format!("{e}")))?;
                 Ok(Value::Table(TlTable { df: limited }))
             }
-            "postgres" => {
+            "postgres" | "read_postgres" => {
                 if args.len() != 2 {
                     return Err(runtime_err(
                         "postgres() expects 2 arguments (conn_str, table_name)".into(),
@@ -5447,7 +5459,7 @@ impl Interpreter {
                 #[cfg(not(feature = "clickhouse"))]
                 Err(runtime_err_s("clickhouse() requires the 'clickhouse' feature"))
             }
-            "mongo" | "read_mongo" => {
+            "mongo" | "read_mongo" | "read_mongodb" => {
                 #[cfg(feature = "mongodb")]
                 {
                     if args.len() < 4 {

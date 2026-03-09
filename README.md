@@ -190,9 +190,16 @@ TL uses Cargo feature flags for optional integrations:
 | Flag | Description | Dependencies |
 |------|-------------|--------------|
 | `sqlite` | SQLite connector | rusqlite (bundled) |
-| `mysql` | MySQL connector | mysql_async |
+| `duckdb` | DuckDB connector (Arrow-native) | duckdb (bundled) |
+| `mysql` | MySQL connector | mysql client libs |
+| `mssql` | SQL Server / MSSQL connector | tiberius |
 | `redis` | Redis connector | redis |
-| `s3` | S3 object storage | aws-sdk-s3 |
+| `s3` | S3 object storage | object_store |
+| `snowflake` | Snowflake data warehouse | reqwest |
+| `bigquery` | Google BigQuery | reqwest |
+| `databricks` | Databricks SQL | reqwest |
+| `clickhouse` | ClickHouse analytics DB | reqwest |
+| `mongodb` | MongoDB connector | mongodb driver |
 | `kafka` | Kafka streaming | rdkafka |
 | `python` | Python FFI bridge | pyo3 |
 | `gpu` | GPU tensor operations | wgpu, bytemuck |
@@ -201,12 +208,17 @@ TL uses Cargo feature flags for optional integrations:
 | `notebook` | Interactive notebook TUI | ratatui, crossterm |
 | `registry` | Package registry client | reqwest |
 
+PostgreSQL and Redshift connectors are always available (no feature flag needed).
+
 ```bash
 # Build with specific features
 cargo build --release --features "sqlite,gpu,async-runtime"
 
+# Build with all database connectors
+cargo build --release --features "sqlite,duckdb,mysql,mssql,clickhouse,snowflake,bigquery,databricks,mongodb,redis"
+
 # Build with all features (except llvm-backend which needs LLVM 19 installed)
-cargo build --release --features "sqlite,mysql,redis,s3,kafka,python,gpu,async-runtime,notebook,registry"
+cargo build --release --features "sqlite,duckdb,mysql,mssql,redis,s3,snowflake,bigquery,databricks,clickhouse,mongodb,kafka,python,gpu,async-runtime,notebook,registry"
 ```
 
 ## CLI Commands
