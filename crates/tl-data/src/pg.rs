@@ -6,8 +6,51 @@ use std::sync::Arc;
 
 use crate::engine::DataEngine;
 
-/// Default batch size for cursor-based reads (rows per batch).
-const PG_BATCH_SIZE: usize = 50_000;
+/// Extract detailed error message from a postgres::Error.
+/// The Display impl only shows "db error" — this extracts the actual
+/// PostgreSQL error message, detail, hint, and SQLSTATE code.
+fn pg_error_detail(e: &postgres::Error) -> String {
+    if let Some(db_err) = e.as_db_error() {
+        let mut msg = format!("{}: {}", db_err.severity(), db_err.message());
+        if let Some(detail) = db_err.detail() {
+            msg.push_str(&format!(" DETAIL: {detail}"));
+        }
+        if let Some(hint) = db_err.hint() {
+            msg.push_str(&format!(" HINT: {hint}"));
+        }
+        if let Some(where_) = db_err.where_() {
+            msg.push_str(&format!(" WHERE: {where_}"));
+        }
+        msg.push_str(&format!(" (SQLSTATE {})", db_err.code().code()));
+        msg
+    } else {
+        format!("{e}")
+    }
+}
+
+/// Connect to PostgreSQL, trying TLS first then falling back to NoTls.
+fn pg_connect(conn_str: &str) -> Result<Client, String> {
+    // Try TLS first (required by most cloud/remote PostgreSQL)
+    if let Ok(tls_connector) = native_tls::TlsConnector::builder()
+        .danger_accept_invalid_certs(true)
+        .build()
+    {
+        let connector = postgres_native_tls::MakeTlsConnector::new(tls_connector);
+        if let Ok(client) = Client::connect(conn_str, connector) {
+            return Ok(client);
+        }
+    }
+    // Fall back to NoTls (local connections, Unix sockets)
+    Client::connect(conn_str, NoTls)
+        .map_err(|e| format!("PostgreSQL connection error: {}", pg_error_detail(&e)))
+}
+
+/// Cursor FETCH size: rows transferred per network round trip.
+/// 1M rows per fetch = ~50 round trips for a 50M row table.
+const PG_CURSOR_FETCH_SIZE: usize = 1_000_000;
+
+/// RecordBatch size for DataFusion parallelism (local chunking, no network).
+const PG_BATCH_SIZE: usize = 100_000;
 
 /// Map PostgreSQL type names to Arrow DataTypes.
 fn pg_type_to_arrow(pg_type: &postgres::types::Type) -> DataType {
@@ -84,27 +127,56 @@ impl DataEngine {
     }
 
     /// Execute a custom SQL query against PostgreSQL and return a DataFusion DataFrame.
-    /// Uses server-side cursors to stream results in batches of 50K rows,
-    /// avoiding full materialization in memory and enabling DataFusion parallelism.
+    /// Fetches 1M rows per cursor round trip, then subdivides into 100K-row RecordBatches
+    /// for DataFusion parallelism. Falls back to a simple query if cursors are not
+    /// supported (e.g., PgBouncer, some cloud proxies, or restricted permissions).
     pub fn query_postgres(
         &self,
         conn_str: &str,
         query: &str,
         register_as: &str,
     ) -> Result<datafusion::prelude::DataFrame, String> {
-        let mut client = Client::connect(conn_str, NoTls)
-            .map_err(|e| format!("PostgreSQL connection error: {e}"))?;
+        let mut client = pg_connect(conn_str)?;
 
-        // Use a server-side cursor for streaming large result sets
+        // Try cursor-based streaming first, fall back to simple query
+        let result = self.query_postgres_cursor(&mut client, query);
+        let (batches, final_schema) = match result {
+            Ok(v) => v,
+            Err(_) => {
+                // Cursor failed — reconnect and use simple query fallback
+                let mut client2 = pg_connect(conn_str)?;
+                self.query_postgres_simple(&mut client2, query)?
+            }
+        };
+
+        if batches.is_empty() {
+            return Err(format!("Query returned no rows: {query}"));
+        }
+
+        let _ = self.ctx.deregister_table(register_as);
+        self.register_batches(register_as, final_schema, batches)?;
+
+        self.rt
+            .block_on(self.ctx.table(register_as))
+            .map_err(|e| format!("Table reference error: {e}"))
+    }
+
+    /// Cursor-based streaming: DECLARE CURSOR + FETCH in large chunks,
+    /// then subdivide locally into smaller RecordBatches for DataFusion parallelism.
+    fn query_postgres_cursor(
+        &self,
+        client: &mut Client,
+        query: &str,
+    ) -> Result<(Vec<RecordBatch>, Arc<Schema>), String> {
         let mut txn = client
             .transaction()
-            .map_err(|e| format!("PostgreSQL transaction error: {e}"))?;
+            .map_err(|e| format!("PostgreSQL transaction error: {}", pg_error_detail(&e)))?;
 
         txn.execute(
             &format!("DECLARE _tl_cursor NO SCROLL CURSOR FOR {query}"),
             &[],
         )
-        .map_err(|e| format!("PostgreSQL DECLARE CURSOR error: {e}"))?;
+        .map_err(|e| format!("PostgreSQL DECLARE CURSOR error: {}", pg_error_detail(&e)))?;
 
         let mut batches: Vec<RecordBatch> = Vec::new();
         let mut schema: Option<Arc<Schema>> = None;
@@ -112,16 +184,15 @@ impl DataEngine {
         loop {
             let rows = txn
                 .query(
-                    &format!("FETCH {PG_BATCH_SIZE} FROM _tl_cursor"),
+                    &format!("FETCH {PG_CURSOR_FETCH_SIZE} FROM _tl_cursor"),
                     &[],
                 )
-                .map_err(|e| format!("PostgreSQL FETCH error: {e}"))?;
+                .map_err(|e| format!("PostgreSQL FETCH error: {}", pg_error_detail(&e)))?;
 
             if rows.is_empty() {
                 break;
             }
 
-            // Build schema from first batch
             if schema.is_none() {
                 let columns = rows[0].columns();
                 let fields: Vec<Field> = columns
@@ -131,25 +202,50 @@ impl DataEngine {
                 schema = Some(Arc::new(Schema::new(fields)));
             }
 
-            let batch = build_record_batch(&rows, schema.as_ref().unwrap())?;
+            // Subdivide the fetched chunk into smaller RecordBatches
+            let s = schema.as_ref().unwrap();
+            for chunk in rows.chunks(PG_BATCH_SIZE) {
+                let batch = build_record_batch(chunk, s)?;
+                batches.push(batch);
+            }
+        }
+
+        txn.execute("CLOSE _tl_cursor", &[]).ok();
+        txn.commit()
+            .map_err(|e| format!("PostgreSQL COMMIT error: {}", pg_error_detail(&e)))?;
+
+        let final_schema = schema.ok_or_else(|| "No schema from cursor query".to_string())?;
+        Ok((batches, final_schema))
+    }
+
+    /// Simple query fallback: runs the full query and batches results locally.
+    fn query_postgres_simple(
+        &self,
+        client: &mut Client,
+        query: &str,
+    ) -> Result<(Vec<RecordBatch>, Arc<Schema>), String> {
+        let rows = client
+            .query(query, &[])
+            .map_err(|e| format!("PostgreSQL query error: {}", pg_error_detail(&e)))?;
+
+        if rows.is_empty() {
+            return Err("Query returned no rows".to_string());
+        }
+
+        let columns = rows[0].columns();
+        let fields: Vec<Field> = columns
+            .iter()
+            .map(|col| Field::new(col.name(), pg_type_to_arrow(col.type_()), true))
+            .collect();
+        let schema = Arc::new(Schema::new(fields));
+
+        let mut batches: Vec<RecordBatch> = Vec::new();
+        for chunk in rows.chunks(PG_BATCH_SIZE) {
+            let batch = build_record_batch(chunk, &schema)?;
             batches.push(batch);
         }
 
-        txn.execute("CLOSE _tl_cursor", &[])
-            .map_err(|e| format!("PostgreSQL CLOSE CURSOR error: {e}"))?;
-        txn.commit()
-            .map_err(|e| format!("PostgreSQL COMMIT error: {e}"))?;
-
-        if batches.is_empty() {
-            return Err(format!("Query returned no rows: {query}"));
-        }
-
-        let final_schema = schema.unwrap();
-        self.register_batches(register_as, final_schema, batches)?;
-
-        self.rt
-            .block_on(self.ctx.table(register_as))
-            .map_err(|e| format!("Table reference error: {e}"))
+        Ok((batches, schema))
     }
 }
 

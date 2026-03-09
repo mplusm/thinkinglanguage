@@ -4927,6 +4927,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "postgres-native-tls"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac73153d92e4bde922bd6f1dfba7f1ab8132266c031153b55e20a1521cd36d49"
+dependencies = [
+ "native-tls",
+ "tokio",
+ "tokio-native-tls",
+ "tokio-postgres",
+]
+
+[[package]]
 name = "postgres-protocol"
 version = "0.6.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6698,10 +6710,12 @@ dependencies = [
  "futures",
  "mongodb",
  "mysql",
+ "native-tls",
  "num_cpus",
  "object_store",
  "parquet",
  "postgres",
+ "postgres-native-tls",
  "redis",
  "regex",
  "reqwest",

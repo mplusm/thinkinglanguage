@@ -19,6 +19,8 @@ datafusion = "44"
 tokio = { version = "1", features = ["rt-multi-thread", "net"] }
 parquet = "53"
 postgres = "0.19"
+postgres-native-tls = "0.5"
+native-tls = "0.2"
 num_cpus = "1"
 regex = "1"
 
