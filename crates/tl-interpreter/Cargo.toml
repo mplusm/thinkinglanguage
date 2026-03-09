@@ -12,14 +12,14 @@ readme = "../../README.md"
 description = "Tree-walking interpreter for ThinkingLanguage (Phase 0)"
 
 [dependencies]
-tl-ast = { path = "../tl-ast", version = "0.2.0" }
-tl-errors = { path = "../tl-errors", version = "0.2.0" }
-tl-data = { path = "../tl-data", version = "0.2.0" }
-tl-ai = { path = "../tl-ai", version = "0.2.0" }
-tl-stream = { path = "../tl-stream", version = "0.2.0" }
-tl-parser = { path = "../tl-parser", version = "0.2.0" }
-tl-package = { path = "../tl-package", version = "0.2.0" }
-tl-compiler = { path = "../tl-compiler", version = "0.2.0" }
+tl-ast = { path = "../tl-ast", version = "0.3.0" }
+tl-errors = { path = "../tl-errors", version = "0.3.0" }
+tl-data = { path = "../tl-data", version = "0.3.0" }
+tl-ai = { path = "../tl-ai", version = "0.3.0" }
+tl-stream = { path = "../tl-stream", version = "0.3.0" }
+tl-parser = { path = "../tl-parser", version = "0.3.0" }
+tl-package = { path = "../tl-package", version = "0.3.0" }
+tl-compiler = { path = "../tl-compiler", version = "0.3.0" }
 reqwest = { version = "0.12", features = ["blocking", "rustls-tls"] }
 serde_json = "1"
 regex = "1"

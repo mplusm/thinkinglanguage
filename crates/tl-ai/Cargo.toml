@@ -12,7 +12,7 @@ readme = "../../README.md"
 description = "AI/ML integration for ThinkingLanguage — tensors, training, inference, LLM"
 
 [dependencies]
-tl-ast = { path = "../tl-ast", version = "0.2.0" }
+tl-ast = { path = "../tl-ast", version = "0.3.0" }
 ndarray = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

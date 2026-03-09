@@ -12,7 +12,7 @@ readme = "../../README.md"
 description = "GPU tensor compute for ThinkingLanguage via wgpu"
 
 [dependencies]
-tl-ai = { path = "../tl-ai", version = "0.2.0" }
+tl-ai = { path = "../tl-ai", version = "0.3.0" }
 ndarray = "0.15"
 wgpu = "24"
 bytemuck = { version = "1", features = ["derive"] }
