@@ -27,7 +27,7 @@ tl-ai = { path = "../tl-ai", version = "0.3.0" }
 tl-stream = { path = "../tl-stream", version = "0.3.0" }
 tl-lsp = { path = "../tl-lsp", version = "0.3.0" }
 tl-package = { path = "../tl-package", version = "0.3.0" }
-tl-llvm = { path = "../tl-llvm", optional = true }
+tl-llvm = { path = "../tl-llvm", version = "0.3.0", optional = true }
 clap.workspace = true
 rustyline.workspace = true
 toml = "0.8"

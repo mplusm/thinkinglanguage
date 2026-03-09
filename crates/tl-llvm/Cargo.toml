@@ -3,14 +3,19 @@ name = "tl-llvm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-publish = false
 description = "LLVM backend for ThinkingLanguage (Phase 30)"
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
 
 [dependencies]
-tl-compiler = { path = "../tl-compiler" }
-tl-ast = { path = "../tl-ast" }
-tl-parser = { path = "../tl-parser" }
-tl-errors = { path = "../tl-errors" }
+tl-compiler = { path = "../tl-compiler", version = "0.3.0" }
+tl-ast = { path = "../tl-ast", version = "0.3.0" }
+tl-parser = { path = "../tl-parser", version = "0.3.0" }
+tl-errors = { path = "../tl-errors", version = "0.3.0" }
 inkwell = { version = "0.8", features = ["llvm19-1"] }
 llvm-sys = { version = "191", features = ["prefer-dynamic"] }
 rust_decimal = "1"
