@@ -2119,7 +2119,7 @@ impl Vm {
                 let a = a.clone();
                 let b = b.clone();
                 let ops = self.get_gpu_ops()?;
-                let result = ops.add(&a, &b).map_err(|e| runtime_err(e))?;
+                let result = ops.add(&a, &b).map_err(runtime_err)?;
                 Ok(VmValue::GpuTensor(Arc::new(result)))
             }
             #[cfg(feature = "gpu")]
@@ -2130,7 +2130,7 @@ impl Vm {
                 let a = self.ensure_gpu_tensor(&lv)?;
                 let b_val = self.ensure_gpu_tensor(&rv)?;
                 let ops = self.get_gpu_ops()?;
-                let result = ops.add(&a, &b_val).map_err(|e| runtime_err(e))?;
+                let result = ops.add(&a, &b_val).map_err(runtime_err)?;
                 Ok(VmValue::GpuTensor(Arc::new(result)))
             }
             #[cfg(feature = "native")]
@@ -2172,7 +2172,7 @@ impl Vm {
                 let a = a.clone();
                 let b = b.clone();
                 let ops = self.get_gpu_ops()?;
-                let result = ops.sub(&a, &b).map_err(|e| runtime_err(e))?;
+                let result = ops.sub(&a, &b).map_err(runtime_err)?;
                 Ok(VmValue::GpuTensor(Arc::new(result)))
             }
             #[cfg(feature = "gpu")]
@@ -2183,7 +2183,7 @@ impl Vm {
                 let a = self.ensure_gpu_tensor(&lv)?;
                 let b_val = self.ensure_gpu_tensor(&rv)?;
                 let ops = self.get_gpu_ops()?;
-                let result = ops.sub(&a, &b_val).map_err(|e| runtime_err(e))?;
+                let result = ops.sub(&a, &b_val).map_err(runtime_err)?;
                 Ok(VmValue::GpuTensor(Arc::new(result)))
             }
             #[cfg(feature = "native")]
@@ -2237,7 +2237,7 @@ impl Vm {
                 let a = a.clone();
                 let b = b.clone();
                 let ops = self.get_gpu_ops()?;
-                let result = ops.mul(&a, &b).map_err(|e| runtime_err(e))?;
+                let result = ops.mul(&a, &b).map_err(runtime_err)?;
                 Ok(VmValue::GpuTensor(Arc::new(result)))
             }
             #[cfg(feature = "gpu")]
@@ -2248,7 +2248,7 @@ impl Vm {
                 let a = self.ensure_gpu_tensor(&lv)?;
                 let b_val = self.ensure_gpu_tensor(&rv)?;
                 let ops = self.get_gpu_ops()?;
-                let result = ops.mul(&a, &b_val).map_err(|e| runtime_err(e))?;
+                let result = ops.mul(&a, &b_val).map_err(runtime_err)?;
                 Ok(VmValue::GpuTensor(Arc::new(result)))
             }
             #[cfg(feature = "gpu")]
@@ -2320,7 +2320,7 @@ impl Vm {
                 let a = a.clone();
                 let b = b.clone();
                 let ops = self.get_gpu_ops()?;
-                let result = ops.div(&a, &b).map_err(|e| runtime_err(e))?;
+                let result = ops.div(&a, &b).map_err(runtime_err)?;
                 Ok(VmValue::GpuTensor(Arc::new(result)))
             }
             #[cfg(feature = "gpu")]
@@ -2331,7 +2331,7 @@ impl Vm {
                 let a = self.ensure_gpu_tensor(&lv)?;
                 let b_val = self.ensure_gpu_tensor(&rv)?;
                 let ops = self.get_gpu_ops()?;
-                let result = ops.div(&a, &b_val).map_err(|e| runtime_err(e))?;
+                let result = ops.div(&a, &b_val).map_err(runtime_err)?;
                 Ok(VmValue::GpuTensor(Arc::new(result)))
             }
             #[cfg(feature = "native")]
@@ -4864,7 +4864,7 @@ impl Vm {
                     let df = self
                         .engine()
                         .read_mysql(&conn_str, &query)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(VmValue::Table(VmTable { df }))
                 }
                 #[cfg(not(feature = "mysql"))]
@@ -4888,7 +4888,7 @@ impl Vm {
                     let df = self
                         .engine()
                         .read_sqlite(&db_path, &query)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(VmValue::Table(VmTable { df }))
                 }
                 #[cfg(not(feature = "sqlite"))]
@@ -4917,7 +4917,7 @@ impl Vm {
                     };
                     self.engine()
                         .write_sqlite(df, &db_path, &table_name)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(VmValue::None)
                 }
                 #[cfg(not(feature = "sqlite"))]
@@ -4941,7 +4941,7 @@ impl Vm {
                     let df = self
                         .engine()
                         .read_duckdb(&db_path, &query)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(VmValue::Table(VmTable { df }))
                 }
                 #[cfg(not(feature = "duckdb"))]
@@ -4970,7 +4970,7 @@ impl Vm {
                     };
                     self.engine()
                         .write_duckdb(df, &db_path, &table_name)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(VmValue::None)
                 }
                 #[cfg(not(feature = "duckdb"))]
@@ -4995,7 +4995,7 @@ impl Vm {
                 let df = self
                     .engine()
                     .read_redshift(&conn_str, &query)
-                    .map_err(|e| runtime_err(e))?;
+                    .map_err(runtime_err)?;
                 Ok(VmValue::Table(VmTable { df }))
             }
             #[cfg(feature = "native")]
@@ -5019,7 +5019,7 @@ impl Vm {
                     let df = self
                         .engine()
                         .read_mssql(&conn_str, &query)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(VmValue::Table(VmTable { df }))
                 }
                 #[cfg(not(feature = "mssql"))]
@@ -5046,7 +5046,7 @@ impl Vm {
                     let df = self
                         .engine()
                         .read_snowflake(&config, &query)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(VmValue::Table(VmTable { df }))
                 }
                 #[cfg(not(feature = "snowflake"))]
@@ -5073,7 +5073,7 @@ impl Vm {
                     let df = self
                         .engine()
                         .read_bigquery(&config, &query)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(VmValue::Table(VmTable { df }))
                 }
                 #[cfg(not(feature = "bigquery"))]
@@ -5100,7 +5100,7 @@ impl Vm {
                     let df = self
                         .engine()
                         .read_databricks(&config, &query)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(VmValue::Table(VmTable { df }))
                 }
                 #[cfg(not(feature = "databricks"))]
@@ -5129,7 +5129,7 @@ impl Vm {
                     let df = self
                         .engine()
                         .read_clickhouse(&url, &query)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(VmValue::Table(VmTable { df }))
                 }
                 #[cfg(not(feature = "clickhouse"))]
@@ -5168,7 +5168,7 @@ impl Vm {
                     let df = self
                         .engine()
                         .read_mongo(&conn_str, &database, &collection, &filter_json)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(VmValue::Table(VmTable { df }))
                 }
                 #[cfg(not(feature = "mongodb"))]
@@ -5204,7 +5204,7 @@ impl Vm {
                     let result = self
                         .engine()
                         .sftp_download(&config, &remote, &local)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(VmValue::String(Arc::from(result.as_str())))
                 }
                 #[cfg(not(feature = "sftp"))]
@@ -5234,7 +5234,7 @@ impl Vm {
                     let result = self
                         .engine()
                         .sftp_upload(&config, &local, &remote)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(VmValue::String(Arc::from(result.as_str())))
                 }
                 #[cfg(not(feature = "sftp"))]
@@ -5258,7 +5258,7 @@ impl Vm {
                     let df = self
                         .engine()
                         .sftp_list(&config, &remote)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(VmValue::Table(VmTable { df }))
                 }
                 #[cfg(not(feature = "sftp"))]
@@ -5286,7 +5286,7 @@ impl Vm {
                     let df = self
                         .engine()
                         .sftp_read_csv(&config, &remote)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(VmValue::Table(VmTable { df }))
                 }
                 #[cfg(not(feature = "sftp"))]
@@ -5318,7 +5318,7 @@ impl Vm {
                     let df = self
                         .engine()
                         .sftp_read_parquet(&config, &remote)
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(VmValue::Table(VmTable { df }))
                 }
                 #[cfg(not(feature = "sftp"))]
@@ -5337,8 +5337,7 @@ impl Vm {
                         VmValue::String(s) => s.to_string(),
                         _ => return Err(runtime_err("redis_connect() url must be a string")),
                     };
-                    let result =
-                        tl_data::redis_conn::redis_connect(&url).map_err(|e| runtime_err(e))?;
+                    let result = tl_data::redis_conn::redis_connect(&url).map_err(runtime_err)?;
                     Ok(VmValue::String(Arc::from(result.as_str())))
                 }
                 #[cfg(not(feature = "redis"))]
@@ -5359,7 +5358,7 @@ impl Vm {
                         VmValue::String(s) => s.to_string(),
                         _ => return Err(runtime_err("redis_get() key must be a string")),
                     };
-                    match tl_data::redis_conn::redis_get(&url, &key).map_err(|e| runtime_err(e))? {
+                    match tl_data::redis_conn::redis_get(&url, &key).map_err(runtime_err)? {
                         Some(v) => Ok(VmValue::String(Arc::from(v.as_str()))),
                         None => Ok(VmValue::None),
                     }
@@ -5386,8 +5385,7 @@ impl Vm {
                         VmValue::String(s) => s.to_string(),
                         _ => format!("{}", &args[2]),
                     };
-                    tl_data::redis_conn::redis_set(&url, &key, &value)
-                        .map_err(|e| runtime_err(e))?;
+                    tl_data::redis_conn::redis_set(&url, &key, &value).map_err(runtime_err)?;
                     Ok(VmValue::None)
                 }
                 #[cfg(not(feature = "redis"))]
@@ -5409,7 +5407,7 @@ impl Vm {
                         _ => return Err(runtime_err("redis_del() key must be a string")),
                     };
                     let deleted =
-                        tl_data::redis_conn::redis_del(&url, &key).map_err(|e| runtime_err(e))?;
+                        tl_data::redis_conn::redis_del(&url, &key).map_err(runtime_err)?;
                     Ok(VmValue::Bool(deleted))
                 }
                 #[cfg(not(feature = "redis"))]
@@ -5500,7 +5498,7 @@ impl Vm {
                             secret_key.as_deref(),
                             endpoint.as_deref(),
                         )
-                        .map_err(|e| runtime_err(e))?;
+                        .map_err(runtime_err)?;
                     Ok(VmValue::None)
                 }
                 #[cfg(not(feature = "s3"))]
@@ -6080,7 +6078,7 @@ impl Vm {
                 }
                 match &args[0] {
                     VmValue::GpuTensor(gt) => {
-                        let cpu = gt.to_cpu().map_err(|e| runtime_err(e))?;
+                        let cpu = gt.to_cpu().map_err(runtime_err)?;
                         Ok(VmValue::Tensor(Arc::new(cpu)))
                     }
                     _ => Err(runtime_err(format!(
@@ -6102,7 +6100,7 @@ impl Vm {
                 let a = self.ensure_gpu_tensor(&args[0])?;
                 let b = self.ensure_gpu_tensor(&args[1])?;
                 let ops = self.get_gpu_ops()?;
-                let result = ops.matmul(&a, &b).map_err(|e| runtime_err(e))?;
+                let result = ops.matmul(&a, &b).map_err(runtime_err)?;
                 Ok(VmValue::GpuTensor(Arc::new(result)))
             }
             #[cfg(not(feature = "gpu"))]
@@ -6123,7 +6121,7 @@ impl Vm {
                         });
                         let result =
                             tl_gpu::BatchInference::batch_predict(model, input, batch_size)
-                                .map_err(|e| runtime_err(e))?;
+                                .map_err(runtime_err)?;
                         Ok(VmValue::Tensor(Arc::new(result)))
                     }
                     _ => Err(runtime_err(
@@ -7902,7 +7900,7 @@ impl Vm {
             #[cfg(feature = "gpu")]
             VmValue::GpuTensor(gt) => match method {
                 "to_cpu" => {
-                    let cpu = gt.to_cpu().map_err(|e| runtime_err(e))?;
+                    let cpu = gt.to_cpu().map_err(runtime_err)?;
                     Ok(VmValue::Tensor(Arc::new(cpu)))
                 }
                 "shape" => {
