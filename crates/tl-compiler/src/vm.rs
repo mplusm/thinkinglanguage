@@ -600,6 +600,38 @@ impl Vm {
                 ],
             })),
         );
+        // Phase 3: Register MCP builtins as globals
+        #[cfg(feature = "mcp")]
+        {
+            vm.globals.insert(
+                "mcp_connect".to_string(),
+                VmValue::Builtin(BuiltinId::McpConnect),
+            );
+            vm.globals.insert(
+                "mcp_list_tools".to_string(),
+                VmValue::Builtin(BuiltinId::McpListTools),
+            );
+            vm.globals.insert(
+                "mcp_call_tool".to_string(),
+                VmValue::Builtin(BuiltinId::McpCallTool),
+            );
+            vm.globals.insert(
+                "mcp_disconnect".to_string(),
+                VmValue::Builtin(BuiltinId::McpDisconnect),
+            );
+            vm.globals.insert(
+                "mcp_serve".to_string(),
+                VmValue::Builtin(BuiltinId::McpServe),
+            );
+            vm.globals.insert(
+                "mcp_server_info".to_string(),
+                VmValue::Builtin(BuiltinId::McpServerInfo),
+            );
+            vm.globals.insert(
+                "mcp_ping".to_string(),
+                VmValue::Builtin(BuiltinId::McpPing),
+            );
+        }
         vm
     }
 
@@ -6660,6 +6692,216 @@ impl Vm {
                     _ => return Err(runtime_err(format!("Unknown date part: {part}"))),
                 };
                 Ok(VmValue::Int(val))
+            }
+
+            // ── MCP builtins ──
+            #[cfg(feature = "mcp")]
+            BuiltinId::McpConnect => {
+                if args.is_empty() {
+                    return Err(runtime_err("mcp_connect expects at least 1 argument: command"));
+                }
+                let command = match &args[0] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("mcp_connect: command must be a string")),
+                };
+                let cmd_args: Vec<String> = args[1..]
+                    .iter()
+                    .map(|a| match a {
+                        VmValue::String(s) => s.to_string(),
+                        other => format!("{}", other),
+                    })
+                    .collect();
+                let client = tl_mcp::McpClient::connect(
+                    &command,
+                    &cmd_args,
+                    self.security_policy.as_ref(),
+                )
+                .map_err(|e| runtime_err(format!("mcp_connect failed: {e}")))?;
+                Ok(VmValue::McpClient(Arc::new(client)))
+            }
+            #[cfg(not(feature = "mcp"))]
+            BuiltinId::McpConnect => {
+                Err(runtime_err("MCP not available. Build with --features mcp"))
+            }
+
+            #[cfg(feature = "mcp")]
+            BuiltinId::McpListTools => {
+                if args.is_empty() {
+                    return Err(runtime_err("mcp_list_tools expects 1 argument: client"));
+                }
+                match &args[0] {
+                    VmValue::McpClient(client) => {
+                        let tools = client
+                            .list_tools()
+                            .map_err(|e| runtime_err(format!("mcp_list_tools failed: {e}")))?;
+                        let tool_values: Vec<VmValue> = tools
+                            .iter()
+                            .map(|tool| {
+                                let mut pairs: Vec<(Arc<str>, VmValue)> = Vec::new();
+                                pairs.push((
+                                    Arc::from("name"),
+                                    VmValue::String(Arc::from(tool.name.as_ref())),
+                                ));
+                                if let Some(desc) = &tool.description {
+                                    pairs.push((
+                                        Arc::from("description"),
+                                        VmValue::String(Arc::from(desc.as_ref())),
+                                    ));
+                                }
+                                let schema_json = serde_json::to_string(tool.input_schema.as_ref())
+                                    .unwrap_or_default();
+                                if !schema_json.is_empty() && schema_json != "{}" {
+                                    pairs.push((
+                                        Arc::from("input_schema"),
+                                        VmValue::String(Arc::from(schema_json.as_str())),
+                                    ));
+                                }
+                                VmValue::Map(Box::new(pairs))
+                            })
+                            .collect();
+                        Ok(VmValue::List(Box::new(tool_values)))
+                    }
+                    _ => Err(runtime_err(
+                        "mcp_list_tools: argument must be an mcp_client",
+                    )),
+                }
+            }
+            #[cfg(not(feature = "mcp"))]
+            BuiltinId::McpListTools => {
+                Err(runtime_err("MCP not available. Build with --features mcp"))
+            }
+
+            #[cfg(feature = "mcp")]
+            BuiltinId::McpCallTool => {
+                if args.len() < 2 {
+                    return Err(runtime_err(
+                        "mcp_call_tool expects 2-3 arguments: client, tool_name, [args]",
+                    ));
+                }
+                let client = match &args[0] {
+                    VmValue::McpClient(c) => c.clone(),
+                    _ => {
+                        return Err(runtime_err(
+                            "mcp_call_tool: first argument must be an mcp_client",
+                        ))
+                    }
+                };
+                let tool_name = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("mcp_call_tool: tool_name must be a string")),
+                };
+                let arguments = if args.len() > 2 {
+                    vm_value_to_json(&args[2])
+                } else {
+                    serde_json::Value::Object(serde_json::Map::new())
+                };
+                let result = client
+                    .call_tool(&tool_name, arguments)
+                    .map_err(|e| runtime_err(format!("mcp_call_tool failed: {e}")))?;
+                let mut content_parts: Vec<VmValue> = Vec::new();
+                for content in &result.content {
+                    if let Some(text) = content.as_text() {
+                        content_parts.push(VmValue::String(Arc::from(text.text.as_str())));
+                    }
+                }
+                let mut pairs: Vec<(Arc<str>, VmValue)> = Vec::new();
+                if content_parts.len() == 1 {
+                    pairs.push((
+                        Arc::from("content"),
+                        content_parts.into_iter().next().unwrap(),
+                    ));
+                } else {
+                    pairs.push((
+                        Arc::from("content"),
+                        VmValue::List(Box::new(content_parts)),
+                    ));
+                }
+                pairs.push((
+                    Arc::from("is_error"),
+                    VmValue::Bool(result.is_error.unwrap_or(false)),
+                ));
+                Ok(VmValue::Map(Box::new(pairs)))
+            }
+            #[cfg(not(feature = "mcp"))]
+            BuiltinId::McpCallTool => {
+                Err(runtime_err("MCP not available. Build with --features mcp"))
+            }
+
+            #[cfg(feature = "mcp")]
+            BuiltinId::McpDisconnect => {
+                if args.is_empty() {
+                    return Err(runtime_err("mcp_disconnect expects 1 argument: client"));
+                }
+                match &args[0] {
+                    VmValue::McpClient(_) => Ok(VmValue::None),
+                    _ => Err(runtime_err(
+                        "mcp_disconnect: argument must be an mcp_client",
+                    )),
+                }
+            }
+            #[cfg(not(feature = "mcp"))]
+            BuiltinId::McpDisconnect => {
+                Err(runtime_err("MCP not available. Build with --features mcp"))
+            }
+
+            #[cfg(feature = "mcp")]
+            BuiltinId::McpPing => {
+                if args.is_empty() {
+                    return Err(runtime_err("mcp_ping expects 1 argument: client"));
+                }
+                match &args[0] {
+                    VmValue::McpClient(client) => {
+                        client
+                            .ping()
+                            .map_err(|e| runtime_err(format!("mcp_ping failed: {e}")))?;
+                        Ok(VmValue::Bool(true))
+                    }
+                    _ => Err(runtime_err("mcp_ping: argument must be an mcp_client")),
+                }
+            }
+            #[cfg(not(feature = "mcp"))]
+            BuiltinId::McpPing => {
+                Err(runtime_err("MCP not available. Build with --features mcp"))
+            }
+
+            #[cfg(feature = "mcp")]
+            BuiltinId::McpServerInfo => {
+                if args.is_empty() {
+                    return Err(runtime_err("mcp_server_info expects 1 argument: client"));
+                }
+                match &args[0] {
+                    VmValue::McpClient(client) => match client.server_info() {
+                        Some(info) => {
+                            let mut pairs: Vec<(Arc<str>, VmValue)> = Vec::new();
+                            pairs.push((
+                                Arc::from("name"),
+                                VmValue::String(Arc::from(info.server_info.name.as_str())),
+                            ));
+                            pairs.push((
+                                Arc::from("version"),
+                                VmValue::String(Arc::from(info.server_info.version.as_str())),
+                            ));
+                            Ok(VmValue::Map(Box::new(pairs)))
+                        }
+                        None => Ok(VmValue::None),
+                    },
+                    _ => Err(runtime_err(
+                        "mcp_server_info: argument must be an mcp_client",
+                    )),
+                }
+            }
+            #[cfg(not(feature = "mcp"))]
+            BuiltinId::McpServerInfo => {
+                Err(runtime_err("MCP not available. Build with --features mcp"))
+            }
+
+            #[cfg(feature = "mcp")]
+            BuiltinId::McpServe => {
+                Err(runtime_err("mcp_serve not yet implemented (Phase 6)"))
+            }
+            #[cfg(not(feature = "mcp"))]
+            BuiltinId::McpServe => {
+                Err(runtime_err("MCP not available. Build with --features mcp"))
             }
         }
     }
