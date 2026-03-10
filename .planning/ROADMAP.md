@@ -131,7 +131,7 @@ Phases 1 → 2 → 3 → {4, 5, 6} parallel → 7 → 8
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Prerequisites & Security | 0/TBD | Not started | - |
+| 1. Prerequisites & Security | 0/4 | Planned | - |
 | 2. Protocol & Stdio Transport | 0/TBD | Not started | - |
 | 3. Client Builtins & VM | 0/TBD | Not started | - |
 | 4. HTTP Transport | 0/TBD | Not started | - |
