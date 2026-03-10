@@ -132,7 +132,7 @@ Phases 1 → 2 → 3 → {4, 5, 6} parallel → 7 → 8
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Prerequisites & Security | 4/4 | Complete | 2026-03-10 |
-| 2. Protocol & Stdio Transport | 0/TBD | Not started | - |
+| 2. Protocol & Stdio Transport | 0/3 | Planned | - |
 | 3. Client Builtins & VM | 0/TBD | Not started | - |
 | 4. HTTP Transport | 0/TBD | Not started | - |
 | 5. Agent Integration | 0/TBD | Not started | - |
