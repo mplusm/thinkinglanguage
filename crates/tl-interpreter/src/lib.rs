@@ -327,6 +327,9 @@ pub enum Value {
     /// An opaque Python object (feature-gated)
     #[cfg(feature = "python")]
     PyObject(Arc<InterpPyObjectWrapper>),
+    /// An MCP client connection handle
+    #[cfg(feature = "mcp")]
+    McpClient(Arc<tl_mcp::McpClient>),
     /// Tombstone for a value consumed by pipe-move
     Moved,
     /// Read-only reference wrapper
@@ -426,6 +429,8 @@ impl fmt::Display for Value {
             Value::Secret(_) => write!(f, "***"),
             #[cfg(feature = "python")]
             Value::PyObject(w) => write!(f, "{w}"),
+            #[cfg(feature = "mcp")]
+            Value::McpClient(_) => write!(f, "<mcp_client>"),
             Value::Moved => write!(f, "<moved>"),
             Value::Ref(inner) => write!(f, "{inner}"),
         }
@@ -490,6 +495,8 @@ impl Value {
             Value::Secret(_) => "secret",
             #[cfg(feature = "python")]
             Value::PyObject(_) => "pyobject",
+            #[cfg(feature = "mcp")]
+            Value::McpClient(_) => "mcp_client",
             Value::Moved => "<moved>",
             Value::Ref(inner) => inner.type_name(),
         }
@@ -1193,6 +1200,18 @@ impl Environment {
                 ],
             },
         );
+
+        // MCP builtins
+        #[cfg(feature = "mcp")]
+        {
+            global.insert("mcp_connect".to_string(), Value::Builtin("mcp_connect".to_string()));
+            global.insert("mcp_list_tools".to_string(), Value::Builtin("mcp_list_tools".to_string()));
+            global.insert("mcp_call_tool".to_string(), Value::Builtin("mcp_call_tool".to_string()));
+            global.insert("mcp_disconnect".to_string(), Value::Builtin("mcp_disconnect".to_string()));
+            global.insert("mcp_serve".to_string(), Value::Builtin("mcp_serve".to_string()));
+            global.insert("mcp_server_info".to_string(), Value::Builtin("mcp_server_info".to_string()));
+            global.insert("mcp_ping".to_string(), Value::Builtin("mcp_ping".to_string()));
+        }
 
         Self {
             scopes: vec![global],
@@ -6928,6 +6947,130 @@ impl Interpreter {
                 };
                 Ok(Value::Int(val))
             }
+            // ── MCP builtins ──
+            #[cfg(feature = "mcp")]
+            "mcp_connect" => {
+                if args.is_empty() {
+                    return Err(runtime_err_s("mcp_connect expects at least 1 argument: command"));
+                }
+                let command = match &args[0] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err_s("mcp_connect: command must be a string")),
+                };
+                let cmd_args: Vec<String> = args[1..].iter().map(|a| match a {
+                    Value::String(s) => s.clone(),
+                    other => format!("{}", other),
+                }).collect();
+                let client = tl_mcp::McpClient::connect(
+                    &command, &cmd_args, self.security_policy.as_ref(),
+                ).map_err(|e| runtime_err(format!("mcp_connect failed: {e}")))?;
+                Ok(Value::McpClient(Arc::new(client)))
+            }
+            #[cfg(feature = "mcp")]
+            "mcp_list_tools" => {
+                if args.is_empty() {
+                    return Err(runtime_err_s("mcp_list_tools expects 1 argument: client"));
+                }
+                match &args[0] {
+                    Value::McpClient(client) => {
+                        let tools = client.list_tools()
+                            .map_err(|e| runtime_err(format!("mcp_list_tools failed: {e}")))?;
+                        let tool_values: Vec<Value> = tools.iter().map(|tool| {
+                            let mut pairs: Vec<(String, Value)> = Vec::new();
+                            pairs.push(("name".to_string(), Value::String(tool.name.to_string())));
+                            if let Some(desc) = &tool.description {
+                                pairs.push(("description".to_string(), Value::String(desc.to_string())));
+                            }
+                            let schema_json = serde_json::to_string(&*tool.input_schema).unwrap_or_default();
+                            pairs.push(("input_schema".to_string(), Value::String(schema_json)));
+                            Value::Map(pairs)
+                        }).collect();
+                        Ok(Value::List(tool_values))
+                    }
+                    _ => Err(runtime_err_s("mcp_list_tools: argument must be an mcp_client")),
+                }
+            }
+            #[cfg(feature = "mcp")]
+            "mcp_call_tool" => {
+                if args.len() < 2 {
+                    return Err(runtime_err_s("mcp_call_tool expects 2-3 arguments: client, tool_name, [args]"));
+                }
+                let client = match &args[0] {
+                    Value::McpClient(c) => c.clone(),
+                    _ => return Err(runtime_err_s("mcp_call_tool: first argument must be an mcp_client")),
+                };
+                let tool_name = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err_s("mcp_call_tool: tool_name must be a string")),
+                };
+                let arguments = if args.len() > 2 {
+                    value_to_json(&args[2])
+                } else {
+                    serde_json::Value::Object(serde_json::Map::new())
+                };
+                let result = client.call_tool(&tool_name, arguments)
+                    .map_err(|e| runtime_err(format!("mcp_call_tool failed: {e}")))?;
+                let mut content_parts: Vec<Value> = Vec::new();
+                for content in &result.content {
+                    if let Some(text_content) = content.raw.as_text() {
+                        content_parts.push(Value::String(text_content.text.clone()));
+                    }
+                }
+                let mut pairs: Vec<(String, Value)> = Vec::new();
+                if content_parts.len() == 1 {
+                    pairs.push(("content".to_string(), content_parts.into_iter().next().unwrap()));
+                } else {
+                    pairs.push(("content".to_string(), Value::List(content_parts)));
+                }
+                pairs.push(("is_error".to_string(), Value::Bool(result.is_error.unwrap_or(false))));
+                Ok(Value::Map(pairs))
+            }
+            #[cfg(feature = "mcp")]
+            "mcp_disconnect" => {
+                if args.is_empty() {
+                    return Err(runtime_err_s("mcp_disconnect expects 1 argument: client"));
+                }
+                match &args[0] {
+                    Value::McpClient(_) => Ok(Value::None),
+                    _ => Err(runtime_err_s("mcp_disconnect: argument must be an mcp_client")),
+                }
+            }
+            #[cfg(feature = "mcp")]
+            "mcp_ping" => {
+                if args.is_empty() {
+                    return Err(runtime_err_s("mcp_ping expects 1 argument: client"));
+                }
+                match &args[0] {
+                    Value::McpClient(client) => {
+                        client.ping().map_err(|e| runtime_err(format!("mcp_ping failed: {e}")))?;
+                        Ok(Value::Bool(true))
+                    }
+                    _ => Err(runtime_err_s("mcp_ping: argument must be an mcp_client")),
+                }
+            }
+            #[cfg(feature = "mcp")]
+            "mcp_server_info" => {
+                if args.is_empty() {
+                    return Err(runtime_err_s("mcp_server_info expects 1 argument: client"));
+                }
+                match &args[0] {
+                    Value::McpClient(client) => {
+                        match client.server_info() {
+                            Some(info) => {
+                                let mut pairs: Vec<(String, Value)> = Vec::new();
+                                pairs.push(("name".to_string(), Value::String(info.server_info.name.clone())));
+                                pairs.push(("version".to_string(), Value::String(info.server_info.version.clone())));
+                                Ok(Value::Map(pairs))
+                            }
+                            None => Ok(Value::None),
+                        }
+                    }
+                    _ => Err(runtime_err_s("mcp_server_info: argument must be an mcp_client")),
+                }
+            }
+            #[cfg(feature = "mcp")]
+            "mcp_serve" => Err(runtime_err_s("mcp_serve not yet implemented (Phase 6)")),
+
             _ => Err(runtime_err(format!("Unknown builtin: {name}"))),
         }
     }
