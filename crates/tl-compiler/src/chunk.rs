@@ -661,6 +661,14 @@ pub enum BuiltinId {
     SftpList = 213,
     SftpReadCsv = 214,
     SftpReadParquet = 215,
+    // MCP builtins (Phase 3)
+    McpConnect = 216,
+    McpListTools = 217,
+    McpCallTool = 218,
+    McpDisconnect = 219,
+    McpServe = 220,
+    McpServerInfo = 221,
+    McpPing = 222,
 }
 
 impl TryFrom<u16> for BuiltinId {
@@ -884,6 +892,13 @@ impl TryFrom<u16> for BuiltinId {
             213 => Ok(BuiltinId::SftpList),
             214 => Ok(BuiltinId::SftpReadCsv),
             215 => Ok(BuiltinId::SftpReadParquet),
+            216 => Ok(BuiltinId::McpConnect),
+            217 => Ok(BuiltinId::McpListTools),
+            218 => Ok(BuiltinId::McpCallTool),
+            219 => Ok(BuiltinId::McpDisconnect),
+            220 => Ok(BuiltinId::McpServe),
+            221 => Ok(BuiltinId::McpServerInfo),
+            222 => Ok(BuiltinId::McpPing),
             _ => Err(value),
         }
     }
@@ -1118,6 +1133,13 @@ impl BuiltinId {
             "sftp_list" | "sftp_ls" => Some(BuiltinId::SftpList),
             "sftp_read_csv" => Some(BuiltinId::SftpReadCsv),
             "sftp_read_parquet" => Some(BuiltinId::SftpReadParquet),
+            "mcp_connect" => Some(BuiltinId::McpConnect),
+            "mcp_list_tools" => Some(BuiltinId::McpListTools),
+            "mcp_call_tool" => Some(BuiltinId::McpCallTool),
+            "mcp_disconnect" => Some(BuiltinId::McpDisconnect),
+            "mcp_serve" => Some(BuiltinId::McpServe),
+            "mcp_server_info" => Some(BuiltinId::McpServerInfo),
+            "mcp_ping" => Some(BuiltinId::McpPing),
             _ => None,
         }
     }
@@ -1351,6 +1373,13 @@ impl BuiltinId {
             BuiltinId::SftpList => "sftp_list",
             BuiltinId::SftpReadCsv => "sftp_read_csv",
             BuiltinId::SftpReadParquet => "sftp_read_parquet",
+            BuiltinId::McpConnect => "mcp_connect",
+            BuiltinId::McpListTools => "mcp_list_tools",
+            BuiltinId::McpCallTool => "mcp_call_tool",
+            BuiltinId::McpDisconnect => "mcp_disconnect",
+            BuiltinId::McpServe => "mcp_serve",
+            BuiltinId::McpServerInfo => "mcp_server_info",
+            BuiltinId::McpPing => "mcp_ping",
         }
     }
 }
@@ -1434,7 +1463,7 @@ mod tests {
 
     #[test]
     fn test_builtin_id_try_from_invalid() {
-        assert_eq!(BuiltinId::try_from(216u16), Err(216u16));
+        assert_eq!(BuiltinId::try_from(223u16), Err(223u16));
         assert_eq!(BuiltinId::try_from(65535u16), Err(65535u16));
     }
 }

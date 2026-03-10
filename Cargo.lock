@@ -7108,6 +7108,7 @@ dependencies = [
  "tl-compiler",
  "tl-data",
  "tl-errors",
+ "tl-mcp",
  "tl-package",
  "tl-parser",
  "tl-stream",

@@ -88,6 +88,9 @@ pub enum VmValue {
     /// An agent definition
     #[cfg(feature = "native")]
     AgentDef(Arc<AgentDef>),
+    /// An MCP client connection handle
+    #[cfg(feature = "mcp")]
+    McpClient(Arc<tl_mcp::McpClient>),
     /// Tombstone for a value consumed by pipe-move
     Moved,
     /// Read-only reference wrapper
@@ -423,6 +426,8 @@ impl VmValue {
             VmValue::GpuTensor(_) => "gpu_tensor",
             #[cfg(feature = "native")]
             VmValue::AgentDef(_) => "agent",
+            #[cfg(feature = "mcp")]
+            VmValue::McpClient(_) => "mcp_client",
             VmValue::Moved => "<moved>",
             VmValue::Ref(inner) => inner.type_name(),
         }
@@ -519,6 +524,8 @@ impl fmt::Debug for VmValue {
             VmValue::GpuTensor(t) => write!(f, "{t:?}"),
             #[cfg(feature = "native")]
             VmValue::AgentDef(a) => write!(f, "AgentDef({})", a.name),
+            #[cfg(feature = "mcp")]
+            VmValue::McpClient(_) => write!(f, "<mcp_client>"),
             VmValue::Moved => write!(f, "<moved>"),
             VmValue::Ref(inner) => write!(f, "&{inner:?}"),
         }
@@ -637,6 +644,8 @@ impl fmt::Display for VmValue {
             VmValue::GpuTensor(t) => write!(f, "{t}"),
             #[cfg(feature = "native")]
             VmValue::AgentDef(a) => write!(f, "<agent {}>", a.name),
+            #[cfg(feature = "mcp")]
+            VmValue::McpClient(_) => write!(f, "<mcp_client>"),
             VmValue::Moved => write!(f, "<moved>"),
             VmValue::Ref(inner) => write!(f, "{inner}"),
         }
