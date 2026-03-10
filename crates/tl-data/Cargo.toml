@@ -34,7 +34,7 @@ duckdb = { version = "1.2", features = ["bundled", "appender-arrow"], optional =
 arrow-ipc-054 = { package = "arrow-ipc", version = "54", optional = true }
 tiberius = { version = "0.12", default-features = false, features = ["tds73", "chrono"], optional = true }
 tokio-util = { version = "0.7", features = ["compat"], optional = true }
-reqwest = { version = "0.12", features = ["blocking", "rustls-tls", "json"], optional = true }
+reqwest = { version = "0.13", features = ["blocking", "rustls", "json"], optional = true }
 serde_json = { version = "1", optional = true }
 mongodb = { version = "3.1", optional = true }
 futures = { version = "0.3", optional = true }

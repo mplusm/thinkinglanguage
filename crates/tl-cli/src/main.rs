@@ -388,6 +388,12 @@ enum Commands {
         /// Allow specific connector types in sandbox mode (can be repeated)
         #[arg(long = "allow-connector")]
         allow_connectors: Vec<String>,
+        /// Allow subprocess spawning in sandbox mode
+        #[arg(long)]
+        allow_subprocess: bool,
+        /// Allow specific commands for subprocess execution (can be repeated)
+        #[arg(long = "allow-command")]
+        allow_commands: Vec<String>,
     },
     /// Start the interactive REPL
     Shell {
@@ -693,6 +699,8 @@ fn main() {
             strict,
             sandbox,
             allow_connectors,
+            allow_subprocess,
+            allow_commands,
         }) => run_file(
             &file,
             &backend,
@@ -701,6 +709,8 @@ fn main() {
             strict,
             sandbox,
             &allow_connectors,
+            allow_subprocess,
+            &allow_commands,
         ),
         Some(Commands::Shell { backend }) => run_repl(&backend),
         Some(Commands::Models { action }) => run_models(action),
@@ -771,6 +781,8 @@ fn run_file(
     strict: bool,
     sandbox: bool,
     allow_connectors: &[String],
+    allow_subprocess: bool,
+    allow_commands: &[String],
 ) {
     run_file_with_packages(
         path,
@@ -782,6 +794,8 @@ fn run_file(
         None,
         sandbox,
         allow_connectors,
+        allow_subprocess,
+        allow_commands,
     );
 }
 
@@ -796,6 +810,8 @@ fn run_file_with_packages(
     project_root: Option<PathBuf>,
     sandbox: bool,
     allow_connectors: &[String],
+    allow_subprocess: bool,
+    allow_commands: &[String],
 ) {
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
@@ -883,6 +899,12 @@ fn run_file_with_packages(
                 for conn in allow_connectors {
                     policy.allowed_connectors.insert(conn.clone());
                 }
+                if allow_subprocess {
+                    policy.allow_subprocess = true;
+                }
+                for cmd in allow_commands {
+                    policy.allowed_commands.push(cmd.clone());
+                }
                 vm.security_policy = Some(policy);
             }
             if let Some(ref roots) = package_roots {
@@ -907,6 +929,12 @@ fn run_file_with_packages(
                 let mut policy = SecurityPolicy::sandbox();
                 for conn in allow_connectors {
                     policy.allowed_connectors.insert(conn.clone());
+                }
+                if allow_subprocess {
+                    policy.allow_subprocess = true;
+                }
+                for cmd in allow_commands {
+                    policy.allowed_commands.push(cmd.clone());
                 }
                 interp.security_policy = Some(policy);
             }
@@ -1888,6 +1916,8 @@ fn run_build(backend: &str, dump_bytecode: bool, no_check: bool, strict: bool) {
         strict,
         package_roots,
         Some(project_root.to_path_buf()),
+        false,
+        &[],
         false,
         &[],
     );

@@ -22,7 +22,7 @@ pub fn predict_onnx(model_path: &Path, input: &TlTensor) -> Result<TlTensor, Str
     use ort::session::Session;
 
     let mut session = Session::builder()
-        .and_then(|b| b.commit_from_file(model_path))
+        .and_then(|mut b| b.commit_from_file(model_path))
         .map_err(|e| format!("Failed to load ONNX model: {e}"))?;
 
     let shape = input.shape();

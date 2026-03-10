@@ -6,7 +6,7 @@
 
 use std::collections::HashSet;
 
-/// Security policy controlling access to files, network, and connectors.
+/// Security policy controlling access to files, network, connectors, and subprocesses.
 #[derive(Debug, Clone)]
 pub struct SecurityPolicy {
     pub allowed_connectors: HashSet<String>,
@@ -15,6 +15,8 @@ pub struct SecurityPolicy {
     pub allow_file_read: bool,
     pub allow_file_write: bool,
     pub sandbox_mode: bool,
+    pub allow_subprocess: bool,
+    pub allowed_commands: Vec<String>,
 }
 
 impl SecurityPolicy {
@@ -26,6 +28,8 @@ impl SecurityPolicy {
             allow_file_read: true,
             allow_file_write: true,
             sandbox_mode: false,
+            allow_subprocess: true,
+            allowed_commands: vec![],
         }
     }
 
@@ -37,6 +41,8 @@ impl SecurityPolicy {
             allow_file_read: true,
             allow_file_write: false,
             sandbox_mode: true,
+            allow_subprocess: false,
+            allowed_commands: vec![],
         }
     }
 
@@ -51,12 +57,28 @@ impl SecurityPolicy {
             "file_write" => self.allow_file_write,
             "python" => false,
             "env_write" => false,
+            "subprocess" => self.allow_subprocess,
+            p if p.starts_with("command:") => {
+                let cmd = &p["command:".len()..];
+                self.check_command(cmd)
+            }
             p if p.starts_with("connector:") => {
                 let conn_type = &p["connector:".len()..];
                 self.allowed_connectors.is_empty() || self.allowed_connectors.contains(conn_type)
             }
             _ => true,
         }
+    }
+
+    /// Check if a specific command is allowed for subprocess execution.
+    pub fn check_command(&self, command: &str) -> bool {
+        if !self.allow_subprocess {
+            return false;
+        }
+        if self.allowed_commands.is_empty() {
+            return true;
+        }
+        self.allowed_commands.iter().any(|c| c == command)
     }
 
     /// Check if a file path is allowed.
@@ -106,5 +128,43 @@ mod tests {
         policy.denied_paths.push("/etc/".to_string());
         assert!(!policy.check_path("/etc/passwd"));
         assert!(policy.check_path("/home/user/file.txt"));
+    }
+
+    #[test]
+    fn test_sandbox_denies_subprocess() {
+        let policy = SecurityPolicy::sandbox();
+        assert!(!policy.check("subprocess"));
+        assert!(!policy.check_command("npx"));
+        assert!(!policy.check("command:npx"));
+    }
+
+    #[test]
+    fn test_permissive_allows_subprocess() {
+        let policy = SecurityPolicy::permissive();
+        assert!(policy.check("subprocess"));
+        assert!(policy.check_command("npx"));
+        assert!(policy.check("command:npx"));
+    }
+
+    #[test]
+    fn test_command_whitelist() {
+        let mut policy = SecurityPolicy::sandbox();
+        policy.allow_subprocess = true;
+        policy.allowed_commands = vec!["npx".to_string(), "node".to_string()];
+        assert!(policy.check_command("npx"));
+        assert!(policy.check_command("node"));
+        assert!(!policy.check_command("bash"));
+        assert!(policy.check("command:npx"));
+        assert!(!policy.check("command:bash"));
+    }
+
+    #[test]
+    fn test_empty_whitelist_allows_all() {
+        let mut policy = SecurityPolicy::sandbox();
+        policy.allow_subprocess = true;
+        // allowed_commands is empty by default
+        assert!(policy.check_command("npx"));
+        assert!(policy.check_command("anything"));
+        assert!(policy.check("command:whatever"));
     }
 }

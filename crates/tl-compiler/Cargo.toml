@@ -37,7 +37,7 @@ cranelift-jit = { version = "0.116", optional = true }
 cranelift-module = { version = "0.116", optional = true }
 target-lexicon = { version = "0.13", optional = true }
 rayon = { version = "1", optional = true }
-reqwest = { version = "0.12", features = ["blocking", "rustls-tls"], optional = true }
+reqwest = { version = "0.13", features = ["blocking", "rustls"], optional = true }
 
 # Feature-gated optional deps
 pyo3 = { version = "0.23", features = ["auto-initialize"], optional = true }
@@ -46,6 +46,7 @@ arrow-array = { version = "53", optional = true }
 arrow-schema = { version = "53", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "time", "fs", "sync"], optional = true }
 tl-gpu = { path = "../tl-gpu", version = "0.3.0", optional = true }
+tl-mcp = { path = "../tl-mcp", version = "0.3.0", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -72,3 +73,4 @@ sftp = ["tl-data/sftp"]
 python = ["pyo3", "arrow-ipc", "arrow-array", "arrow-schema"]
 async-runtime = ["tokio"]
 gpu = ["dep:tl-gpu", "native"]
+mcp = ["dep:tl-mcp"]
