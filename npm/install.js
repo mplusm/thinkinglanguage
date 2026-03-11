@@ -8,7 +8,7 @@ const https = require("https");
 const os = require("os");
 const zlib = require("zlib");
 
-const RELEASE_VERSION = "v0.3.0";
+const RELEASE_VERSION = "v0.3.1";
 const REPO = "mplusm/thinkinglanguage";
 const NATIVE_DIR = path.join(__dirname, "native");
 const BIN_PATH = path.join(NATIVE_DIR, os.platform() === "win32" ? "tl.exe" : "tl");
