@@ -11,10 +11,11 @@ use std::sync::Arc;
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ClientCapabilities, ClientInfo,
-    GetPromptRequestParams, GetPromptResult, Implementation, ReadResourceRequestParams,
-    ReadResourceResult, ServerInfo, Tool,
+    CreateMessageRequestParams, CreateMessageResult, ErrorData, GetPromptRequestParams,
+    GetPromptResult, Implementation, ReadResourceRequestParams, ReadResourceResult, Role,
+    SamplingCapability, SamplingMessage, SamplingMessageContent, ServerInfo, Tool,
 };
-use rmcp::service::{RoleClient, RunningService};
+use rmcp::service::{RoleClient, RequestContext, RunningService};
 use rmcp::transport::TokioChildProcess;
 use rmcp::{ClientHandler, ServiceExt};
 use tl_errors::security::SecurityPolicy;
@@ -35,23 +36,169 @@ const TOOL_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60
 const METADATA_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 // ---------------------------------------------------------------------------
-// Client handler (minimal — we just identify ourselves)
+// Sampling types
 // ---------------------------------------------------------------------------
 
-/// Minimal MCP client handler for TL.
+/// Request for LLM completion from an MCP server.
 ///
-/// Returns default/error for all server-initiated requests (sampling,
-/// elicitation, roots). Only provides client identification via `get_info()`.
+/// Uses only primitive types so tl-mcp does not depend on tl-ai.
 #[derive(Debug, Clone)]
-pub struct TlClientHandler;
+pub struct SamplingRequest {
+    /// Conversation messages as (role, content) pairs.
+    pub messages: Vec<(String, String)>,
+    /// Optional system prompt to guide model behavior.
+    pub system_prompt: Option<String>,
+    /// Maximum tokens to generate.
+    pub max_tokens: u32,
+    /// Temperature for controlling randomness (0.0 to 1.0).
+    pub temperature: Option<f64>,
+    /// Hint for which model to use (e.g. "claude-sonnet-4-20250514").
+    pub model_hint: Option<String>,
+    /// Sequences that should stop generation.
+    pub stop_sequences: Option<Vec<String>>,
+}
+
+/// Response from LLM completion.
+#[derive(Debug, Clone)]
+pub struct SamplingResponse {
+    /// The model that produced this response.
+    pub model: String,
+    /// The generated text content.
+    pub content: String,
+    /// Reason generation stopped (e.g. "endTurn", "maxTokens").
+    pub stop_reason: Option<String>,
+}
+
+/// Callback type for handling sampling requests.
+///
+/// MCP servers can request LLM completions from the client via the
+/// `sampling/createMessage` method. This callback bridges that request
+/// to whatever LLM backend the host provides (e.g. tl-ai).
+pub type SamplingCallback =
+    Arc<dyn Fn(SamplingRequest) -> Result<SamplingResponse, String> + Send + Sync>;
+
+// ---------------------------------------------------------------------------
+// Client handler
+// ---------------------------------------------------------------------------
+
+/// MCP client handler for TL.
+///
+/// Provides client identification via `get_info()` and optionally handles
+/// `sampling/createMessage` requests from the server when a [`SamplingCallback`]
+/// is configured.
+pub struct TlClientHandler {
+    /// Optional callback for handling sampling requests from the server.
+    pub(crate) sampling_callback: Option<SamplingCallback>,
+}
+
+impl std::fmt::Debug for TlClientHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TlClientHandler")
+            .field("has_sampling", &self.sampling_callback.is_some())
+            .finish()
+    }
+}
+
+impl TlClientHandler {
+    /// Create a new handler with no sampling support.
+    pub fn new() -> Self {
+        Self {
+            sampling_callback: None,
+        }
+    }
+
+    /// Configure a sampling callback for handling `sampling/createMessage`.
+    pub fn with_sampling(mut self, cb: SamplingCallback) -> Self {
+        self.sampling_callback = Some(cb);
+        self
+    }
+}
+
+impl Default for TlClientHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ClientHandler for TlClientHandler {
     fn get_info(&self) -> ClientInfo {
+        let mut caps = ClientCapabilities::default();
+        if self.sampling_callback.is_some() {
+            caps.sampling = Some(SamplingCapability::default());
+        }
         ClientInfo::new(
-            ClientCapabilities::default(),
+            caps,
             Implementation::new("tl", env!("CARGO_PKG_VERSION"))
                 .with_title("ThinkingLanguage MCP Client"),
         )
+    }
+
+    fn create_message(
+        &self,
+        params: CreateMessageRequestParams,
+        _context: RequestContext<RoleClient>,
+    ) -> impl Future<Output = Result<CreateMessageResult, ErrorData>> + Send + '_ {
+        let result = match &self.sampling_callback {
+            Some(cb) => {
+                // Convert SamplingMessage list to (role, content) pairs
+                let messages: Vec<(String, String)> = params
+                    .messages
+                    .iter()
+                    .map(|m| {
+                        let role = match m.role {
+                            Role::User => "user".to_string(),
+                            Role::Assistant => "assistant".to_string(),
+                        };
+                        // Extract text from content (may be Single or Multiple)
+                        let content: String = m
+                            .content
+                            .iter()
+                            .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
+                            .collect::<Vec<_>>()
+                            .join("");
+                        (role, content)
+                    })
+                    .collect();
+
+                // Extract model hint from model_preferences
+                let model_hint = params
+                    .model_preferences
+                    .as_ref()
+                    .and_then(|p| p.hints.as_ref())
+                    .and_then(|h| h.first())
+                    .and_then(|h| h.name.clone());
+
+                let req = SamplingRequest {
+                    messages,
+                    system_prompt: params.system_prompt.clone(),
+                    max_tokens: params.max_tokens,
+                    temperature: params.temperature.map(|t| t as f64),
+                    model_hint,
+                    stop_sequences: params.stop_sequences.clone(),
+                };
+
+                match cb(req) {
+                    Ok(resp) => {
+                        let mut result = CreateMessageResult::new(
+                            SamplingMessage::new(
+                                Role::Assistant,
+                                SamplingMessageContent::text(resp.content),
+                            ),
+                            resp.model,
+                        );
+                        if let Some(reason) = resp.stop_reason {
+                            result = result.with_stop_reason(reason);
+                        }
+                        Ok(result)
+                    }
+                    Err(e) => Err(ErrorData::internal_error(e, None)),
+                }
+            }
+            None => Err(ErrorData::method_not_found::<
+                rmcp::model::CreateMessageRequestMethod,
+            >()),
+        };
+        std::future::ready(result)
     }
 }
 
@@ -111,6 +258,29 @@ impl McpClient {
         args: &[String],
         security_policy: Option<&SecurityPolicy>,
     ) -> Result<Self, McpError> {
+        Self::connect_with_sampling(command, args, security_policy, None)
+    }
+
+    /// Connect to an MCP server by spawning a subprocess, with optional
+    /// sampling callback for handling `sampling/createMessage` requests.
+    ///
+    /// 1. Checks [`SecurityPolicy`] (if provided) — denies if subprocess
+    ///    execution or the specific command is blocked.
+    /// 2. Spawns the command as a child process with stdio piped.
+    /// 3. Performs the MCP 3-step handshake via rmcp's `ServiceExt::serve()`.
+    /// 4. Caches the server info from the handshake response.
+    ///
+    /// # Arguments
+    /// * `command` — The executable to spawn (e.g. `"npx"`, `"node"`).
+    /// * `args` — Arguments to pass to the executable.
+    /// * `security_policy` — Optional policy to enforce subprocess restrictions.
+    /// * `sampling_cb` — Optional callback for LLM sampling requests from the server.
+    pub fn connect_with_sampling(
+        command: &str,
+        args: &[String],
+        security_policy: Option<&SecurityPolicy>,
+        sampling_cb: Option<SamplingCallback>,
+    ) -> Result<Self, McpError> {
         // --- Security check ---
         if let Some(policy) = security_policy {
             if !policy.check_command(command) {
@@ -128,6 +298,12 @@ impl McpClient {
             .map_err(|e| McpError::RuntimeError(e.to_string()))?;
         let runtime = Arc::new(runtime);
 
+        // --- Build handler ---
+        let handler = match sampling_cb {
+            Some(cb) => TlClientHandler::new().with_sampling(cb),
+            None => TlClientHandler::new(),
+        };
+
         // --- Spawn subprocess and perform handshake ---
         let (service, server_info) = runtime.block_on(async {
             // Build the tokio Command
@@ -140,7 +316,7 @@ impl McpClient {
             })?;
 
             // Perform 3-step handshake with timeout
-            match tokio::time::timeout(CONNECT_TIMEOUT, TlClientHandler.serve(transport)).await {
+            match tokio::time::timeout(CONNECT_TIMEOUT, handler.serve(transport)).await {
                 Ok(Ok(service)) => {
                     let server_info = service.peer().peer_info().cloned();
                     Ok::<_, McpError>((service, server_info))
@@ -169,6 +345,17 @@ impl McpClient {
         security_policy: Option<&SecurityPolicy>,
         runtime: Arc<tokio::runtime::Runtime>,
     ) -> Result<Self, McpError> {
+        Self::connect_with_runtime_and_sampling(command, args, security_policy, runtime, None)
+    }
+
+    /// Connect to an MCP server using an existing tokio runtime and optional sampling.
+    pub fn connect_with_runtime_and_sampling(
+        command: &str,
+        args: &[String],
+        security_policy: Option<&SecurityPolicy>,
+        runtime: Arc<tokio::runtime::Runtime>,
+        sampling_cb: Option<SamplingCallback>,
+    ) -> Result<Self, McpError> {
         // --- Security check ---
         if let Some(policy) = security_policy {
             if !policy.check_command(command) {
@@ -178,6 +365,12 @@ impl McpClient {
                 )));
             }
         }
+
+        // --- Build handler ---
+        let handler = match sampling_cb {
+            Some(cb) => TlClientHandler::new().with_sampling(cb),
+            None => TlClientHandler::new(),
+        };
 
         // --- Spawn subprocess and perform handshake ---
         let (service, server_info) = runtime.block_on(async {
@@ -189,7 +382,7 @@ impl McpClient {
             })?;
 
             // Perform 3-step handshake with timeout
-            match tokio::time::timeout(CONNECT_TIMEOUT, TlClientHandler.serve(transport)).await {
+            match tokio::time::timeout(CONNECT_TIMEOUT, handler.serve(transport)).await {
                 Ok(Ok(service)) => {
                     let server_info = service.peer().peer_info().cloned();
                     Ok::<_, McpError>((service, server_info))
@@ -220,6 +413,14 @@ impl McpClient {
     /// * [`McpError::RuntimeError`] — Could not create tokio runtime.
     /// * [`McpError::ConnectionFailed`] — HTTP connection or MCP handshake failed.
     pub fn connect_http(url: &str) -> Result<Self, McpError> {
+        Self::connect_http_with_sampling(url, None)
+    }
+
+    /// Connect to a remote MCP server over HTTP with optional sampling callback.
+    pub fn connect_http_with_sampling(
+        url: &str,
+        sampling_cb: Option<SamplingCallback>,
+    ) -> Result<Self, McpError> {
         let rt = Arc::new(
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -228,7 +429,7 @@ impl McpClient {
                     McpError::RuntimeError(format!("Failed to create runtime: {e}"))
                 })?,
         );
-        Self::connect_http_with_runtime(url, rt)
+        Self::connect_http_with_runtime_and_sampling(url, rt, sampling_cb)
     }
 
     /// Connect to a remote MCP server over HTTP using an existing tokio runtime.
@@ -240,12 +441,25 @@ impl McpClient {
         url: &str,
         runtime: Arc<tokio::runtime::Runtime>,
     ) -> Result<Self, McpError> {
+        Self::connect_http_with_runtime_and_sampling(url, runtime, None)
+    }
+
+    /// Connect to a remote MCP server over HTTP with runtime and optional sampling.
+    pub fn connect_http_with_runtime_and_sampling(
+        url: &str,
+        runtime: Arc<tokio::runtime::Runtime>,
+        sampling_cb: Option<SamplingCallback>,
+    ) -> Result<Self, McpError> {
         let url_str = url.to_string();
+        let handler = match sampling_cb {
+            Some(cb) => TlClientHandler::new().with_sampling(cb),
+            None => TlClientHandler::new(),
+        };
         let (service, server_info) = runtime.block_on(async {
             use rmcp::transport::StreamableHttpClientTransport;
 
             let transport = StreamableHttpClientTransport::from_uri(url_str);
-            match tokio::time::timeout(CONNECT_TIMEOUT, TlClientHandler.serve(transport)).await {
+            match tokio::time::timeout(CONNECT_TIMEOUT, handler.serve(transport)).await {
                 Ok(Ok(service)) => {
                     let info = service.peer_info().cloned();
                     Ok::<_, McpError>((service, info))
@@ -518,8 +732,8 @@ mod tests {
     }
 
     #[test]
-    fn test_client_handler_info() {
-        let handler = TlClientHandler;
+    fn test_client_handler_info_no_sampling() {
+        let handler = TlClientHandler::new();
         let info = handler.get_info();
 
         assert_eq!(info.client_info.name, "tl");
@@ -528,6 +742,50 @@ mod tests {
             info.client_info.title,
             Some("ThinkingLanguage MCP Client".to_string())
         );
+        // No sampling capability when no callback configured
+        assert!(info.capabilities.sampling.is_none());
+    }
+
+    #[test]
+    fn test_client_handler_info_with_sampling() {
+        let cb: SamplingCallback = Arc::new(|_req| {
+            Ok(SamplingResponse {
+                model: "test".to_string(),
+                content: "hello".to_string(),
+                stop_reason: None,
+            })
+        });
+        let handler = TlClientHandler::new().with_sampling(cb);
+        let info = handler.get_info();
+
+        assert_eq!(info.client_info.name, "tl");
+        // Sampling capability advertised when callback is configured
+        assert!(info.capabilities.sampling.is_some());
+    }
+
+    #[test]
+    fn test_sampling_callback_construction() {
+        let cb: SamplingCallback = Arc::new(|req| {
+            Ok(SamplingResponse {
+                model: "test-model".to_string(),
+                content: format!(
+                    "Echo: {}",
+                    req.messages
+                        .last()
+                        .map(|(_, c)| c.as_str())
+                        .unwrap_or("")
+                ),
+                stop_reason: Some("endTurn".to_string()),
+            })
+        });
+        let handler = TlClientHandler::new().with_sampling(cb);
+        assert!(handler.sampling_callback.is_some());
+    }
+
+    #[test]
+    fn test_no_sampling_callback() {
+        let handler = TlClientHandler::new();
+        assert!(handler.sampling_callback.is_none());
     }
 
     #[test]
