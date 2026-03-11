@@ -190,6 +190,60 @@ impl McpClient {
         })
     }
 
+    /// Connect to a remote MCP server over HTTP (Streamable HTTP transport).
+    ///
+    /// Creates a new tokio runtime internally. For sharing an existing runtime,
+    /// use [`connect_http_with_runtime()`](Self::connect_http_with_runtime).
+    ///
+    /// # Arguments
+    /// * `url` — The HTTP(S) URL of the MCP server endpoint (e.g. `"http://localhost:8080/mcp"`).
+    ///
+    /// # Errors
+    /// * [`McpError::RuntimeError`] — Could not create tokio runtime.
+    /// * [`McpError::ConnectionFailed`] — HTTP connection or MCP handshake failed.
+    pub fn connect_http(url: &str) -> Result<Self, McpError> {
+        let rt = Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| {
+                    McpError::RuntimeError(format!("Failed to create runtime: {e}"))
+                })?,
+        );
+        Self::connect_http_with_runtime(url, rt)
+    }
+
+    /// Connect to a remote MCP server over HTTP using an existing tokio runtime.
+    ///
+    /// # Arguments
+    /// * `url` — The HTTP(S) URL of the MCP server endpoint.
+    /// * `runtime` — A shared tokio runtime to use for async operations.
+    pub fn connect_http_with_runtime(
+        url: &str,
+        runtime: Arc<tokio::runtime::Runtime>,
+    ) -> Result<Self, McpError> {
+        let url_str = url.to_string();
+        let (service, server_info) = runtime.block_on(async {
+            use rmcp::transport::StreamableHttpClientTransport;
+
+            let transport = StreamableHttpClientTransport::from_uri(url_str);
+            let service = TlClientHandler
+                .serve(transport)
+                .await
+                .map_err(|e| {
+                    McpError::ConnectionFailed(format!("HTTP connect failed: {e}"))
+                })?;
+            let info = service.peer_info().cloned();
+            Ok::<_, McpError>((service, info))
+        })?;
+
+        Ok(McpClient {
+            runtime,
+            service: Some(service),
+            server_info,
+        })
+    }
+
     // -----------------------------------------------------------------------
     // Operations
     // -----------------------------------------------------------------------

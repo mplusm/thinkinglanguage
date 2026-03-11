@@ -356,3 +356,83 @@ fn test_connect_with_runtime() {
     let tools = client.list_tools().expect("list_tools should succeed");
     assert_eq!(tools.len(), 2);
 }
+
+// ---------------------------------------------------------------------------
+// Test 11: HTTP client-server round-trip
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_http_client_server_roundtrip() {
+    use std::sync::Arc;
+    use tl_mcp::server::{TlServerHandler, ToolDef};
+
+    // Build a server handler with tools
+    let handler = TlServerHandler::builder()
+        .name("http-test-server")
+        .version("0.1.0")
+        .tool(ToolDef {
+            name: "greet".to_string(),
+            description: "Returns a greeting".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"}
+                }
+            }),
+            handler: Arc::new(|args| {
+                let name = args
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("World");
+                Ok(serde_json::json!(format!("Hello, {name}!")))
+            }),
+        })
+        .build();
+
+    // Find an available port
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    // Start HTTP server in background thread
+    let server_handle = std::thread::spawn(move || {
+        tl_mcp::server::serve_http(handler, port)
+    });
+
+    // Give the server a moment to start
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Connect as HTTP client
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = McpClient::connect_http(&url)
+        .expect("HTTP client should connect");
+
+    // Verify connection
+    assert!(client.is_connected(), "HTTP client should be connected");
+
+    let info = client.server_info().expect("Should have server info");
+    assert_eq!(info.server_info.name, "http-test-server");
+
+    // List tools
+    let tools = client.list_tools().expect("list_tools should succeed");
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name.as_ref(), "greet");
+
+    // Call tool
+    let result = client
+        .call_tool("greet", serde_json::json!({"name": "TL"}))
+        .expect("call_tool should succeed");
+    assert_ne!(result.is_error, Some(true));
+    let text = result.content[0].raw.as_text().unwrap();
+    assert!(
+        text.text.contains("Hello, TL!"),
+        "Greet should return Hello, TL!, got: {}",
+        text.text
+    );
+
+    // Cleanup: disconnect (server thread will not stop on its own since
+    // serve_http blocks forever, but the thread will be detached when
+    // the test exits)
+    drop(client);
+    drop(server_handle);
+}
