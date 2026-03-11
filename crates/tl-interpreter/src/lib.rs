@@ -7187,15 +7187,16 @@ impl Interpreter {
                 match &args[0] {
                     Value::McpClient(client) => match client.server_info() {
                         Some(info) => {
-                            let mut pairs: Vec<(String, Value)> = Vec::new();
-                            pairs.push((
-                                "name".to_string(),
-                                Value::String(info.server_info.name.clone()),
-                            ));
-                            pairs.push((
-                                "version".to_string(),
-                                Value::String(info.server_info.version.clone()),
-                            ));
+                            let pairs: Vec<(String, Value)> = vec![
+                                (
+                                    "name".to_string(),
+                                    Value::String(info.server_info.name.clone()),
+                                ),
+                                (
+                                    "version".to_string(),
+                                    Value::String(info.server_info.version.clone()),
+                                ),
+                            ];
                             Ok(Value::Map(pairs))
                         }
                         None => Ok(Value::None),
@@ -7208,12 +7209,12 @@ impl Interpreter {
             #[cfg(feature = "mcp")]
             "mcp_serve" => {
                 // Check network permission
-                if let Some(policy) = &self.security_policy {
-                    if !policy.allow_network {
-                        return Err(runtime_err_s(
-                            "mcp_serve: network access not allowed by security policy",
-                        ));
-                    }
+                if let Some(policy) = &self.security_policy
+                    && !policy.allow_network
+                {
+                    return Err(runtime_err_s(
+                        "mcp_serve: network access not allowed by security policy",
+                    ));
                 }
 
                 if args.is_empty() {
@@ -7265,11 +7266,10 @@ impl Interpreter {
                                 handler = Some(v.clone());
                             }
                             "input_schema" | "parameters" => {
-                                if let Value::String(s) = v {
-                                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s)
-                                    {
-                                        input_schema = parsed;
-                                    }
+                                if let Value::String(s) = v
+                                    && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s)
+                                {
+                                    input_schema = parsed;
                                 }
                             }
                             _ => {}
@@ -7301,23 +7301,18 @@ impl Interpreter {
                 let _server_handle = tl_mcp::server::serve_stdio_background(server_handler);
 
                 // Main dispatch loop: process tool call requests from the MCP server
-                loop {
-                    match rx.recv() {
-                        Ok(req) => {
-                            let result = if let Some(func) = tool_handlers.get(&req.tool_name) {
-                                // Convert JSON args to interpreter Values
-                                let call_args = self.agent_json_to_values(&req.arguments);
-                                match self.call_function_value(func, &call_args) {
-                                    Ok(val) => Ok(serde_json::json!(format!("{val}"))),
-                                    Err(e) => Err(format!("{e}")),
-                                }
-                            } else {
-                                Err(format!("Unknown tool: {}", req.tool_name))
-                            };
-                            let _ = req.response_tx.send(result);
+                while let Ok(req) = rx.recv() {
+                    let result = if let Some(func) = tool_handlers.get(&req.tool_name) {
+                        // Convert JSON args to interpreter Values
+                        let call_args = self.agent_json_to_values(&req.arguments);
+                        match self.call_function_value(func, &call_args) {
+                            Ok(val) => Ok(serde_json::json!(format!("{val}"))),
+                            Err(e) => Err(format!("{e}")),
                         }
-                        Err(_) => break, // Channel closed - client disconnected
-                    }
+                    } else {
+                        Err(format!("Unknown tool: {}", req.tool_name))
+                    };
+                    let _ = req.response_tx.send(result);
                 }
 
                 Ok(Value::None)

@@ -773,6 +773,7 @@ fn main() {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_file(
     path: &str,
     backend: &str,
@@ -1345,17 +1346,15 @@ fn run_models(action: ModelsAction) {
                     "count": names.len(),
                 });
                 println!("{}", serde_json::to_string_pretty(&json).unwrap());
+            } else if names.is_empty() {
+                println!("No models registered.");
+                println!("Models are stored in ~/.tl/models/");
             } else {
-                if names.is_empty() {
-                    println!("No models registered.");
-                    println!("Models are stored in ~/.tl/models/");
-                } else {
-                    println!("Registered models:");
-                    for name in &names {
-                        println!("  {name}");
-                    }
-                    println!("\n{} model(s) total", names.len());
+                println!("Registered models:");
+                for name in &names {
+                    println!("  {name}");
                 }
+                println!("\n{} model(s) total", names.len());
             }
         }
         ModelsAction::Info { name, format } => match registry.get(&name) {
@@ -1409,11 +1408,9 @@ fn run_deploy(file: &str, target: &str, output: &str, format: &str) {
             process::exit(1);
         }
         println!("{}", serde_json::to_string_pretty(&result).unwrap());
-    } else {
-        if let Err(e) = deploy::write_deploy(file, target, output) {
-            eprintln!("Deploy error: {e}");
-            process::exit(1);
-        }
+    } else if let Err(e) = deploy::write_deploy(file, target, output) {
+        eprintln!("Deploy error: {e}");
+        process::exit(1);
     }
 }
 

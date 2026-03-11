@@ -6936,15 +6936,16 @@ impl Vm {
                 match &args[0] {
                     VmValue::McpClient(client) => match client.server_info() {
                         Some(info) => {
-                            let mut pairs: Vec<(Arc<str>, VmValue)> = Vec::new();
-                            pairs.push((
-                                Arc::from("name"),
-                                VmValue::String(Arc::from(info.server_info.name.as_str())),
-                            ));
-                            pairs.push((
-                                Arc::from("version"),
-                                VmValue::String(Arc::from(info.server_info.version.as_str())),
-                            ));
+                            let pairs: Vec<(Arc<str>, VmValue)> = vec![
+                                (
+                                    Arc::from("name"),
+                                    VmValue::String(Arc::from(info.server_info.name.as_str())),
+                                ),
+                                (
+                                    Arc::from("version"),
+                                    VmValue::String(Arc::from(info.server_info.version.as_str())),
+                                ),
+                            ];
                             Ok(VmValue::Map(Box::new(pairs)))
                         }
                         None => Ok(VmValue::None),
@@ -7010,12 +7011,11 @@ impl Vm {
                                 handler = Some(v.clone());
                             }
                             "input_schema" | "parameters" => {
-                                if let VmValue::String(s) = v {
-                                    if let Ok(parsed) =
+                                if let VmValue::String(s) = v
+                                    && let Ok(parsed) =
                                         serde_json::from_str::<serde_json::Value>(s.as_ref())
-                                    {
-                                        input_schema = parsed;
-                                    }
+                                {
+                                    input_schema = parsed;
                                 }
                             }
                             _ => {}
@@ -7047,26 +7047,21 @@ impl Vm {
                 let _server_handle = tl_mcp::server::serve_stdio_background(server_handler);
 
                 // Main dispatch loop: process tool call requests from the MCP server
-                loop {
-                    match rx.recv() {
-                        Ok(req) => {
-                            let result = if let Some(func) = tool_handlers.get(&req.tool_name) {
-                                // Convert JSON args to VmValue args
-                                let call_args = self.json_to_vm_args(&req.arguments);
-                                match self.call_value(func.clone(), &call_args) {
-                                    Ok(val) => {
-                                        // Convert VmValue to JSON-friendly string
-                                        Ok(serde_json::json!(format!("{val}")))
-                                    }
-                                    Err(e) => Err(format!("{e}")),
-                                }
-                            } else {
-                                Err(format!("Unknown tool: {}", req.tool_name))
-                            };
-                            let _ = req.response_tx.send(result);
+                while let Ok(req) = rx.recv() {
+                    let result = if let Some(func) = tool_handlers.get(&req.tool_name) {
+                        // Convert JSON args to VmValue args
+                        let call_args = self.json_to_vm_args(&req.arguments);
+                        match self.call_value(func.clone(), &call_args) {
+                            Ok(val) => {
+                                // Convert VmValue to JSON-friendly string
+                                Ok(serde_json::json!(format!("{val}")))
+                            }
+                            Err(e) => Err(format!("{e}")),
                         }
-                        Err(_) => break, // Channel closed - client disconnected
-                    }
+                    } else {
+                        Err(format!("Unknown tool: {}", req.tool_name))
+                    };
+                    let _ = req.response_tx.send(result);
                 }
 
                 Ok(VmValue::None)
@@ -7657,12 +7652,10 @@ impl Vm {
                     } else if key.starts_with("mcp_server:") {
                         // MCP server reference — look up variable in globals
                         #[cfg(feature = "mcp")]
-                        if let AstExpr::Ident(var_name) = value.as_ref() {
-                            if let Some(client_val) = self.globals.get(var_name) {
-                                if let VmValue::McpClient(client) = client_val {
-                                    mcp_clients.push(client.clone());
-                                }
-                            }
+                        if let AstExpr::Ident(var_name) = value.as_ref()
+                            && let Some(VmValue::McpClient(client)) = self.globals.get(var_name)
+                        {
+                            mcp_clients.push(client.clone());
                         }
                     } else {
                         match key.as_str() {

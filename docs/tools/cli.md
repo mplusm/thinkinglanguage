@@ -20,6 +20,8 @@ tl run <file>
 | `--strict` | Require type annotations on function parameters |
 | `--sandbox` | Restrict file write and network access |
 | `--allow-connector <type>` | Allow a specific connector in sandbox mode (repeatable) |
+| `--allow-subprocess` | Allow subprocess execution in sandbox mode (needed for MCP stdio transport) |
+| `--allow-command <cmd>` | Allow a specific command in sandbox mode (repeatable, e.g. `--allow-command npx`) |
 
 Examples:
 
@@ -27,6 +29,7 @@ Examples:
 tl run script.tl
 tl run script.tl --backend interp
 tl run script.tl --sandbox --allow-connector postgres
+tl run script.tl --sandbox --allow-subprocess --allow-command npx   # MCP with sandbox
 tl run script.tl --dump-bytecode --strict
 ```
 
@@ -310,4 +313,32 @@ Package              Current      Latest Matching    Latest Available
 -------              -------      ---------------    ----------------
 utils                1.0.0        1.3.0              2.0.0
 helpers              2.1.0        2.1.0              2.1.0  (up to date)
+```
+
+---
+
+## Feature-Gated Capabilities
+
+Some CLI features require building with specific Cargo feature flags:
+
+| Feature | Flag | Enables |
+|---------|------|---------|
+| MCP client/server | `--features mcp` | `mcp_connect`, `mcp_serve`, agent `mcp_servers` field |
+| LLVM compilation | `--features llvm-backend` | `tl compile` subcommand |
+| GPU tensors | `--features gpu` | GPU-accelerated tensor operations |
+| Notebook | `--features notebook` | `tl notebook` subcommand |
+| Async I/O | `--features async-runtime` | Async file/network operations |
+| SQLite | `--features sqlite` | `sqlite_query`, `write_sqlite` builtins |
+| DuckDB | `--features duckdb` | `duckdb_query`, `write_duckdb` builtins |
+| Python FFI | `--features python` | `py_import`, `py_eval`, `py_call` builtins |
+
+```bash
+# Build with MCP support
+cargo build --release --features mcp
+
+# Build with multiple features
+cargo build --release --features "mcp,sqlite,async-runtime"
+
+# Install from crates.io with MCP
+cargo install thinkinglanguage --features mcp
 ```

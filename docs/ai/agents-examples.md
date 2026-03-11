@@ -432,6 +432,131 @@ data
     |> show()
 ```
 
+## Example 11: Agent with MCP Server Tools
+
+Use external MCP servers instead of defining tools in TL. The agent auto-discovers all tools
+from connected servers. Requires `--features mcp`.
+
+```tl
+// Connect to a filesystem MCP server
+let fs = mcp_connect("npx", ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/docs"])
+
+// Agent gets all filesystem tools automatically
+agent file_assistant {
+    model: "gpt-4o",
+    system: "You help users find and read files. Use your tools to browse directories and read file contents.",
+    mcp_servers: [fs],
+    max_turns: 5
+}
+
+let result = run_agent(file_assistant, "Find all CSV files and show me the first one")
+println(result.response)
+
+mcp_disconnect(fs)
+```
+
+The `mcp_servers` field merges external tools with any native `tools { }` block. This lets you
+combine TL functions with MCP server capabilities in a single agent.
+
+## Example 12: Agent with Multiple MCP Servers
+
+Connect to several MCP servers simultaneously -- tools from all servers are merged.
+
+```tl
+// File system tools
+let fs = mcp_connect("npx", ["-y", "@modelcontextprotocol/server-filesystem", "/data"])
+
+// Database tools (HTTP-based MCP server)
+let db = mcp_connect("http://localhost:8080/mcp")
+
+agent analyst {
+    model: "gpt-4o",
+    system: "You are a data analyst. You can read files and query databases to answer questions.",
+    mcp_servers: [fs, db],
+    max_turns: 8
+}
+
+let result = run_agent(analyst, "Read the schema from config.json, then query the users table")
+println(result.response)
+
+mcp_disconnect(fs)
+mcp_disconnect(db)
+```
+
+## Example 13: MCP + Native Tools Combined
+
+Mix MCP server tools with locally-defined TL tool functions in the same agent.
+
+```tl
+let fs = mcp_connect("npx", ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"])
+
+// A local TL function as a tool
+fn summarize(text) {
+    let words = split(text, " ")
+    if len(words) > 50 {
+        join(slice(words, 0, 50), " ") + "..."
+    } else {
+        text
+    }
+}
+
+agent reader {
+    model: "gpt-4o",
+    system: "Read files and summarize them for the user.",
+    mcp_servers: [fs],
+    tools {
+        summarize: {
+            description: "Summarize a long text to ~50 words",
+            parameters: {
+                type: "object",
+                properties: {
+                    text: { type: "string", description: "Text to summarize" }
+                },
+                required: ["text"]
+            }
+        }
+    },
+    max_turns: 5
+}
+
+let result = run_agent(reader, "Read /tmp/report.txt and give me a summary")
+println(result.response)
+mcp_disconnect(fs)
+```
+
+## Example 14: MCP Client Without Agents
+
+Use MCP servers directly without the agent framework -- call tools, read resources, and use prompts manually.
+
+```tl
+let client = mcp_connect("npx", ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"])
+
+// Discover available tools
+let tools = mcp_list_tools(client)
+println("Available tools:")
+for tool in tools {
+    println("  " + tool["name"] + " - " + tool["description"])
+}
+
+// Call a tool directly
+let result = mcp_call_tool(client, "list_directory", {"path": "/tmp"})
+println(result)
+
+// Check server health
+let info = mcp_server_info(client)
+println("Server: " + info["name"] + " v" + info["version"])
+mcp_ping(client)
+
+// Resources (if the server supports them)
+let resources = mcp_list_resources(client)
+for r in resources {
+    let content = mcp_read_resource(client, r["uri"])
+    println(r["name"] + ": " + content)
+}
+
+mcp_disconnect(client)
+```
+
 ## Running the Examples
 
 ### Prerequisites
@@ -448,7 +573,12 @@ export TL_ANTHROPIC_KEY="sk-ant-..."
 # No API key needed, just ensure Ollama is running
 ```
 
-2. Run an example:
+2. For MCP examples (11-14), build with MCP support:
+```bash
+cargo build --release --features mcp
+```
+
+3. Run an example:
 ```bash
 tl run examples/agent_01_basic.tl
 ```

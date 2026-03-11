@@ -59,8 +59,8 @@ sudo mv tl /usr/local/bin/
 
 ```bash
 cargo install thinkinglanguage
-# With SQLite support
-cargo install thinkinglanguage --features sqlite
+# With SQLite and MCP support
+cargo install thinkinglanguage --features "sqlite,mcp"
 ```
 
 ### From source
@@ -68,7 +68,7 @@ cargo install thinkinglanguage --features sqlite
 ```bash
 git clone https://github.com/mplusm/thinkinglanguage.git
 cd thinkinglanguage
-cargo build --release --features sqlite
+cargo build --release --features "sqlite,mcp"
 ```
 
 ## Quick Start
@@ -143,6 +143,44 @@ agent research_bot {
 let result = run_agent(research_bot, "What is the capital of France?")
 println(result.response)
 ```
+
+### MCP Integration (Model Context Protocol)
+
+Connect to external tool servers or expose TL functions as an MCP server.
+Requires building with `--features mcp`.
+
+```
+// Connect to an MCP server and use its tools
+let client = mcp_connect("npx", ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"])
+
+let tools = mcp_list_tools(client)
+for tool in tools {
+    println(tool["name"] + " - " + tool["description"])
+}
+
+let result = mcp_call_tool(client, "read_file", {"path": "/tmp/data.txt"})
+println(result)
+
+mcp_disconnect(client)
+```
+
+```
+// Use MCP servers with AI agents — tools are auto-discovered
+let fs_server = mcp_connect("npx", ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"])
+
+agent file_bot {
+    model: "gpt-4o",
+    system: "You help users manage files. Use your tools to read and list files.",
+    mcp_servers: [fs_server],
+    max_turns: 5
+}
+
+let result = run_agent(file_bot, "List all .csv files in /tmp")
+println(result.response)
+mcp_disconnect(fs_server)
+```
+
+See the full [MCP guide](docs/tools/mcp.md) for server mode, resources, prompts, and more.
 
 ### Streaming
 

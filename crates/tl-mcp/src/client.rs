@@ -282,13 +282,13 @@ impl McpClient {
         sampling_cb: Option<SamplingCallback>,
     ) -> Result<Self, McpError> {
         // --- Security check ---
-        if let Some(policy) = security_policy {
-            if !policy.check_command(command) {
-                return Err(McpError::PermissionDenied(format!(
-                    "Command '{}' is not allowed by security policy",
-                    command
-                )));
-            }
+        if let Some(policy) = security_policy
+            && !policy.check_command(command)
+        {
+            return Err(McpError::PermissionDenied(format!(
+                "Command '{}' is not allowed by security policy",
+                command
+            )));
         }
 
         // --- Create tokio runtime ---
@@ -358,13 +358,13 @@ impl McpClient {
         sampling_cb: Option<SamplingCallback>,
     ) -> Result<Self, McpError> {
         // --- Security check ---
-        if let Some(policy) = security_policy {
-            if !policy.check_command(command) {
-                return Err(McpError::PermissionDenied(format!(
-                    "Command '{}' is not allowed by security policy",
-                    command
-                )));
-            }
+        if let Some(policy) = security_policy
+            && !policy.check_command(command)
+        {
+            return Err(McpError::PermissionDenied(format!(
+                "Command '{}' is not allowed by security policy",
+                command
+            )));
         }
 
         // --- Build handler ---
@@ -693,7 +693,7 @@ impl Drop for McpClient {
             let rt = self.runtime.clone();
             // Use a separate thread to avoid panic if we're already in an async context.
             std::thread::spawn(move || {
-                let _ = rt.block_on(async {
+                rt.block_on(async {
                     let _ = service.cancel().await;
                 });
             });
