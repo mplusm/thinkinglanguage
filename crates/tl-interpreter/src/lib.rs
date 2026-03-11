@@ -1291,6 +1291,9 @@ pub struct Interpreter {
     /// Tokio runtime for async builtins (lazily initialized)
     #[cfg(feature = "async-runtime")]
     runtime: Option<Arc<tokio::runtime::Runtime>>,
+    /// MCP clients associated with agents (agent_name -> clients)
+    #[cfg(feature = "mcp")]
+    mcp_agent_clients: HashMap<String, Vec<Arc<tl_mcp::McpClient>>>,
 }
 
 impl Interpreter {
@@ -1312,6 +1315,8 @@ impl Interpreter {
             security_policy: None,
             #[cfg(feature = "async-runtime")]
             runtime: None,
+            #[cfg(feature = "mcp")]
+            mcp_agent_clients: HashMap::new(),
         }
     }
 
@@ -1605,6 +1610,7 @@ impl Interpreter {
                 output_format,
                 on_tool_call,
                 on_complete,
+                mcp_servers,
             } => self.exec_agent(
                 name,
                 model,
@@ -1618,6 +1624,7 @@ impl Interpreter {
                 output_format,
                 on_tool_call,
                 on_complete,
+                mcp_servers,
             ),
             StmtKind::SourceDecl {
                 name,
@@ -6951,19 +6958,25 @@ impl Interpreter {
             #[cfg(feature = "mcp")]
             "mcp_connect" => {
                 if args.is_empty() {
-                    return Err(runtime_err_s("mcp_connect expects at least 1 argument: command"));
+                    return Err(runtime_err_s("mcp_connect expects at least 1 argument: command or URL"));
                 }
                 let command = match &args[0] {
                     Value::String(s) => s.clone(),
-                    _ => return Err(runtime_err_s("mcp_connect: command must be a string")),
+                    _ => return Err(runtime_err_s("mcp_connect: first argument must be a string")),
                 };
-                let cmd_args: Vec<String> = args[1..].iter().map(|a| match a {
-                    Value::String(s) => s.clone(),
-                    other => format!("{}", other),
-                }).collect();
-                let client = tl_mcp::McpClient::connect(
-                    &command, &cmd_args, self.security_policy.as_ref(),
-                ).map_err(|e| runtime_err(format!("mcp_connect failed: {e}")))?;
+                // Auto-detect HTTP URL vs subprocess command
+                let client = if command.starts_with("http://") || command.starts_with("https://") {
+                    tl_mcp::McpClient::connect_http(&command)
+                        .map_err(|e| runtime_err(format!("mcp_connect (HTTP) failed: {e}")))?
+                } else {
+                    let cmd_args: Vec<String> = args[1..].iter().map(|a| match a {
+                        Value::String(s) => s.clone(),
+                        other => format!("{}", other),
+                    }).collect();
+                    tl_mcp::McpClient::connect(
+                        &command, &cmd_args, self.security_policy.as_ref(),
+                    ).map_err(|e| runtime_err(format!("mcp_connect failed: {e}")))?
+                };
                 Ok(Value::McpClient(Arc::new(client)))
             }
             #[cfg(feature = "mcp")]
@@ -7069,7 +7082,126 @@ impl Interpreter {
                 }
             }
             #[cfg(feature = "mcp")]
-            "mcp_serve" => Err(runtime_err_s("mcp_serve not yet implemented (Phase 6)")),
+            "mcp_serve" => {
+                // Check network permission
+                if let Some(policy) = &self.security_policy {
+                    if !policy.allow_network {
+                        return Err(runtime_err_s(
+                            "mcp_serve: network access not allowed by security policy",
+                        ));
+                    }
+                }
+
+                if args.is_empty() {
+                    return Err(runtime_err_s(
+                        "mcp_serve expects 1 argument: list of tool definitions",
+                    ));
+                }
+                let tool_list = match &args[0] {
+                    Value::List(items) => items.clone(),
+                    _ => {
+                        return Err(runtime_err_s(
+                            "mcp_serve: argument must be a list of tool maps",
+                        ))
+                    }
+                };
+
+                // Extract tool definitions and function values
+                let mut channel_tools = Vec::new();
+                let mut tool_handlers: std::collections::HashMap<String, Value> =
+                    std::collections::HashMap::new();
+
+                for item in &tool_list {
+                    let pairs = match item {
+                        Value::Map(p) => p,
+                        _ => {
+                            return Err(runtime_err_s(
+                                "mcp_serve: each tool must be a map with name, description, handler",
+                            ))
+                        }
+                    };
+                    let mut tname = String::new();
+                    let mut description = String::new();
+                    let mut handler = None;
+                    let mut input_schema = serde_json::json!({"type": "object"});
+
+                    for (k, v) in pairs {
+                        match k.as_str() {
+                            "name" => {
+                                if let Value::String(s) = v {
+                                    tname = s.clone();
+                                }
+                            }
+                            "description" => {
+                                if let Value::String(s) = v {
+                                    description = s.clone();
+                                }
+                            }
+                            "handler" => {
+                                handler = Some(v.clone());
+                            }
+                            "input_schema" | "parameters" => {
+                                if let Value::String(s) = v {
+                                    if let Ok(parsed) =
+                                        serde_json::from_str::<serde_json::Value>(s)
+                                    {
+                                        input_schema = parsed;
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if tname.is_empty() {
+                        return Err(runtime_err_s("mcp_serve: tool missing 'name'"));
+                    }
+                    if let Some(h) = handler {
+                        tool_handlers.insert(tname.clone(), h);
+                    }
+
+                    channel_tools.push(tl_mcp::server::ChannelToolDef {
+                        name: tname,
+                        description,
+                        input_schema,
+                    });
+                }
+
+                // Build server with channel-based tools
+                let (builder, rx) = tl_mcp::server::TlServerHandler::builder()
+                    .name("tl-mcp-server")
+                    .version("1.0.0")
+                    .channel_tools(channel_tools);
+                let server_handler = builder.build();
+
+                // Start server on background thread
+                let _server_handle = tl_mcp::server::serve_stdio_background(server_handler);
+
+                // Main dispatch loop: process tool call requests from the MCP server
+                loop {
+                    match rx.recv() {
+                        Ok(req) => {
+                            let result =
+                                if let Some(func) = tool_handlers.get(&req.tool_name) {
+                                    // Convert JSON args to interpreter Values
+                                    let call_args = self.agent_json_to_values(&req.arguments);
+                                    match self.call_function_value(func, &call_args) {
+                                        Ok(val) => {
+                                            Ok(serde_json::json!(format!("{val}")))
+                                        }
+                                        Err(e) => Err(format!("{e}")),
+                                    }
+                                } else {
+                                    Err(format!("Unknown tool: {}", req.tool_name))
+                                };
+                            let _ = req.response_tx.send(result);
+                        }
+                        Err(_) => break, // Channel closed - client disconnected
+                    }
+                }
+
+                Ok(Value::None)
+            }
 
             _ => Err(runtime_err(format!("Unknown builtin: {name}"))),
         }
@@ -10087,6 +10219,7 @@ impl Interpreter {
         output_format: &Option<String>,
         on_tool_call: &Option<Vec<Stmt>>,
         on_complete: &Option<Vec<Stmt>>,
+        mcp_servers: &[Expr],
     ) -> Result<Signal, TlError> {
         let mut agent_tools = Vec::new();
         for (tool_name, tool_expr) in tools {
@@ -10098,6 +10231,22 @@ impl Interpreter {
                 parameters: params,
             });
         }
+
+        // Resolve MCP server clients from expressions
+        #[cfg(feature = "mcp")]
+        let mcp_clients: Vec<Arc<tl_mcp::McpClient>> = {
+            let mut clients = Vec::new();
+            for expr in mcp_servers {
+                let val = self.eval_expr(expr)?;
+                if let Value::McpClient(client) = val {
+                    clients.push(client);
+                }
+            }
+            clients
+        };
+        #[cfg(not(feature = "mcp"))]
+        let _ = mcp_servers;
+
         let def = tl_stream::AgentDef {
             name: name.to_string(),
             model: model.to_string(),
@@ -10110,6 +10259,13 @@ impl Interpreter {
             api_key: api_key.clone(),
             output_format: output_format.clone(),
         };
+
+        // Store MCP clients for this agent
+        #[cfg(feature = "mcp")]
+        if !mcp_clients.is_empty() {
+            self.mcp_agent_clients.insert(name.to_string(), mcp_clients);
+        }
+
         self.env.set(name.to_string(), Value::Agent(def));
 
         // Store lifecycle hooks as functions
@@ -10211,7 +10367,9 @@ impl Interpreter {
             "openai"
         };
 
-        let tools_json: Vec<serde_json::Value> = agent_def
+        // Build tools JSON in OpenAI format from TL-declared tools
+        #[allow(unused_mut)]
+        let mut tools_json: Vec<serde_json::Value> = agent_def
             .tools
             .iter()
             .map(|t| {
@@ -10225,6 +10383,31 @@ impl Interpreter {
                 })
             })
             .collect();
+
+        // Add MCP tools from connected servers
+        #[cfg(feature = "mcp")]
+        let mcp_clients = self.mcp_agent_clients.get(&agent_def.name).cloned().unwrap_or_default();
+        #[cfg(feature = "mcp")]
+        let mcp_tool_dispatch: std::collections::HashMap<String, usize> = {
+            let mut dispatch = std::collections::HashMap::new();
+            for (client_idx, client) in mcp_clients.iter().enumerate() {
+                if let Ok(mcp_tools) = client.list_tools() {
+                    for tool in mcp_tools {
+                        let tool_name = tool.name.to_string();
+                        tools_json.push(serde_json::json!({
+                            "type": "function",
+                            "function": {
+                                "name": &tool_name,
+                                "description": tool.description.as_deref().unwrap_or(""),
+                                "parameters": serde_json::Value::Object((*tool.input_schema).clone())
+                            }
+                        }));
+                        dispatch.insert(tool_name, client_idx);
+                    }
+                }
+            }
+            dispatch
+        };
 
         // Seed messages with history if provided
         let mut messages: Vec<serde_json::Value> = Vec::new();
@@ -10293,27 +10476,65 @@ impl Interpreter {
                     }).collect();
                     messages.push(serde_json::json!({"role": "assistant", "tool_calls": tc_json}));
 
-                    let declared: Vec<&str> =
-                        agent_def.tools.iter().map(|t| t.name.as_str()).collect();
+                    // Build declared tool names (TL tools + MCP tools)
+                    #[allow(unused_mut)]
+                    let mut declared: Vec<String> =
+                        agent_def.tools.iter().map(|t| t.name.clone()).collect();
+                    #[cfg(feature = "mcp")]
+                    {
+                        for name in mcp_tool_dispatch.keys() {
+                            declared.push(name.clone());
+                        }
+                    }
+
                     let mut results: Vec<(String, String)> = Vec::new();
                     for tc in &tool_calls {
-                        if !declared.contains(&tc.name.as_str()) {
+                        if !declared.iter().any(|d| d == &tc.name) {
                             results.push((
                                 tc.name.clone(),
                                 format!("Error: '{}' not in declared tools", tc.name),
                             ));
                             continue;
                         }
-                        let func = self
-                            .env
-                            .get(&tc.name)
-                            .ok_or_else(|| {
-                                runtime_err(format!("Agent tool function '{}' not found", tc.name))
-                            })?
-                            .clone();
-                        let call_args = self.agent_json_to_values(&tc.input);
-                        let result = self.call_function_value(&func, &call_args)?;
-                        let result_str = format!("{result}");
+
+                        // Try MCP dispatch first, then fall back to TL function lookup
+                        let result_str;
+                        #[cfg(feature = "mcp")]
+                        {
+                            if let Some(&client_idx) = mcp_tool_dispatch.get(tc.name.as_str()) {
+                                let mcp_result = mcp_clients[client_idx]
+                                    .call_tool(&tc.name, tc.input.clone())
+                                    .map_err(|e| runtime_err(format!("MCP tool error: {e}")))?;
+                                result_str = mcp_result.content.iter()
+                                    .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                            } else {
+                                let func = self
+                                    .env
+                                    .get(&tc.name)
+                                    .ok_or_else(|| {
+                                        runtime_err(format!("Agent tool function '{}' not found", tc.name))
+                                    })?
+                                    .clone();
+                                let call_args = self.agent_json_to_values(&tc.input);
+                                let result = self.call_function_value(&func, &call_args)?;
+                                result_str = format!("{result}");
+                            }
+                        }
+                        #[cfg(not(feature = "mcp"))]
+                        {
+                            let func = self
+                                .env
+                                .get(&tc.name)
+                                .ok_or_else(|| {
+                                    runtime_err(format!("Agent tool function '{}' not found", tc.name))
+                                })?
+                                .clone();
+                            let call_args = self.agent_json_to_values(&tc.input);
+                            let result = self.call_function_value(&func, &call_args)?;
+                            result_str = format!("{result}");
+                        }
 
                         // Call on_tool_call lifecycle hook if defined
                         let hook_name = format!("__agent_{}_on_tool_call__", agent_def.name);
