@@ -9,7 +9,7 @@ ThinkingLanguage (TL) replaces the fragile Python + SQL + YAML + Spark glue-code
 ## Highlights
 
 - **Native tables** — columnar data backed by Apache Arrow/DataFusion with pipe-based transforms
-- **AI/ML built-in** — tensors, model training (linfa), ONNX inference, embeddings, LLM APIs, AI agents with tool-use
+- **AI/ML built-in** — tensors, model training (linfa), ONNX inference, embeddings, LLM APIs, AI agents with tool-use, MCP client/server
 - **Streaming & Pipelines** — ETL/ELT constructs, windowed streams, Kafka integration
 - **GPU acceleration** — wgpu-based tensor operations on Vulkan/Metal/DX12/WebGPU
 - **Multiple backends** — bytecode VM (default), LLVM AOT native compilation, WASM browser target
@@ -206,6 +206,7 @@ TL uses Cargo feature flags for optional integrations:
 | `gpu` | GPU tensor operations | wgpu, bytemuck |
 | `llvm-backend` | LLVM AOT compilation | inkwell, llvm-sys |
 | `async-runtime` | Tokio async I/O | tokio, reqwest |
+| `mcp` | Model Context Protocol client/server | rmcp, tokio, axum |
 | `notebook` | Interactive notebook TUI | ratatui, crossterm |
 | `registry` | Package registry client | reqwest |
 
@@ -272,6 +273,7 @@ crates/
   tl-gpu/            GPU tensor operations (wgpu)
   tl-lsp/            Language Server Protocol
   tl-package/        Package manager
+  tl-mcp/            MCP client/server (rmcp)
   tl-registry/       Package registry server
   tl-cli/            CLI entry point
 editors/
@@ -289,7 +291,7 @@ Detailed documentation is available in the [docs/](docs/) directory:
 - **[Language Guide](docs/language/)** — Syntax, types, functions, structs, generics, error handling
 - **[Data Engineering](docs/data/)** — Tables, connectors, streaming, data quality
 - **[AI & ML](docs/ai/)** — Tensors, model training, ONNX inference, [AI agents](docs/ai/agents.md)
-- **[Tools & Ecosystem](docs/tools/)** — CLI, package manager, notebook, LSP
+- **[Tools & Ecosystem](docs/tools/)** — CLI, package manager, notebook, LSP, [MCP integration](docs/tools/mcp.md)
 - **[Advanced Topics](docs/advanced/)** — Backends, Python FFI, security, schema evolution
 
 ## Tests

@@ -60,6 +60,7 @@ agent <name> {
     model: "<model-name>",              // required
     system: "<system-prompt>",          // optional
     tools { ... },                      // optional
+    mcp_servers: [client1, client2],    // optional — MCP server connections
     max_turns: <integer>,               // optional (default: 10)
     temperature: <float>,               // optional
     max_tokens: <integer>,              // optional
@@ -82,6 +83,7 @@ agent <name> {
 | `max_tokens` | integer | no | provider default | Maximum tokens in each LLM response |
 | `base_url` | string | no | provider default | Custom API endpoint (any OpenAI-compatible URL) |
 | `api_key` | string | no | from env vars | API key (overrides environment variables) |
+| `mcp_servers` | list | no | none | List of `mcp_client` connections (see [MCP Integration](../tools/mcp.md)) |
 | `on_tool_call` | block | no | none | Code to run after each tool call |
 | `on_complete` | block | no | none | Code to run when the agent produces a final response |
 
@@ -701,6 +703,31 @@ fn risky_operation(input) {
     "Success: " + input
 }
 ```
+
+## MCP Server Integration
+
+Agents can use tools from MCP servers alongside native TL functions. Connect to MCP servers with `mcp_connect` and pass them via the `mcp_servers` field:
+
+```tl
+let fs = mcp_connect("npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp")
+
+agent file_bot {
+    model: "claude-sonnet-4-20250514",
+    system: "You can read and write files.",
+    mcp_servers: [fs],
+    max_turns: 5
+}
+
+let result = run_agent(file_bot, "List all files in /tmp")
+println(result.response)
+mcp_disconnect(fs)
+```
+
+MCP tools are automatically discovered and merged with native tools. The LLM sees a unified tool list and can call both MCP and native tools transparently.
+
+For full MCP documentation including server mode, resources, prompts, and security, see [MCP Integration](../tools/mcp.md).
+
+**Requires:** Build with `--features mcp`.
 
 ## Limitations
 

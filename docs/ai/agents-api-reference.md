@@ -36,6 +36,19 @@ agent <name> {
 
 All fields except `model` are optional. Commas between fields are optional.
 
+With MCP servers:
+
+```
+agent <name> {
+    model: <string>,
+    tools { ... },
+    mcp_servers: [<mcp_client>, ...],
+    ...
+}
+```
+
+See [MCP Integration](../tools/mcp.md) for full MCP documentation.
+
 ---
 
 ## Builtin Functions
@@ -217,6 +230,17 @@ For compiler/VM developers:
 | `BuiltinId::Embed` | 182 | `embed()` |
 | `BuiltinId::HttpRequest` | 183 | `http_request()` |
 | `BuiltinId::RunAgent` | 184 | `run_agent()` |
+| `BuiltinId::McpConnect` | 216 | `mcp_connect()` |
+| `BuiltinId::McpListTools` | 217 | `mcp_list_tools()` |
+| `BuiltinId::McpCallTool` | 218 | `mcp_call_tool()` |
+| `BuiltinId::McpDisconnect` | 219 | `mcp_disconnect()` |
+| `BuiltinId::McpServe` | 220 | `mcp_serve()` |
+| `BuiltinId::McpServerInfo` | 221 | `mcp_server_info()` |
+| `BuiltinId::McpPing` | 222 | `mcp_ping()` |
+| `BuiltinId::McpListResources` | 223 | `mcp_list_resources()` |
+| `BuiltinId::McpReadResource` | 224 | `mcp_read_resource()` |
+| `BuiltinId::McpListPrompts` | 225 | `mcp_list_prompts()` |
+| `BuiltinId::McpGetPrompt` | 226 | `mcp_get_prompt()` |
 
 ---
 

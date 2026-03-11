@@ -37,6 +37,9 @@ cargo build --features gpu
 
 # Python FFI requires Python 3.8+ development headers
 cargo build --features python
+
+# MCP (Model Context Protocol) client/server
+cargo build --features mcp
 ```
 
 ## Running Tests
@@ -91,6 +94,7 @@ As of Phase 33 (with dependency upgrade features):
 | `tl-gpu` | GPU tensor operations (wgpu) |
 | `tl-lsp` | Language Server Protocol server |
 | `tl-package` | Package manager and dependency resolution |
+| `tl-mcp` | MCP client/server (rmcp SDK wrapper) |
 | `tl-registry` | Package registry HTTP server |
 | `tl-cli` | CLI entry point (`tl` binary) |
 
