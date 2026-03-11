@@ -9,12 +9,40 @@
 use std::sync::Arc;
 
 use serde_json::json;
-use tl_mcp::server::{serve_stdio, TlServerHandler, ToolDef};
+use tl_mcp::server::{
+    serve_stdio, PromptArgDef, PromptDef, PromptMessageDef, ResourceDef, TlServerHandler, ToolDef,
+};
 
 fn main() {
     let handler = TlServerHandler::builder()
         .name("test-server")
         .version("1.0.0")
+        .resource(ResourceDef {
+            name: "readme".to_string(),
+            uri: "tl://readme".to_string(),
+            description: Some("Project readme".to_string()),
+            mime_type: Some("text/plain".to_string()),
+            content: "Hello from ThinkingLanguage MCP!".to_string(),
+        })
+        .prompt(PromptDef {
+            name: "greeting".to_string(),
+            description: Some("Generate a greeting".to_string()),
+            arguments: vec![PromptArgDef {
+                name: "name".to_string(),
+                description: Some("Person to greet".to_string()),
+                required: true,
+            }],
+            handler: Arc::new(|args| {
+                let name = args
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("World");
+                Ok(vec![PromptMessageDef {
+                    role: "user".to_string(),
+                    content: format!("Please greet {name} warmly"),
+                }])
+            }),
+        })
         .tool(ToolDef {
             name: "echo".to_string(),
             description: "Returns the input message unchanged".to_string(),
