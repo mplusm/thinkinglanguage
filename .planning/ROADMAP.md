@@ -134,8 +134,8 @@ Phases 1 → 2 → 3 → {4, 5, 6} parallel → 7 → 8
 | 1. Prerequisites & Security | 4/4 | Complete | 2026-03-10 |
 | 2. Protocol & Stdio Transport | 3/3 | Complete | 2026-03-10 |
 | 3. Client Builtins & VM | 4/4 | Complete | 2026-03-10 |
-| 4. HTTP Transport | 0/TBD | Not started | - |
-| 5. Agent Integration | 0/TBD | Not started | - |
-| 6. MCP Server — Tools | 0/TBD | Not started | - |
+| 4. HTTP Transport | 0/3 | Planned | - |
+| 5. Agent Integration | 0/3 | Planned | - |
+| 6. MCP Server — Tools | 0/3 | Planned | - |
 | 7. Resources & Prompts | 0/TBD | Not started | - |
 | 8. Sampling & Hardening | 0/TBD | Not started | - |
