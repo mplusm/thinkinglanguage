@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use serde_json::json;
 use tl_mcp::server::{
-    serve_stdio, PromptArgDef, PromptDef, PromptMessageDef, ResourceDef, TlServerHandler, ToolDef,
+    PromptArgDef, PromptDef, PromptMessageDef, ResourceDef, TlServerHandler, ToolDef, serve_stdio,
 };
 
 fn main() {
@@ -33,10 +33,7 @@ fn main() {
                 required: true,
             }],
             handler: Arc::new(|args| {
-                let name = args
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("World");
+                let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("World");
                 Ok(vec![PromptMessageDef {
                     role: "user".to_string(),
                     content: format!("Please greet {name} warmly"),

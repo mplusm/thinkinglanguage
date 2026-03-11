@@ -632,10 +632,8 @@ impl Vm {
                 "mcp_server_info".to_string(),
                 VmValue::Builtin(BuiltinId::McpServerInfo),
             );
-            vm.globals.insert(
-                "mcp_ping".to_string(),
-                VmValue::Builtin(BuiltinId::McpPing),
-            );
+            vm.globals
+                .insert("mcp_ping".to_string(), VmValue::Builtin(BuiltinId::McpPing));
             vm.globals.insert(
                 "mcp_list_resources".to_string(),
                 VmValue::Builtin(BuiltinId::McpListResources),
@@ -6719,7 +6717,9 @@ impl Vm {
             #[cfg(feature = "mcp")]
             BuiltinId::McpConnect => {
                 if args.is_empty() {
-                    return Err(runtime_err("mcp_connect expects at least 1 argument: command or URL"));
+                    return Err(runtime_err(
+                        "mcp_connect expects at least 1 argument: command or URL",
+                    ));
                 }
                 let command = match &args[0] {
                     VmValue::String(s) => s.to_string(),
@@ -6728,8 +6728,8 @@ impl Vm {
 
                 // Build sampling callback when tl-ai is available (native feature)
                 #[cfg(feature = "native")]
-                let sampling_cb: Option<tl_mcp::SamplingCallback> = Some(Arc::new(
-                    |req: tl_mcp::SamplingRequest| {
+                let sampling_cb: Option<tl_mcp::SamplingCallback> =
+                    Some(Arc::new(|req: tl_mcp::SamplingRequest| {
                         let model = req
                             .model_hint
                             .as_deref()
@@ -6761,8 +6761,7 @@ impl Vm {
                                 Err("Sampling does not support tool use".to_string())
                             }
                         }
-                    },
-                ));
+                    }));
 
                 #[cfg(not(feature = "native"))]
                 let sampling_cb: Option<tl_mcp::SamplingCallback> = None;
@@ -6853,7 +6852,7 @@ impl Vm {
                     _ => {
                         return Err(runtime_err(
                             "mcp_call_tool: first argument must be an mcp_client",
-                        ))
+                        ));
                     }
                 };
                 let tool_name = match &args[1] {
@@ -6881,10 +6880,7 @@ impl Vm {
                         content_parts.into_iter().next().unwrap(),
                     ));
                 } else {
-                    pairs.push((
-                        Arc::from("content"),
-                        VmValue::List(Box::new(content_parts)),
-                    ));
+                    pairs.push((Arc::from("content"), VmValue::List(Box::new(content_parts))));
                 }
                 pairs.push((
                     Arc::from("is_error"),
@@ -6930,9 +6926,7 @@ impl Vm {
                 }
             }
             #[cfg(not(feature = "mcp"))]
-            BuiltinId::McpPing => {
-                Err(runtime_err("MCP not available. Build with --features mcp"))
-            }
+            BuiltinId::McpPing => Err(runtime_err("MCP not available. Build with --features mcp")),
 
             #[cfg(feature = "mcp")]
             BuiltinId::McpServerInfo => {
@@ -6978,7 +6972,7 @@ impl Vm {
                     _ => {
                         return Err(runtime_err(
                             "mcp_serve: argument must be a list of tool maps",
-                        ))
+                        ));
                     }
                 };
 
@@ -6992,7 +6986,7 @@ impl Vm {
                         _ => {
                             return Err(runtime_err(
                                 "mcp_serve: each tool must be a map with name, description, handler",
-                            ))
+                            ));
                         }
                     };
                     let mut name = String::new();
@@ -7017,7 +7011,9 @@ impl Vm {
                             }
                             "input_schema" | "parameters" => {
                                 if let VmValue::String(s) = v {
-                                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s.as_ref()) {
+                                    if let Ok(parsed) =
+                                        serde_json::from_str::<serde_json::Value>(s.as_ref())
+                                    {
                                         input_schema = parsed;
                                     }
                                 }
@@ -7054,20 +7050,19 @@ impl Vm {
                 loop {
                     match rx.recv() {
                         Ok(req) => {
-                            let result =
-                                if let Some(func) = tool_handlers.get(&req.tool_name) {
-                                    // Convert JSON args to VmValue args
-                                    let call_args = self.json_to_vm_args(&req.arguments);
-                                    match self.call_value(func.clone(), &call_args) {
-                                        Ok(val) => {
-                                            // Convert VmValue to JSON-friendly string
-                                            Ok(serde_json::json!(format!("{val}")))
-                                        }
-                                        Err(e) => Err(format!("{e}")),
+                            let result = if let Some(func) = tool_handlers.get(&req.tool_name) {
+                                // Convert JSON args to VmValue args
+                                let call_args = self.json_to_vm_args(&req.arguments);
+                                match self.call_value(func.clone(), &call_args) {
+                                    Ok(val) => {
+                                        // Convert VmValue to JSON-friendly string
+                                        Ok(serde_json::json!(format!("{val}")))
                                     }
-                                } else {
-                                    Err(format!("Unknown tool: {}", req.tool_name))
-                                };
+                                    Err(e) => Err(format!("{e}")),
+                                }
+                            } else {
+                                Err(format!("Unknown tool: {}", req.tool_name))
+                            };
                             let _ = req.response_tx.send(result);
                         }
                         Err(_) => break, // Channel closed - client disconnected
@@ -7077,12 +7072,9 @@ impl Vm {
                 Ok(VmValue::None)
             }
             #[cfg(not(feature = "mcp"))]
-            BuiltinId::McpServe => {
-                Err(runtime_err("MCP not available. Build with --features mcp"))
-            }
+            BuiltinId::McpServe => Err(runtime_err("MCP not available. Build with --features mcp")),
 
             // ── MCP Resources & Prompts ──
-
             #[cfg(feature = "mcp")]
             BuiltinId::McpListResources => {
                 if args.is_empty() {
@@ -7090,9 +7082,9 @@ impl Vm {
                 }
                 match &args[0] {
                     VmValue::McpClient(client) => {
-                        let resources = client.list_resources().map_err(|e| {
-                            runtime_err(format!("mcp_list_resources failed: {e}"))
-                        })?;
+                        let resources = client
+                            .list_resources()
+                            .map_err(|e| runtime_err(format!("mcp_list_resources failed: {e}")))?;
                         let vals: Vec<VmValue> = resources
                             .iter()
                             .map(|r| {
@@ -7144,7 +7136,7 @@ impl Vm {
                     _ => {
                         return Err(runtime_err(
                             "mcp_read_resource: first argument must be an mcp_client",
-                        ))
+                        ));
                     }
                 };
                 let uri = match &args[1] {
@@ -7162,28 +7154,16 @@ impl Vm {
                         let mut pairs: Vec<(Arc<str>, VmValue)> = Vec::new();
                         let json = serde_json::to_value(content).unwrap_or_default();
                         if let Some(uri_s) = json.get("uri").and_then(|v| v.as_str()) {
-                            pairs.push((
-                                Arc::from("uri"),
-                                VmValue::String(Arc::from(uri_s)),
-                            ));
+                            pairs.push((Arc::from("uri"), VmValue::String(Arc::from(uri_s))));
                         }
                         if let Some(mime) = json.get("mimeType").and_then(|v| v.as_str()) {
-                            pairs.push((
-                                Arc::from("mime_type"),
-                                VmValue::String(Arc::from(mime)),
-                            ));
+                            pairs.push((Arc::from("mime_type"), VmValue::String(Arc::from(mime))));
                         }
                         if let Some(text) = json.get("text").and_then(|v| v.as_str()) {
-                            pairs.push((
-                                Arc::from("text"),
-                                VmValue::String(Arc::from(text)),
-                            ));
+                            pairs.push((Arc::from("text"), VmValue::String(Arc::from(text))));
                         }
                         if let Some(blob) = json.get("blob").and_then(|v| v.as_str()) {
-                            pairs.push((
-                                Arc::from("blob"),
-                                VmValue::String(Arc::from(blob)),
-                            ));
+                            pairs.push((Arc::from("blob"), VmValue::String(Arc::from(blob))));
                         }
                         VmValue::Map(Box::new(pairs))
                     })
@@ -7206,9 +7186,9 @@ impl Vm {
                 }
                 match &args[0] {
                     VmValue::McpClient(client) => {
-                        let prompts = client.list_prompts().map_err(|e| {
-                            runtime_err(format!("mcp_list_prompts failed: {e}"))
-                        })?;
+                        let prompts = client
+                            .list_prompts()
+                            .map_err(|e| runtime_err(format!("mcp_list_prompts failed: {e}")))?;
                         let vals: Vec<VmValue> = prompts
                             .iter()
                             .map(|p| {
@@ -7278,7 +7258,7 @@ impl Vm {
                     _ => {
                         return Err(runtime_err(
                             "mcp_get_prompt: first argument must be an mcp_client",
-                        ))
+                        ));
                     }
                 };
                 let name = match &args[1] {
@@ -7310,18 +7290,13 @@ impl Vm {
                         let msg_json = serde_json::to_value(m).unwrap_or_default();
                         // role is serialized as "user" or "assistant"
                         if let Some(role) = msg_json.get("role").and_then(|v| v.as_str()) {
-                            msg_pairs.push((
-                                Arc::from("role"),
-                                VmValue::String(Arc::from(role)),
-                            ));
+                            msg_pairs.push((Arc::from("role"), VmValue::String(Arc::from(role))));
                         }
                         // content is an object with "type" field; extract text if it's a text message
                         if let Some(content) = msg_json.get("content") {
                             if let Some(text) = content.get("text").and_then(|v| v.as_str()) {
-                                msg_pairs.push((
-                                    Arc::from("content"),
-                                    VmValue::String(Arc::from(text)),
-                                ));
+                                msg_pairs
+                                    .push((Arc::from("content"), VmValue::String(Arc::from(text))));
                             } else {
                                 let content_str = content.to_string();
                                 msg_pairs.push((
@@ -7849,7 +7824,11 @@ impl Vm {
 
         // Add MCP tools from connected servers
         #[cfg(feature = "mcp")]
-        let mcp_clients = self.mcp_agent_clients.get(&agent_def.name).cloned().unwrap_or_default();
+        let mcp_clients = self
+            .mcp_agent_clients
+            .get(&agent_def.name)
+            .cloned()
+            .unwrap_or_default();
         #[cfg(feature = "mcp")]
         let mcp_tool_dispatch: std::collections::HashMap<String, usize> = {
             let mut dispatch = std::collections::HashMap::new();
@@ -7983,7 +7962,9 @@ impl Vm {
                                 let mcp_result = mcp_clients[client_idx]
                                     .call_tool(&tc.name, tc.input.clone())
                                     .map_err(|e| runtime_err(format!("MCP tool error: {e}")))?;
-                                result_str = mcp_result.content.iter()
+                                result_str = mcp_result
+                                    .content
+                                    .iter()
                                     .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
                                     .collect::<Vec<_>>()
                                     .join("\n");

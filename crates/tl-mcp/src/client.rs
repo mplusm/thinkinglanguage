@@ -15,7 +15,7 @@ use rmcp::model::{
     GetPromptResult, Implementation, ReadResourceRequestParams, ReadResourceResult, Role,
     SamplingCapability, SamplingMessage, SamplingMessageContent, ServerInfo, Tool,
 };
-use rmcp::service::{RoleClient, RequestContext, RunningService};
+use rmcp::service::{RequestContext, RoleClient, RunningService};
 use rmcp::transport::TokioChildProcess;
 use rmcp::{ClientHandler, ServiceExt};
 use tl_errors::security::SecurityPolicy;
@@ -321,9 +321,10 @@ impl McpClient {
                     let server_info = service.peer().peer_info().cloned();
                     Ok::<_, McpError>((service, server_info))
                 }
-                Ok(Err(e)) => {
-                    Err(McpError::ConnectionFailed(format!("Handshake failed: {}", e)))
-                }
+                Ok(Err(e)) => Err(McpError::ConnectionFailed(format!(
+                    "Handshake failed: {}",
+                    e
+                ))),
                 Err(_) => Err(McpError::Timeout),
             }
         })?;
@@ -387,9 +388,10 @@ impl McpClient {
                     let server_info = service.peer().peer_info().cloned();
                     Ok::<_, McpError>((service, server_info))
                 }
-                Ok(Err(e)) => {
-                    Err(McpError::ConnectionFailed(format!("Handshake failed: {}", e)))
-                }
+                Ok(Err(e)) => Err(McpError::ConnectionFailed(format!(
+                    "Handshake failed: {}",
+                    e
+                ))),
                 Err(_) => Err(McpError::Timeout),
             }
         })?;
@@ -425,9 +427,7 @@ impl McpClient {
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
-                .map_err(|e| {
-                    McpError::RuntimeError(format!("Failed to create runtime: {e}"))
-                })?,
+                .map_err(|e| McpError::RuntimeError(format!("Failed to create runtime: {e}")))?,
         );
         Self::connect_http_with_runtime_and_sampling(url, rt, sampling_cb)
     }
@@ -464,9 +464,9 @@ impl McpClient {
                     let info = service.peer_info().cloned();
                     Ok::<_, McpError>((service, info))
                 }
-                Ok(Err(e)) => {
-                    Err(McpError::ConnectionFailed(format!("HTTP connect failed: {e}")))
-                }
+                Ok(Err(e)) => Err(McpError::ConnectionFailed(format!(
+                    "HTTP connect failed: {e}"
+                ))),
                 Err(_) => Err(McpError::Timeout),
             }
         })?;
@@ -565,12 +565,14 @@ impl McpClient {
     pub fn ping(&self) -> Result<(), McpError> {
         let service = self.service.as_ref().ok_or(McpError::TransportClosed)?;
         self.runtime.block_on(async {
-            let ping_fut = service.peer().send_request(
-                rmcp::model::ClientRequest::PingRequest(rmcp::model::PingRequest {
-                    method: Default::default(),
-                    extensions: Default::default(),
-                }),
-            );
+            let ping_fut = service
+                .peer()
+                .send_request(rmcp::model::ClientRequest::PingRequest(
+                    rmcp::model::PingRequest {
+                        method: Default::default(),
+                        extensions: Default::default(),
+                    },
+                ));
             match tokio::time::timeout(METADATA_TIMEOUT, ping_fut).await {
                 Ok(Ok(_)) => Ok(()),
                 Ok(Err(e)) => Err(McpError::ProtocolError(e.to_string())),
@@ -770,10 +772,7 @@ mod tests {
                 model: "test-model".to_string(),
                 content: format!(
                     "Echo: {}",
-                    req.messages
-                        .last()
-                        .map(|(_, c)| c.as_str())
-                        .unwrap_or("")
+                    req.messages.last().map(|(_, c)| c.as_str()).unwrap_or("")
                 ),
                 stop_reason: Some("endTurn".to_string()),
             })

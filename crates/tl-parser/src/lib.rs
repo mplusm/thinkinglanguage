@@ -4865,10 +4865,7 @@ schema Secret {
             }"#,
         )
         .unwrap();
-        if let StmtKind::Agent {
-            mcp_servers, ..
-        } = &program.statements[0].kind
-        {
+        if let StmtKind::Agent { mcp_servers, .. } = &program.statements[0].kind {
             assert!(mcp_servers.is_empty());
         } else {
             panic!("Expected Agent statement");
@@ -4884,10 +4881,7 @@ schema Secret {
             }"#,
         )
         .unwrap();
-        if let StmtKind::Agent {
-            mcp_servers, ..
-        } = &program.statements[0].kind
-        {
+        if let StmtKind::Agent { mcp_servers, .. } = &program.statements[0].kind {
             assert_eq!(mcp_servers.len(), 1);
             assert!(matches!(&mcp_servers[0], Expr::Ident(s) if s == "my_server"));
         } else {

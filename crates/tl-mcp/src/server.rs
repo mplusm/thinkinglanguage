@@ -348,9 +348,7 @@ impl ServerHandler for TlServerHandler {
         match result {
             Some(p) => {
                 let args_json = match &request.arguments {
-                    Some(args) => {
-                        serde_json::Value::Object(args.clone())
-                    }
+                    Some(args) => serde_json::Value::Object(args.clone()),
                     None => serde_json::Value::Object(serde_json::Map::new()),
                 };
                 match (p.handler)(args_json) {
@@ -650,8 +648,7 @@ pub fn serve_http_with_runtime(
 /// Internal async HTTP server implementation.
 async fn serve_http_async(handler: TlServerHandler, port: u16) -> Result<(), McpError> {
     use rmcp::transport::streamable_http_server::{
-        StreamableHttpServerConfig, StreamableHttpService,
-        session::local::LocalSessionManager,
+        StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
     };
 
     // Capture all fields so the factory can create new TlServerHandler instances
@@ -807,7 +804,11 @@ mod tests {
         assert_eq!(result.is_error, Some(false));
         let text = result.content[0].as_text().unwrap();
         // json!(a + b) for floats produces "7.0"
-        assert!(text.text == "7" || text.text == "7.0", "Expected 7 or 7.0, got: {}", text.text);
+        assert!(
+            text.text == "7" || text.text == "7.0",
+            "Expected 7 or 7.0, got: {}",
+            text.text
+        );
     }
 
     #[test]
@@ -876,7 +877,11 @@ mod tests {
         // Create a mock context — we need Peer and RequestContext
         // Since list_tools doesn't actually use the context, we test via
         // the direct method instead of through the full trait dispatch.
-        let tools: Vec<Tool> = handler.tools.iter().map(TlServerHandler::tool_def_to_rmcp).collect();
+        let tools: Vec<Tool> = handler
+            .tools
+            .iter()
+            .map(TlServerHandler::tool_def_to_rmcp)
+            .collect();
         assert_eq!(tools.len(), 2);
         assert_eq!(tools[0].name.as_ref(), "echo");
         assert_eq!(tools[1].name.as_ref(), "add");
@@ -1043,12 +1048,17 @@ mod tests {
             // Process channel request
             let tool_req = rx.recv().unwrap();
             assert_eq!(tool_req.tool_name, "channel_add");
-            let a = tool_req.arguments.get("a").and_then(|v| v.as_i64()).unwrap_or(0);
-            let b = tool_req.arguments.get("b").and_then(|v| v.as_i64()).unwrap_or(0);
-            tool_req
-                .response_tx
-                .send(Ok(json!(a + b)))
-                .unwrap();
+            let a = tool_req
+                .arguments
+                .get("a")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let b = tool_req
+                .arguments
+                .get("b")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            tool_req.response_tx.send(Ok(json!(a + b))).unwrap();
             let result = result_rx.recv().unwrap().unwrap();
             assert_eq!(result.is_error, Some(false));
             let text = result.content[0].as_text().unwrap();
@@ -1209,10 +1219,7 @@ mod tests {
                     required: true,
                 }],
                 handler: Arc::new(|args| {
-                    let name = args
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("World");
+                    let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("World");
                     Ok(vec![PromptMessageDef {
                         role: "user".to_string(),
                         content: format!("Please greet {name} warmly"),
@@ -1254,10 +1261,7 @@ mod tests {
                     required: true,
                 }],
                 handler: Arc::new(|args| {
-                    let name = args
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("World");
+                    let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("World");
                     Ok(vec![
                         PromptMessageDef {
                             role: "user".to_string(),

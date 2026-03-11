@@ -36,10 +36,15 @@ fn test_client_server_handshake() {
     let client = connect_test_server();
 
     // Connection should be alive
-    assert!(client.is_connected(), "Client should be connected after handshake");
+    assert!(
+        client.is_connected(),
+        "Client should be connected after handshake"
+    );
 
     // Server info should be populated from the handshake
-    let info = client.server_info().expect("server_info should be Some after handshake");
+    let info = client
+        .server_info()
+        .expect("server_info should be Some after handshake");
     assert_eq!(info.server_info.name, "test-server");
     assert_eq!(info.server_info.version, "1.0.0");
 
@@ -69,10 +74,7 @@ fn test_list_tools() {
     // Verify descriptions exist
     let echo = tools.iter().find(|t| t.name.as_ref() == "echo").unwrap();
     assert!(
-        echo.description
-            .as_deref()
-            .unwrap_or("")
-            .contains("input"),
+        echo.description.as_deref().unwrap_or("").contains("input"),
         "Echo tool should have a description mentioning input"
     );
 
@@ -201,10 +203,7 @@ fn test_call_nonexistent_tool() {
             );
         }
         Err(other) => {
-            panic!(
-                "Expected ToolError for nonexistent tool, got: {:?}",
-                other
-            );
+            panic!("Expected ToolError for nonexistent tool, got: {:?}", other);
         }
     }
 }
@@ -239,9 +238,7 @@ fn test_disconnect_cleanup() {
     assert!(client.is_connected(), "Should be connected initially");
 
     // Disconnect
-    client
-        .disconnect()
-        .expect("disconnect should succeed");
+    client.disconnect().expect("disconnect should succeed");
 
     // Should no longer be connected
     assert!(
@@ -329,7 +326,10 @@ fn test_multiple_calls_same_connection() {
     );
 
     // Connection should still be alive
-    assert!(client.is_connected(), "Should still be connected after multiple calls");
+    assert!(
+        client.is_connected(),
+        "Should still be connected after multiple calls"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -447,10 +447,7 @@ fn test_http_client_server_roundtrip() {
                 }
             }),
             handler: Arc::new(|args| {
-                let name = args
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("World");
+                let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("World");
                 Ok(serde_json::json!(format!("Hello, {name}!")))
             }),
         })
@@ -462,17 +459,14 @@ fn test_http_client_server_roundtrip() {
     drop(listener);
 
     // Start HTTP server in background thread
-    let server_handle = std::thread::spawn(move || {
-        tl_mcp::server::serve_http(handler, port)
-    });
+    let server_handle = std::thread::spawn(move || tl_mcp::server::serve_http(handler, port));
 
     // Give the server a moment to start
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     // Connect as HTTP client
     let url = format!("http://127.0.0.1:{port}/mcp");
-    let client = McpClient::connect_http(&url)
-        .expect("HTTP client should connect");
+    let client = McpClient::connect_http(&url).expect("HTTP client should connect");
 
     // Verify connection
     assert!(client.is_connected(), "HTTP client should be connected");
@@ -529,18 +523,12 @@ fn test_call_tool_invalid_arguments() {
     // String argument should be rejected
     let result = client.call_tool("echo", serde_json::json!("just a string"));
     assert!(result.is_err());
-    assert!(matches!(
-        result.unwrap_err(),
-        McpError::ProtocolError(_)
-    ));
+    assert!(matches!(result.unwrap_err(), McpError::ProtocolError(_)));
 
     // Number argument should be rejected
     let result = client.call_tool("echo", serde_json::json!(42));
     assert!(result.is_err());
-    assert!(matches!(
-        result.unwrap_err(),
-        McpError::ProtocolError(_)
-    ));
+    assert!(matches!(result.unwrap_err(), McpError::ProtocolError(_)));
 }
 
 // ---------------------------------------------------------------------------
@@ -595,7 +583,10 @@ fn test_call_tool_unicode_arguments() {
 
     // Unicode string
     let result = client
-        .call_tool("echo", serde_json::json!({"message": "Hello \u{1F680}\u{2728} World"}))
+        .call_tool(
+            "echo",
+            serde_json::json!({"message": "Hello \u{1F680}\u{2728} World"}),
+        )
         .expect("unicode arguments should work");
     let text = result.content[0].raw.as_text().unwrap();
     assert!(
@@ -624,7 +615,11 @@ fn test_call_tool_add_edge_numbers() {
         .call_tool("add", serde_json::json!({"a": 0, "b": 0}))
         .expect("add 0+0 should work");
     let text = result.content[0].raw.as_text().unwrap();
-    assert!(text.text.contains("0"), "0+0 should give 0, got: {}", text.text);
+    assert!(
+        text.text.contains("0"),
+        "0+0 should give 0, got: {}",
+        text.text
+    );
 
     // Negative numbers
     let result = client
@@ -668,7 +663,9 @@ fn test_call_tool_add_edge_numbers() {
 fn test_list_and_read_resources() {
     let client = connect_test_server();
 
-    let resources = client.list_resources().expect("list_resources should succeed");
+    let resources = client
+        .list_resources()
+        .expect("list_resources should succeed");
     assert!(!resources.is_empty(), "Test server should have resources");
 
     // Find the readme resource
@@ -679,11 +676,10 @@ fn test_list_and_read_resources() {
     assert_eq!(readme.uri.as_str(), "tl://readme");
 
     // Read the resource
-    let result = client.read_resource("tl://readme").expect("read_resource should succeed");
-    assert!(
-        !result.contents.is_empty(),
-        "Resource should have contents"
-    );
+    let result = client
+        .read_resource("tl://readme")
+        .expect("read_resource should succeed");
+    assert!(!result.contents.is_empty(), "Resource should have contents");
 }
 
 // ---------------------------------------------------------------------------
@@ -751,7 +747,9 @@ fn test_get_nonexistent_prompt() {
 fn test_double_disconnect() {
     let mut client = connect_test_server();
 
-    client.disconnect().expect("first disconnect should succeed");
+    client
+        .disconnect()
+        .expect("first disconnect should succeed");
     assert!(!client.is_connected());
 
     // Second disconnect should also succeed (no-op)
@@ -805,9 +803,7 @@ fn test_sampling_callback_unit() {
 fn test_sampling_callback_error() {
     use tl_mcp::client::{SamplingCallback, SamplingRequest};
 
-    let cb: SamplingCallback = Arc::new(|_req| {
-        Err("LLM provider unavailable".to_string())
-    });
+    let cb: SamplingCallback = Arc::new(|_req| Err("LLM provider unavailable".to_string()));
 
     let req = SamplingRequest {
         messages: vec![("user".to_string(), "test".to_string())],
@@ -876,9 +872,7 @@ fn test_server_builder_all_capabilities() {
     let port = listener.local_addr().unwrap().port();
     drop(listener);
 
-    let _server = std::thread::spawn(move || {
-        tl_mcp::server::serve_http(handler, port)
-    });
+    let _server = std::thread::spawn(move || tl_mcp::server::serve_http(handler, port));
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     let client = McpClient::connect_http(&format!("http://127.0.0.1:{port}/mcp"))
@@ -939,18 +933,12 @@ fn test_security_policy_edge_cases() {
     // Sandbox with no allowed commands
     let policy = SecurityPolicy::sandbox();
     let result = McpClient::connect("anything", &[], Some(&policy));
-    assert!(matches!(
-        result.unwrap_err(),
-        McpError::PermissionDenied(_)
-    ));
+    assert!(matches!(result.unwrap_err(), McpError::PermissionDenied(_)));
 
     // Permissive policy should not block (will fail at connection, not security)
     let policy = SecurityPolicy::permissive();
     let result = McpClient::connect("__nonexistent__", &[], Some(&policy));
-    assert!(matches!(
-        result.unwrap_err(),
-        McpError::ConnectionFailed(_)
-    ));
+    assert!(matches!(result.unwrap_err(), McpError::ConnectionFailed(_)));
 }
 
 // ---------------------------------------------------------------------------
@@ -971,9 +959,7 @@ fn test_server_builder_no_capabilities() {
     let port = listener.local_addr().unwrap().port();
     drop(listener);
 
-    let _server = std::thread::spawn(move || {
-        tl_mcp::server::serve_http(handler, port)
-    });
+    let _server = std::thread::spawn(move || tl_mcp::server::serve_http(handler, port));
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     let client = McpClient::connect_http(&format!("http://127.0.0.1:{port}/mcp"))

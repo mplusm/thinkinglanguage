@@ -24,9 +24,9 @@ pub enum TlJsonValue {
     String(String),
     List(Vec<TlJsonValue>),
     Map(Vec<(String, TlJsonValue)>),
-    Decimal(String),  // String representation to preserve precision
-    DateTime(i64),    // Millis since epoch
-    Secret,           // Redacted -- no value stored
+    Decimal(String), // String representation to preserve precision
+    DateTime(i64),   // Millis since epoch
+    Secret,          // Redacted -- no value stored
 }
 
 /// Convert a `serde_json::Value` into a [`TlJsonValue`].
@@ -56,16 +56,12 @@ pub fn json_to_tl(v: &serde_json::Value) -> TlJsonValue {
             }
         }
         serde_json::Value::String(s) => TlJsonValue::String(s.clone()),
-        serde_json::Value::Array(arr) => {
-            TlJsonValue::List(arr.iter().map(json_to_tl).collect())
-        }
-        serde_json::Value::Object(map) => {
-            TlJsonValue::Map(
-                map.iter()
-                    .map(|(k, v)| (k.clone(), json_to_tl(v)))
-                    .collect(),
-            )
-        }
+        serde_json::Value::Array(arr) => TlJsonValue::List(arr.iter().map(json_to_tl).collect()),
+        serde_json::Value::Object(map) => TlJsonValue::Map(
+            map.iter()
+                .map(|(k, v)| (k.clone(), json_to_tl(v)))
+                .collect(),
+        ),
     }
 }
 
@@ -111,12 +107,10 @@ pub fn tl_to_json(v: &TlJsonValue) -> serde_json::Value {
             serde_json::Value::Object(obj)
         }
         TlJsonValue::Decimal(s) => serde_json::Value::String(s.clone()),
-        TlJsonValue::DateTime(ms) => {
-            match ChronoDateTime::from_timestamp_millis(*ms) {
-                Some(dt) => serde_json::Value::String(dt.to_rfc3339()),
-                None => serde_json::Value::Null,
-            }
-        }
+        TlJsonValue::DateTime(ms) => match ChronoDateTime::from_timestamp_millis(*ms) {
+            Some(dt) => serde_json::Value::String(dt.to_rfc3339()),
+            None => serde_json::Value::Null,
+        },
         TlJsonValue::Secret => serde_json::Value::String("***".to_string()),
     }
 }
@@ -202,7 +196,10 @@ mod tests {
         // Unicode
         assert_eq!(roundtrip_json(json!("Hej varlden")), json!("Hej varlden"));
         // Emoji
-        assert_eq!(roundtrip_json(json!("\u{1F680}\u{2728}")), json!("\u{1F680}\u{2728}"));
+        assert_eq!(
+            roundtrip_json(json!("\u{1F680}\u{2728}")),
+            json!("\u{1F680}\u{2728}")
+        );
         // String with special chars
         assert_eq!(
             roundtrip_json(json!("line1\nline2\ttab")),
@@ -262,7 +259,11 @@ mod tests {
 
         // Should be an ISO 8601 / RFC 3339 string
         if let serde_json::Value::String(s) = &result {
-            assert!(s.contains("2024-01-15"), "Expected date 2024-01-15, got: {}", s);
+            assert!(
+                s.contains("2024-01-15"),
+                "Expected date 2024-01-15, got: {}",
+                s
+            );
             assert!(s.contains("12:30:00"), "Expected time 12:30:00, got: {}", s);
         } else {
             panic!("Expected string, got: {:?}", result);
