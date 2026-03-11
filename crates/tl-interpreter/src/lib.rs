@@ -6968,17 +6968,55 @@ impl Interpreter {
                     Value::String(s) => s.clone(),
                     _ => return Err(runtime_err_s("mcp_connect: first argument must be a string")),
                 };
+
+                // Build sampling callback using tl-ai
+                let sampling_cb: Option<tl_mcp::SamplingCallback> = Some(Arc::new(
+                    |req: tl_mcp::SamplingRequest| {
+                        let model = req
+                            .model_hint
+                            .as_deref()
+                            .unwrap_or("claude-sonnet-4-20250514");
+                        let messages: Vec<serde_json::Value> = req
+                            .messages
+                            .iter()
+                            .map(|(role, content)| {
+                                serde_json::json!({"role": role, "content": content})
+                            })
+                            .collect();
+                        let response = tl_ai::chat_with_tools(
+                            model,
+                            req.system_prompt.as_deref(),
+                            &messages,
+                            &[],  // no tools for sampling
+                            None, // base_url
+                            None, // api_key
+                            None, // output_format
+                        )
+                        .map_err(|e| format!("Sampling LLM error: {e}"))?;
+                        match response {
+                            tl_ai::LlmResponse::Text(text) => Ok(tl_mcp::SamplingResponse {
+                                model: model.to_string(),
+                                content: text,
+                                stop_reason: Some("endTurn".to_string()),
+                            }),
+                            tl_ai::LlmResponse::ToolUse(_) => {
+                                Err("Sampling does not support tool use".to_string())
+                            }
+                        }
+                    },
+                ));
+
                 // Auto-detect HTTP URL vs subprocess command
                 let client = if command.starts_with("http://") || command.starts_with("https://") {
-                    tl_mcp::McpClient::connect_http(&command)
+                    tl_mcp::McpClient::connect_http_with_sampling(&command, sampling_cb)
                         .map_err(|e| runtime_err(format!("mcp_connect (HTTP) failed: {e}")))?
                 } else {
                     let cmd_args: Vec<String> = args[1..].iter().map(|a| match a {
                         Value::String(s) => s.clone(),
                         other => format!("{}", other),
                     }).collect();
-                    tl_mcp::McpClient::connect(
-                        &command, &cmd_args, self.security_policy.as_ref(),
+                    tl_mcp::McpClient::connect_with_sampling(
+                        &command, &cmd_args, self.security_policy.as_ref(), sampling_cb,
                     ).map_err(|e| runtime_err(format!("mcp_connect failed: {e}")))?
                 };
                 Ok(Value::McpClient(Arc::new(client)))
