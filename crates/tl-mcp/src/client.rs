@@ -10,8 +10,9 @@
 use std::sync::Arc;
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ClientCapabilities, ClientInfo, Implementation,
-    ServerInfo, Tool,
+    CallToolRequestParams, CallToolResult, ClientCapabilities, ClientInfo,
+    GetPromptRequestParams, GetPromptResult, Implementation, ReadResourceRequestParams,
+    ReadResourceResult, ServerInfo, Tool,
 };
 use rmcp::service::{RoleClient, RunningService};
 use rmcp::transport::TokioChildProcess;
@@ -340,6 +341,71 @@ impl McpClient {
                 .await
                 .map_err(|e| McpError::ProtocolError(e.to_string()))?;
             Ok(())
+        })
+    }
+
+    /// List all resources exposed by the connected MCP server.
+    ///
+    /// Uses `list_all_resources()` which automatically handles pagination.
+    pub fn list_resources(&self) -> Result<Vec<rmcp::model::Resource>, McpError> {
+        let service = self.service.as_ref().ok_or(McpError::TransportClosed)?;
+        self.runtime.block_on(async {
+            service
+                .peer()
+                .list_all_resources()
+                .await
+                .map_err(|e| McpError::ProtocolError(e.to_string()))
+        })
+    }
+
+    /// Read a resource by URI.
+    ///
+    /// Returns the resource contents (text or blob).
+    pub fn read_resource(&self, uri: &str) -> Result<ReadResourceResult, McpError> {
+        let service = self.service.as_ref().ok_or(McpError::TransportClosed)?;
+        let params = ReadResourceRequestParams::new(uri);
+        self.runtime.block_on(async {
+            service
+                .peer()
+                .read_resource(params)
+                .await
+                .map_err(|e| McpError::ProtocolError(e.to_string()))
+        })
+    }
+
+    /// List all prompts exposed by the connected MCP server.
+    ///
+    /// Uses `list_all_prompts()` which automatically handles pagination.
+    pub fn list_prompts(&self) -> Result<Vec<rmcp::model::Prompt>, McpError> {
+        let service = self.service.as_ref().ok_or(McpError::TransportClosed)?;
+        self.runtime.block_on(async {
+            service
+                .peer()
+                .list_all_prompts()
+                .await
+                .map_err(|e| McpError::ProtocolError(e.to_string()))
+        })
+    }
+
+    /// Get a prompt by name with optional arguments.
+    ///
+    /// Returns the prompt result containing description and messages.
+    pub fn get_prompt(
+        &self,
+        name: &str,
+        arguments: Option<serde_json::Map<String, serde_json::Value>>,
+    ) -> Result<GetPromptResult, McpError> {
+        let service = self.service.as_ref().ok_or(McpError::TransportClosed)?;
+        let mut params = GetPromptRequestParams::new(name);
+        if let Some(args) = arguments {
+            params.arguments = Some(args);
+        }
+        self.runtime.block_on(async {
+            service
+                .peer()
+                .get_prompt(params)
+                .await
+                .map_err(|e| McpError::ProtocolError(e.to_string()))
         })
     }
 

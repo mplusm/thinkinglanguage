@@ -636,6 +636,22 @@ impl Vm {
                 "mcp_ping".to_string(),
                 VmValue::Builtin(BuiltinId::McpPing),
             );
+            vm.globals.insert(
+                "mcp_list_resources".to_string(),
+                VmValue::Builtin(BuiltinId::McpListResources),
+            );
+            vm.globals.insert(
+                "mcp_read_resource".to_string(),
+                VmValue::Builtin(BuiltinId::McpReadResource),
+            );
+            vm.globals.insert(
+                "mcp_list_prompts".to_string(),
+                VmValue::Builtin(BuiltinId::McpListPrompts),
+            );
+            vm.globals.insert(
+                "mcp_get_prompt".to_string(),
+                VmValue::Builtin(BuiltinId::McpGetPrompt),
+            );
         }
         vm
     }
@@ -7019,6 +7035,266 @@ impl Vm {
             }
             #[cfg(not(feature = "mcp"))]
             BuiltinId::McpServe => {
+                Err(runtime_err("MCP not available. Build with --features mcp"))
+            }
+
+            // ── MCP Resources & Prompts ──
+
+            #[cfg(feature = "mcp")]
+            BuiltinId::McpListResources => {
+                if args.is_empty() {
+                    return Err(runtime_err("mcp_list_resources expects 1 argument: client"));
+                }
+                match &args[0] {
+                    VmValue::McpClient(client) => {
+                        let resources = client.list_resources().map_err(|e| {
+                            runtime_err(format!("mcp_list_resources failed: {e}"))
+                        })?;
+                        let vals: Vec<VmValue> = resources
+                            .iter()
+                            .map(|r| {
+                                let mut pairs: Vec<(Arc<str>, VmValue)> = Vec::new();
+                                pairs.push((
+                                    Arc::from("uri"),
+                                    VmValue::String(Arc::from(r.uri.as_str())),
+                                ));
+                                pairs.push((
+                                    Arc::from("name"),
+                                    VmValue::String(Arc::from(r.name.as_str())),
+                                ));
+                                if let Some(desc) = &r.description {
+                                    pairs.push((
+                                        Arc::from("description"),
+                                        VmValue::String(Arc::from(desc.as_str())),
+                                    ));
+                                }
+                                if let Some(mime) = &r.mime_type {
+                                    pairs.push((
+                                        Arc::from("mime_type"),
+                                        VmValue::String(Arc::from(mime.as_str())),
+                                    ));
+                                }
+                                VmValue::Map(Box::new(pairs))
+                            })
+                            .collect();
+                        Ok(VmValue::List(Box::new(vals)))
+                    }
+                    _ => Err(runtime_err(
+                        "mcp_list_resources: argument must be an mcp_client",
+                    )),
+                }
+            }
+            #[cfg(not(feature = "mcp"))]
+            BuiltinId::McpListResources => {
+                Err(runtime_err("MCP not available. Build with --features mcp"))
+            }
+
+            #[cfg(feature = "mcp")]
+            BuiltinId::McpReadResource => {
+                if args.len() < 2 {
+                    return Err(runtime_err(
+                        "mcp_read_resource expects 2 arguments: client, uri",
+                    ));
+                }
+                let client = match &args[0] {
+                    VmValue::McpClient(c) => c.clone(),
+                    _ => {
+                        return Err(runtime_err(
+                            "mcp_read_resource: first argument must be an mcp_client",
+                        ))
+                    }
+                };
+                let uri = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("mcp_read_resource: uri must be a string")),
+                };
+                let result = client
+                    .read_resource(&uri)
+                    .map_err(|e| runtime_err(format!("mcp_read_resource failed: {e}")))?;
+                // Serialize ResourceContents via JSON to avoid direct rmcp type dependency
+                let contents: Vec<VmValue> = result
+                    .contents
+                    .iter()
+                    .map(|content| {
+                        let mut pairs: Vec<(Arc<str>, VmValue)> = Vec::new();
+                        let json = serde_json::to_value(content).unwrap_or_default();
+                        if let Some(uri_s) = json.get("uri").and_then(|v| v.as_str()) {
+                            pairs.push((
+                                Arc::from("uri"),
+                                VmValue::String(Arc::from(uri_s)),
+                            ));
+                        }
+                        if let Some(mime) = json.get("mimeType").and_then(|v| v.as_str()) {
+                            pairs.push((
+                                Arc::from("mime_type"),
+                                VmValue::String(Arc::from(mime)),
+                            ));
+                        }
+                        if let Some(text) = json.get("text").and_then(|v| v.as_str()) {
+                            pairs.push((
+                                Arc::from("text"),
+                                VmValue::String(Arc::from(text)),
+                            ));
+                        }
+                        if let Some(blob) = json.get("blob").and_then(|v| v.as_str()) {
+                            pairs.push((
+                                Arc::from("blob"),
+                                VmValue::String(Arc::from(blob)),
+                            ));
+                        }
+                        VmValue::Map(Box::new(pairs))
+                    })
+                    .collect();
+                if contents.len() == 1 {
+                    Ok(contents.into_iter().next().unwrap())
+                } else {
+                    Ok(VmValue::List(Box::new(contents)))
+                }
+            }
+            #[cfg(not(feature = "mcp"))]
+            BuiltinId::McpReadResource => {
+                Err(runtime_err("MCP not available. Build with --features mcp"))
+            }
+
+            #[cfg(feature = "mcp")]
+            BuiltinId::McpListPrompts => {
+                if args.is_empty() {
+                    return Err(runtime_err("mcp_list_prompts expects 1 argument: client"));
+                }
+                match &args[0] {
+                    VmValue::McpClient(client) => {
+                        let prompts = client.list_prompts().map_err(|e| {
+                            runtime_err(format!("mcp_list_prompts failed: {e}"))
+                        })?;
+                        let vals: Vec<VmValue> = prompts
+                            .iter()
+                            .map(|p| {
+                                let mut pairs: Vec<(Arc<str>, VmValue)> = Vec::new();
+                                pairs.push((
+                                    Arc::from("name"),
+                                    VmValue::String(Arc::from(p.name.as_str())),
+                                ));
+                                if let Some(desc) = &p.description {
+                                    pairs.push((
+                                        Arc::from("description"),
+                                        VmValue::String(Arc::from(desc.as_str())),
+                                    ));
+                                }
+                                if let Some(prompt_args) = &p.arguments {
+                                    let arg_vals: Vec<VmValue> = prompt_args
+                                        .iter()
+                                        .map(|a| {
+                                            let mut arg_pairs: Vec<(Arc<str>, VmValue)> =
+                                                Vec::new();
+                                            arg_pairs.push((
+                                                Arc::from("name"),
+                                                VmValue::String(Arc::from(a.name.as_str())),
+                                            ));
+                                            if let Some(desc) = &a.description {
+                                                arg_pairs.push((
+                                                    Arc::from("description"),
+                                                    VmValue::String(Arc::from(desc.as_str())),
+                                                ));
+                                            }
+                                            arg_pairs.push((
+                                                Arc::from("required"),
+                                                VmValue::Bool(a.required.unwrap_or(false)),
+                                            ));
+                                            VmValue::Map(Box::new(arg_pairs))
+                                        })
+                                        .collect();
+                                    pairs.push((
+                                        Arc::from("arguments"),
+                                        VmValue::List(Box::new(arg_vals)),
+                                    ));
+                                }
+                                VmValue::Map(Box::new(pairs))
+                            })
+                            .collect();
+                        Ok(VmValue::List(Box::new(vals)))
+                    }
+                    _ => Err(runtime_err(
+                        "mcp_list_prompts: argument must be an mcp_client",
+                    )),
+                }
+            }
+            #[cfg(not(feature = "mcp"))]
+            BuiltinId::McpListPrompts => {
+                Err(runtime_err("MCP not available. Build with --features mcp"))
+            }
+
+            #[cfg(feature = "mcp")]
+            BuiltinId::McpGetPrompt => {
+                if args.len() < 2 {
+                    return Err(runtime_err(
+                        "mcp_get_prompt expects 2-3 arguments: client, name, [args]",
+                    ));
+                }
+                let client = match &args[0] {
+                    VmValue::McpClient(c) => c.clone(),
+                    _ => {
+                        return Err(runtime_err(
+                            "mcp_get_prompt: first argument must be an mcp_client",
+                        ))
+                    }
+                };
+                let name = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("mcp_get_prompt: name must be a string")),
+                };
+                let prompt_args = if args.len() > 2 {
+                    let json = vm_value_to_json(&args[2]);
+                    json.as_object().cloned()
+                } else {
+                    None
+                };
+                let result = client
+                    .get_prompt(&name, prompt_args)
+                    .map_err(|e| runtime_err(format!("mcp_get_prompt failed: {e}")))?;
+                let mut pairs: Vec<(Arc<str>, VmValue)> = Vec::new();
+                if let Some(desc) = &result.description {
+                    pairs.push((
+                        Arc::from("description"),
+                        VmValue::String(Arc::from(desc.as_str())),
+                    ));
+                }
+                // Serialize PromptMessage via JSON to avoid direct rmcp type dependency
+                let messages: Vec<VmValue> = result
+                    .messages
+                    .iter()
+                    .map(|m| {
+                        let mut msg_pairs: Vec<(Arc<str>, VmValue)> = Vec::new();
+                        let msg_json = serde_json::to_value(m).unwrap_or_default();
+                        // role is serialized as "user" or "assistant"
+                        if let Some(role) = msg_json.get("role").and_then(|v| v.as_str()) {
+                            msg_pairs.push((
+                                Arc::from("role"),
+                                VmValue::String(Arc::from(role)),
+                            ));
+                        }
+                        // content is an object with "type" field; extract text if it's a text message
+                        if let Some(content) = msg_json.get("content") {
+                            if let Some(text) = content.get("text").and_then(|v| v.as_str()) {
+                                msg_pairs.push((
+                                    Arc::from("content"),
+                                    VmValue::String(Arc::from(text)),
+                                ));
+                            } else {
+                                let content_str = content.to_string();
+                                msg_pairs.push((
+                                    Arc::from("content"),
+                                    VmValue::String(Arc::from(content_str.as_str())),
+                                ));
+                            }
+                        }
+                        VmValue::Map(Box::new(msg_pairs))
+                    })
+                    .collect();
+                pairs.push((Arc::from("messages"), VmValue::List(Box::new(messages))));
+                Ok(VmValue::Map(Box::new(pairs)))
+            }
+            #[cfg(not(feature = "mcp"))]
+            BuiltinId::McpGetPrompt => {
                 Err(runtime_err("MCP not available. Build with --features mcp"))
             }
         }

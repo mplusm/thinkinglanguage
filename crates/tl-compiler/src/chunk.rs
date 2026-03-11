@@ -669,6 +669,10 @@ pub enum BuiltinId {
     McpServe = 220,
     McpServerInfo = 221,
     McpPing = 222,
+    McpListResources = 223,
+    McpReadResource = 224,
+    McpListPrompts = 225,
+    McpGetPrompt = 226,
 }
 
 impl TryFrom<u16> for BuiltinId {
@@ -899,6 +903,10 @@ impl TryFrom<u16> for BuiltinId {
             220 => Ok(BuiltinId::McpServe),
             221 => Ok(BuiltinId::McpServerInfo),
             222 => Ok(BuiltinId::McpPing),
+            223 => Ok(BuiltinId::McpListResources),
+            224 => Ok(BuiltinId::McpReadResource),
+            225 => Ok(BuiltinId::McpListPrompts),
+            226 => Ok(BuiltinId::McpGetPrompt),
             _ => Err(value),
         }
     }
@@ -1140,6 +1148,10 @@ impl BuiltinId {
             "mcp_serve" => Some(BuiltinId::McpServe),
             "mcp_server_info" => Some(BuiltinId::McpServerInfo),
             "mcp_ping" => Some(BuiltinId::McpPing),
+            "mcp_list_resources" => Some(BuiltinId::McpListResources),
+            "mcp_read_resource" => Some(BuiltinId::McpReadResource),
+            "mcp_list_prompts" => Some(BuiltinId::McpListPrompts),
+            "mcp_get_prompt" => Some(BuiltinId::McpGetPrompt),
             _ => None,
         }
     }
@@ -1380,6 +1392,10 @@ impl BuiltinId {
             BuiltinId::McpServe => "mcp_serve",
             BuiltinId::McpServerInfo => "mcp_server_info",
             BuiltinId::McpPing => "mcp_ping",
+            BuiltinId::McpListResources => "mcp_list_resources",
+            BuiltinId::McpReadResource => "mcp_read_resource",
+            BuiltinId::McpListPrompts => "mcp_list_prompts",
+            BuiltinId::McpGetPrompt => "mcp_get_prompt",
         }
     }
 }
@@ -1463,7 +1479,7 @@ mod tests {
 
     #[test]
     fn test_builtin_id_try_from_invalid() {
-        assert_eq!(BuiltinId::try_from(223u16), Err(223u16));
+        assert_eq!(BuiltinId::try_from(227u16), Err(227u16));
         assert_eq!(BuiltinId::try_from(65535u16), Err(65535u16));
     }
 }

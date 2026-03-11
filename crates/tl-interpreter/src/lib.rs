@@ -1211,6 +1211,10 @@ impl Environment {
             global.insert("mcp_serve".to_string(), Value::Builtin("mcp_serve".to_string()));
             global.insert("mcp_server_info".to_string(), Value::Builtin("mcp_server_info".to_string()));
             global.insert("mcp_ping".to_string(), Value::Builtin("mcp_ping".to_string()));
+            global.insert("mcp_list_resources".to_string(), Value::Builtin("mcp_list_resources".to_string()));
+            global.insert("mcp_read_resource".to_string(), Value::Builtin("mcp_read_resource".to_string()));
+            global.insert("mcp_list_prompts".to_string(), Value::Builtin("mcp_list_prompts".to_string()));
+            global.insert("mcp_get_prompt".to_string(), Value::Builtin("mcp_get_prompt".to_string()));
         }
 
         Self {
@@ -7201,6 +7205,157 @@ impl Interpreter {
                 }
 
                 Ok(Value::None)
+            }
+
+            // ── MCP Resources & Prompts ──
+
+            #[cfg(feature = "mcp")]
+            "mcp_list_resources" => {
+                if args.is_empty() {
+                    return Err(runtime_err_s("mcp_list_resources expects 1 argument: client"));
+                }
+                match &args[0] {
+                    Value::McpClient(client) => {
+                        let resources = client.list_resources()
+                            .map_err(|e| runtime_err(format!("mcp_list_resources failed: {e}")))?;
+                        let vals: Vec<Value> = resources.iter().map(|r| {
+                            let mut pairs: Vec<(String, Value)> = Vec::new();
+                            pairs.push(("uri".to_string(), Value::String(r.uri.clone())));
+                            pairs.push(("name".to_string(), Value::String(r.name.clone())));
+                            if let Some(desc) = &r.description {
+                                pairs.push(("description".to_string(), Value::String(desc.clone())));
+                            }
+                            if let Some(mime) = &r.mime_type {
+                                pairs.push(("mime_type".to_string(), Value::String(mime.clone())));
+                            }
+                            Value::Map(pairs)
+                        }).collect();
+                        Ok(Value::List(vals))
+                    }
+                    _ => Err(runtime_err_s("mcp_list_resources: argument must be an mcp_client")),
+                }
+            }
+
+            #[cfg(feature = "mcp")]
+            "mcp_read_resource" => {
+                if args.len() < 2 {
+                    return Err(runtime_err_s("mcp_read_resource expects 2 arguments: client, uri"));
+                }
+                let client = match &args[0] {
+                    Value::McpClient(c) => c.clone(),
+                    _ => return Err(runtime_err_s("mcp_read_resource: first argument must be an mcp_client")),
+                };
+                let uri = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err_s("mcp_read_resource: uri must be a string")),
+                };
+                let result = client.read_resource(&uri)
+                    .map_err(|e| runtime_err(format!("mcp_read_resource failed: {e}")))?;
+                // Serialize ResourceContents via JSON to avoid direct rmcp type dependency
+                let contents: Vec<Value> = result.contents.iter().map(|content| {
+                    let mut pairs: Vec<(String, Value)> = Vec::new();
+                    let json = serde_json::to_value(content).unwrap_or_default();
+                    if let Some(uri_s) = json.get("uri").and_then(|v| v.as_str()) {
+                        pairs.push(("uri".to_string(), Value::String(uri_s.to_string())));
+                    }
+                    if let Some(mime) = json.get("mimeType").and_then(|v| v.as_str()) {
+                        pairs.push(("mime_type".to_string(), Value::String(mime.to_string())));
+                    }
+                    if let Some(text) = json.get("text").and_then(|v| v.as_str()) {
+                        pairs.push(("text".to_string(), Value::String(text.to_string())));
+                    }
+                    if let Some(blob) = json.get("blob").and_then(|v| v.as_str()) {
+                        pairs.push(("blob".to_string(), Value::String(blob.to_string())));
+                    }
+                    Value::Map(pairs)
+                }).collect();
+                if contents.len() == 1 {
+                    Ok(contents.into_iter().next().unwrap())
+                } else {
+                    Ok(Value::List(contents))
+                }
+            }
+
+            #[cfg(feature = "mcp")]
+            "mcp_list_prompts" => {
+                if args.is_empty() {
+                    return Err(runtime_err_s("mcp_list_prompts expects 1 argument: client"));
+                }
+                match &args[0] {
+                    Value::McpClient(client) => {
+                        let prompts = client.list_prompts()
+                            .map_err(|e| runtime_err(format!("mcp_list_prompts failed: {e}")))?;
+                        let vals: Vec<Value> = prompts.iter().map(|p| {
+                            let mut pairs: Vec<(String, Value)> = Vec::new();
+                            pairs.push(("name".to_string(), Value::String(p.name.clone())));
+                            if let Some(desc) = &p.description {
+                                pairs.push(("description".to_string(), Value::String(desc.clone())));
+                            }
+                            if let Some(prompt_args) = &p.arguments {
+                                let arg_vals: Vec<Value> = prompt_args.iter().map(|a| {
+                                    let mut arg_pairs: Vec<(String, Value)> = Vec::new();
+                                    arg_pairs.push(("name".to_string(), Value::String(a.name.clone())));
+                                    if let Some(desc) = &a.description {
+                                        arg_pairs.push(("description".to_string(), Value::String(desc.clone())));
+                                    }
+                                    arg_pairs.push(("required".to_string(), Value::Bool(a.required.unwrap_or(false))));
+                                    Value::Map(arg_pairs)
+                                }).collect();
+                                pairs.push(("arguments".to_string(), Value::List(arg_vals)));
+                            }
+                            Value::Map(pairs)
+                        }).collect();
+                        Ok(Value::List(vals))
+                    }
+                    _ => Err(runtime_err_s("mcp_list_prompts: argument must be an mcp_client")),
+                }
+            }
+
+            #[cfg(feature = "mcp")]
+            "mcp_get_prompt" => {
+                if args.len() < 2 {
+                    return Err(runtime_err_s("mcp_get_prompt expects 2-3 arguments: client, name, [args]"));
+                }
+                let client = match &args[0] {
+                    Value::McpClient(c) => c.clone(),
+                    _ => return Err(runtime_err_s("mcp_get_prompt: first argument must be an mcp_client")),
+                };
+                let name_arg = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err_s("mcp_get_prompt: name must be a string")),
+                };
+                let prompt_args = if args.len() > 2 {
+                    let json = value_to_json(&args[2]);
+                    json.as_object().cloned()
+                } else {
+                    None
+                };
+                let result = client.get_prompt(&name_arg, prompt_args)
+                    .map_err(|e| runtime_err(format!("mcp_get_prompt failed: {e}")))?;
+                let mut pairs: Vec<(String, Value)> = Vec::new();
+                if let Some(desc) = &result.description {
+                    pairs.push(("description".to_string(), Value::String(desc.clone())));
+                }
+                // Serialize PromptMessage via JSON to avoid direct rmcp type dependency
+                let messages: Vec<Value> = result.messages.iter().map(|m| {
+                    let mut msg_pairs: Vec<(String, Value)> = Vec::new();
+                    let msg_json = serde_json::to_value(m).unwrap_or_default();
+                    // role is serialized as "user" or "assistant"
+                    if let Some(role) = msg_json.get("role").and_then(|v| v.as_str()) {
+                        msg_pairs.push(("role".to_string(), Value::String(role.to_string())));
+                    }
+                    // content is an object with "type" field; extract text if it's a text message
+                    if let Some(content) = msg_json.get("content") {
+                        if let Some(text) = content.get("text").and_then(|v| v.as_str()) {
+                            msg_pairs.push(("content".to_string(), Value::String(text.to_string())));
+                        } else {
+                            msg_pairs.push(("content".to_string(), Value::String(content.to_string())));
+                        }
+                    }
+                    Value::Map(msg_pairs)
+                }).collect();
+                pairs.push(("messages".to_string(), Value::List(messages)));
+                Ok(Value::Map(pairs))
             }
 
             _ => Err(runtime_err(format!("Unknown builtin: {name}"))),
