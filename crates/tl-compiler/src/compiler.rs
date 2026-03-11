@@ -628,6 +628,7 @@ impl Compiler {
                 output_format,
                 on_tool_call,
                 on_complete,
+                mcp_servers,
             } => self.compile_agent(
                 name,
                 model,
@@ -641,6 +642,7 @@ impl Compiler {
                 output_format,
                 on_tool_call,
                 on_complete,
+                mcp_servers,
             ),
         }
     }
@@ -1454,6 +1456,7 @@ impl Compiler {
         output_format: &Option<String>,
         on_tool_call: &Option<Vec<tl_ast::Stmt>>,
         on_complete: &Option<Vec<tl_ast::Stmt>>,
+        mcp_servers: &[tl_ast::Expr],
     ) -> Result<(), TlError> {
         let dest = self.add_local(name.to_string());
 
@@ -1525,6 +1528,14 @@ impl Compiler {
             config_exprs.push(tl_ast::Expr::NamedArg {
                 name: format!("tool:{tool_name}"),
                 value: Box::new(tool_expr.clone()),
+            });
+        }
+
+        // Encode MCP server references
+        for (i, expr) in mcp_servers.iter().enumerate() {
+            config_exprs.push(tl_ast::Expr::NamedArg {
+                name: format!("mcp_server:{i}"),
+                value: Box::new(expr.clone()),
             });
         }
 

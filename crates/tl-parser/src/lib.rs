@@ -924,6 +924,7 @@ impl Parser {
         let mut output_format = None;
         let mut on_tool_call = None;
         let mut on_complete = None;
+        let mut mcp_servers: Vec<Expr> = Vec::new();
 
         while !self.check(&Token::RBrace) && !self.is_at_end() {
             match self.peek().clone() {
@@ -1080,6 +1081,19 @@ impl Parser {
                     on_complete = Some(self.parse_block_body()?);
                     self.expect(&Token::RBrace)?;
                 }
+                Token::Ident(s) if s == "mcp_servers" => {
+                    self.advance();
+                    self.expect(&Token::Colon)?;
+                    self.expect(&Token::LBracket)?;
+                    while !self.check(&Token::RBracket) && !self.is_at_end() {
+                        mcp_servers.push(self.parse_expression()?);
+                        if !self.match_token(&Token::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(&Token::RBracket)?;
+                    self.match_token(&Token::Comma);
+                }
                 _ => {
                     return Err(TlError::Parser(ParserError {
                         message: format!(
@@ -1087,7 +1101,7 @@ impl Parser {
                             self.peek()
                         ),
                         span: self.peek_span(),
-                        hint: Some("Expected model, system, tools, max_turns, temperature, max_tokens, base_url, api_key, on_tool_call, or on_complete".into()),
+                        hint: Some("Expected model, system, tools, max_turns, temperature, max_tokens, base_url, api_key, on_tool_call, on_complete, or mcp_servers".into()),
                     }));
                 }
             }
@@ -1117,6 +1131,7 @@ impl Parser {
                 output_format,
                 on_tool_call,
                 on_complete,
+                mcp_servers,
             },
             start,
             end,
@@ -4808,6 +4823,73 @@ schema Secret {
             assert_eq!(on_tool_call.as_ref().unwrap().len(), 1);
             assert!(on_complete.is_some());
             assert_eq!(on_complete.as_ref().unwrap().len(), 1);
+        } else {
+            panic!("Expected Agent statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_agent_with_mcp_servers() {
+        let program = parse(
+            r#"agent mcp_bot {
+                model: "gpt-4o",
+                mcp_servers: [fs_server, db_server],
+                max_turns: 5
+            }"#,
+        )
+        .unwrap();
+        if let StmtKind::Agent {
+            name,
+            mcp_servers,
+            max_turns,
+            ..
+        } = &program.statements[0].kind
+        {
+            assert_eq!(name, "mcp_bot");
+            assert_eq!(mcp_servers.len(), 2);
+            // Each should be an Ident expression
+            assert!(matches!(&mcp_servers[0], Expr::Ident(s) if s == "fs_server"));
+            assert!(matches!(&mcp_servers[1], Expr::Ident(s) if s == "db_server"));
+            assert_eq!(max_turns, &Some(5));
+        } else {
+            panic!("Expected Agent statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_agent_empty_mcp_servers() {
+        let program = parse(
+            r#"agent bot {
+                model: "gpt-4o",
+                mcp_servers: []
+            }"#,
+        )
+        .unwrap();
+        if let StmtKind::Agent {
+            mcp_servers, ..
+        } = &program.statements[0].kind
+        {
+            assert!(mcp_servers.is_empty());
+        } else {
+            panic!("Expected Agent statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_agent_mcp_servers_single() {
+        let program = parse(
+            r#"agent bot {
+                model: "gpt-4o",
+                mcp_servers: [my_server]
+            }"#,
+        )
+        .unwrap();
+        if let StmtKind::Agent {
+            mcp_servers, ..
+        } = &program.statements[0].kind
+        {
+            assert_eq!(mcp_servers.len(), 1);
+            assert!(matches!(&mcp_servers[0], Expr::Ident(s) if s == "my_server"));
         } else {
             panic!("Expected Agent statement");
         }

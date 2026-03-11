@@ -750,6 +750,7 @@ impl Formatter {
                 output_format: _,
                 on_tool_call,
                 on_complete,
+                mcp_servers: _,
             } => {
                 self.push_indent();
                 self.output.push_str("agent ");

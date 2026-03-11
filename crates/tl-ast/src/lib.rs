@@ -263,6 +263,8 @@ pub enum StmtKind {
         output_format: Option<String>,
         on_tool_call: Option<Vec<Stmt>>,
         on_complete: Option<Vec<Stmt>>,
+        /// MCP server clients to use as additional tool providers
+        mcp_servers: Vec<Expr>,
     },
 
     /// `break`
