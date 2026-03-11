@@ -3,6 +3,8 @@
 //! Provides [`TlServerHandler`] which implements the rmcp [`ServerHandler`] trait,
 //! allowing TL to run as an MCP server over stdio. External MCP clients can connect,
 //! discover registered tools via `tools/list`, and invoke them via `tools/call`.
+//! The server also supports resources (`resources/list`, `resources/read`) and
+//! prompts (`prompts/list`, `prompts/get`).
 //!
 //! # Example
 //!
@@ -30,7 +32,10 @@ use std::sync::Arc;
 use rmcp::{
     handler::server::ServerHandler,
     model::{
-        CallToolRequestParams, CallToolResult, Content, Implementation, ListToolsResult,
+        AnnotateAble, CallToolRequestParams, CallToolResult, Content, GetPromptRequestParams,
+        GetPromptResult, Implementation, ListPromptsResult, ListResourcesResult, ListToolsResult,
+        PaginatedRequestParams, Prompt, PromptArgument, PromptMessage, PromptMessageRole,
+        RawResource, ReadResourceRequestParams, ReadResourceResult, ResourceContents,
         ServerCapabilities, ServerInfo, Tool,
     },
     service::ServiceExt,
@@ -97,6 +102,71 @@ pub struct ToolDef {
 }
 
 // ---------------------------------------------------------------------------
+// ResourceDef & PromptDef
+// ---------------------------------------------------------------------------
+
+/// A static resource definition for the MCP server.
+///
+/// Resources are read-only data objects that clients can list and read.
+/// Each resource has a unique URI and text content.
+#[derive(Clone)]
+pub struct ResourceDef {
+    /// The display name of the resource.
+    pub name: String,
+    /// The URI that identifies this resource (e.g. `"tl://readme"`).
+    pub uri: String,
+    /// Optional human-readable description.
+    pub description: Option<String>,
+    /// Optional MIME type (e.g. `"text/plain"`, `"application/json"`).
+    pub mime_type: Option<String>,
+    /// The text content of the resource.
+    pub content: String,
+}
+
+/// A prompt argument definition.
+#[derive(Clone)]
+pub struct PromptArgDef {
+    /// The argument name.
+    pub name: String,
+    /// Optional human-readable description.
+    pub description: Option<String>,
+    /// Whether this argument is required.
+    pub required: bool,
+}
+
+/// Callback type for prompt invocation.
+///
+/// Receives the prompt arguments as a JSON value and returns either a list of
+/// prompt messages or a string error message.
+pub type PromptHandler =
+    Arc<dyn Fn(serde_json::Value) -> Result<Vec<PromptMessageDef>, String> + Send + Sync>;
+
+/// A prompt definition for the MCP server.
+///
+/// Prompts are parameterised message templates that clients can list and invoke.
+/// The handler receives arguments and returns a sequence of messages.
+#[derive(Clone)]
+pub struct PromptDef {
+    /// The prompt name (must be unique within a server).
+    pub name: String,
+    /// Optional human-readable description.
+    pub description: Option<String>,
+    /// The arguments this prompt accepts.
+    pub arguments: Vec<PromptArgDef>,
+    /// The callback that generates prompt messages from arguments.
+    pub handler: PromptHandler,
+}
+
+/// A single message returned by a prompt handler.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PromptMessageDef {
+    /// The role: `"user"` or `"assistant"`.
+    pub role: String,
+    /// The text content of the message.
+    pub content: String,
+}
+
+// ---------------------------------------------------------------------------
 // TlServerHandler
 // ---------------------------------------------------------------------------
 
@@ -106,6 +176,8 @@ pub struct ToolDef {
 /// to construct an instance with registered tools.
 pub struct TlServerHandler {
     pub(crate) tools: Vec<ToolDef>,
+    pub(crate) resources: Vec<ResourceDef>,
+    pub(crate) prompts: Vec<PromptDef>,
     pub(crate) server_info: ServerInfo,
 }
 
@@ -114,6 +186,8 @@ impl TlServerHandler {
     pub fn builder() -> TlServerBuilder {
         TlServerBuilder {
             tools: Vec::new(),
+            resources: Vec::new(),
+            prompts: Vec::new(),
             name: "tl-mcp-server".to_string(),
             version: "0.1.0".to_string(),
         }
@@ -122,6 +196,16 @@ impl TlServerHandler {
     /// Returns the number of registered tools.
     pub fn tool_count(&self) -> usize {
         self.tools.len()
+    }
+
+    /// Returns the number of registered resources.
+    pub fn resource_count(&self) -> usize {
+        self.resources.len()
+    }
+
+    /// Returns the number of registered prompts.
+    pub fn prompt_count(&self) -> usize {
+        self.prompts.len()
     }
 
     /// Convert a `ToolDef` into an rmcp `Tool` for protocol responses.
@@ -150,7 +234,7 @@ impl ServerHandler for TlServerHandler {
 
     fn list_tools(
         &self,
-        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _request: Option<PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, rmcp::ErrorData>> + Send + '_ {
         let tools: Vec<Tool> = self.tools.iter().map(Self::tool_def_to_rmcp).collect();
@@ -168,6 +252,134 @@ impl ServerHandler for TlServerHandler {
     ) -> impl Future<Output = Result<CallToolResult, rmcp::ErrorData>> + Send + '_ {
         let result = self.dispatch_tool_call(&request);
         std::future::ready(result)
+    }
+
+    fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> impl Future<Output = Result<ListResourcesResult, rmcp::ErrorData>> + Send + '_ {
+        let resources = self
+            .resources
+            .iter()
+            .map(|r| {
+                let mut raw = RawResource::new(&r.uri, &r.name);
+                if let Some(desc) = &r.description {
+                    raw = raw.with_description(desc.as_str());
+                }
+                if let Some(mime) = &r.mime_type {
+                    raw = raw.with_mime_type(mime.as_str());
+                }
+                raw.no_annotation()
+            })
+            .collect();
+        std::future::ready(Ok(ListResourcesResult {
+            meta: None,
+            next_cursor: None,
+            resources,
+        }))
+    }
+
+    fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> impl Future<Output = Result<ReadResourceResult, rmcp::ErrorData>> + Send + '_ {
+        let uri = &request.uri;
+        let result = self.resources.iter().find(|r| r.uri == *uri);
+        match result {
+            Some(r) => {
+                let mut content = ResourceContents::text(&r.content, &r.uri);
+                if let Some(mime) = &r.mime_type {
+                    content = content.with_mime_type(mime.as_str());
+                }
+                std::future::ready(Ok(ReadResourceResult::new(vec![content])))
+            }
+            None => std::future::ready(Err(rmcp::ErrorData::resource_not_found(
+                format!("Resource not found: {uri}"),
+                None,
+            ))),
+        }
+    }
+
+    fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> impl Future<Output = Result<ListPromptsResult, rmcp::ErrorData>> + Send + '_ {
+        let prompts = self
+            .prompts
+            .iter()
+            .map(|p| {
+                let args: Option<Vec<PromptArgument>> = if p.arguments.is_empty() {
+                    None
+                } else {
+                    Some(
+                        p.arguments
+                            .iter()
+                            .map(|a| {
+                                let mut arg = PromptArgument::new(&a.name);
+                                if let Some(desc) = &a.description {
+                                    arg = arg.with_description(desc.as_str());
+                                }
+                                arg = arg.with_required(a.required);
+                                arg
+                            })
+                            .collect(),
+                    )
+                };
+                Prompt::new(&p.name, p.description.as_deref(), args)
+            })
+            .collect();
+        std::future::ready(Ok(ListPromptsResult {
+            meta: None,
+            next_cursor: None,
+            prompts,
+        }))
+    }
+
+    fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> impl Future<Output = Result<GetPromptResult, rmcp::ErrorData>> + Send + '_ {
+        let name = &request.name;
+        let result = self.prompts.iter().find(|p| p.name == *name);
+        match result {
+            Some(p) => {
+                let args_json = match &request.arguments {
+                    Some(args) => {
+                        serde_json::Value::Object(args.clone())
+                    }
+                    None => serde_json::Value::Object(serde_json::Map::new()),
+                };
+                match (p.handler)(args_json) {
+                    Ok(messages) => {
+                        let prompt_messages: Vec<PromptMessage> = messages
+                            .iter()
+                            .map(|m| {
+                                let role = if m.role == "assistant" {
+                                    PromptMessageRole::Assistant
+                                } else {
+                                    PromptMessageRole::User
+                                };
+                                PromptMessage::new_text(role, &m.content)
+                            })
+                            .collect();
+                        let mut result = GetPromptResult::new(prompt_messages);
+                        if let Some(desc) = &p.description {
+                            result = result.with_description(desc.as_str());
+                        }
+                        std::future::ready(Ok(result))
+                    }
+                    Err(e) => std::future::ready(Err(rmcp::ErrorData::internal_error(e, None))),
+                }
+            }
+            None => std::future::ready(Err(rmcp::ErrorData::invalid_params(
+                format!("Prompt not found: {name}"),
+                None,
+            ))),
+        }
     }
 }
 
@@ -214,9 +426,12 @@ impl TlServerHandler {
 // Builder
 // ---------------------------------------------------------------------------
 
-/// Builder for constructing a [`TlServerHandler`] with registered tools.
+/// Builder for constructing a [`TlServerHandler`] with registered tools,
+/// resources, and prompts.
 pub struct TlServerBuilder {
     tools: Vec<ToolDef>,
+    resources: Vec<ResourceDef>,
+    prompts: Vec<PromptDef>,
     name: String,
     version: String,
 }
@@ -237,6 +452,18 @@ impl TlServerBuilder {
     /// Register a tool with the server.
     pub fn tool(mut self, def: ToolDef) -> Self {
         self.tools.push(def);
+        self
+    }
+
+    /// Register a resource with the server.
+    pub fn resource(mut self, def: ResourceDef) -> Self {
+        self.resources.push(def);
+        self
+    }
+
+    /// Register a prompt with the server.
+    pub fn prompt(mut self, def: PromptDef) -> Self {
+        self.prompts.push(def);
         self
     }
 
@@ -276,15 +503,43 @@ impl TlServerBuilder {
         (self, rx)
     }
 
-    /// Build the [`TlServerHandler`] with all registered tools.
+    /// Build the [`TlServerHandler`] with all registered tools, resources,
+    /// and prompts.
+    ///
+    /// Capabilities are set based on what was registered:
+    /// - Tools capability is always enabled.
+    /// - Resources capability is enabled if at least one resource was registered.
+    /// - Prompts capability is enabled if at least one prompt was registered.
     pub fn build(self) -> TlServerHandler {
-        let capabilities = ServerCapabilities::builder().enable_tools().build();
+        let has_resources = !self.resources.is_empty();
+        let has_prompts = !self.prompts.is_empty();
+
+        // The rmcp builder uses const-generic state tracking, so we need to
+        // handle each combination to satisfy the type system.
+        let capabilities = match (has_resources, has_prompts) {
+            (true, true) => ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .enable_prompts()
+                .build(),
+            (true, false) => ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+            (false, true) => ServerCapabilities::builder()
+                .enable_tools()
+                .enable_prompts()
+                .build(),
+            (false, false) => ServerCapabilities::builder().enable_tools().build(),
+        };
 
         let server_info = ServerInfo::new(capabilities)
             .with_server_info(Implementation::new(&self.name, &self.version));
 
         TlServerHandler {
             tools: self.tools,
+            resources: self.resources,
+            prompts: self.prompts,
             server_info,
         }
     }
@@ -399,15 +654,19 @@ async fn serve_http_async(handler: TlServerHandler, port: u16) -> Result<(), Mcp
         session::local::LocalSessionManager,
     };
 
-    // Capture the tools and server_info so the factory can create new
-    // TlServerHandler instances per session (each session gets its own handler).
+    // Capture all fields so the factory can create new TlServerHandler instances
+    // per session (each session gets its own handler).
     let tools = handler.tools;
+    let resources = handler.resources;
+    let prompts = handler.prompts;
     let server_info = handler.server_info;
 
     let service = StreamableHttpService::new(
         move || {
             Ok(TlServerHandler {
                 tools: tools.clone(),
+                resources: resources.clone(),
+                prompts: prompts.clone(),
                 server_info: server_info.clone(),
             })
         },
@@ -767,6 +1026,8 @@ mod tests {
                 std::sync::mpsc::sync_channel::<Result<CallToolResult, rmcp::ErrorData>>(1);
             let handler = TlServerHandler {
                 tools: handler_ref.tools.clone(),
+                resources: handler_ref.resources.clone(),
+                prompts: handler_ref.prompts.clone(),
                 server_info: handler_ref.server_info.clone(),
             };
             let jh = std::thread::spawn(move || {
@@ -823,5 +1084,366 @@ mod tests {
         // We cannot actually run stdio in tests, but we can verify the type.
         let _: fn(TlServerHandler) -> std::thread::JoinHandle<Result<(), McpError>> =
             serve_stdio_background;
+    }
+
+    // -----------------------------------------------------------------------
+    // Resource tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_server_with_resources() {
+        let handler = TlServerHandler::builder()
+            .name("res-test")
+            .version("1.0.0")
+            .resource(ResourceDef {
+                name: "readme".to_string(),
+                uri: "tl://readme".to_string(),
+                description: Some("A readme".to_string()),
+                mime_type: Some("text/plain".to_string()),
+                content: "Hello from TL!".to_string(),
+            })
+            .build();
+
+        assert_eq!(handler.resource_count(), 1);
+        assert!(handler.server_info.capabilities.resources.is_some());
+        assert!(handler.server_info.capabilities.tools.is_some());
+    }
+
+    #[test]
+    fn test_server_no_resources_capability_disabled() {
+        let handler = TlServerHandler::builder()
+            .name("no-res-test")
+            .version("1.0.0")
+            .build();
+
+        assert_eq!(handler.resource_count(), 0);
+        assert!(
+            handler.server_info.capabilities.resources.is_none(),
+            "Resources capability should be disabled when no resources registered"
+        );
+    }
+
+    #[test]
+    fn test_list_resources() {
+        let handler = TlServerHandler::builder()
+            .name("list-res-test")
+            .version("1.0.0")
+            .resource(ResourceDef {
+                name: "readme".to_string(),
+                uri: "tl://readme".to_string(),
+                description: Some("A readme".to_string()),
+                mime_type: Some("text/plain".to_string()),
+                content: "Hello from TL!".to_string(),
+            })
+            .resource(ResourceDef {
+                name: "config".to_string(),
+                uri: "tl://config".to_string(),
+                description: None,
+                mime_type: Some("application/json".to_string()),
+                content: "{}".to_string(),
+            })
+            .build();
+
+        assert_eq!(handler.resource_count(), 2);
+        assert_eq!(handler.resources[0].name, "readme");
+        assert_eq!(handler.resources[1].name, "config");
+    }
+
+    #[test]
+    fn test_read_resource_found() {
+        let handler = TlServerHandler::builder()
+            .name("read-res-test")
+            .version("1.0.0")
+            .resource(ResourceDef {
+                name: "readme".to_string(),
+                uri: "tl://readme".to_string(),
+                description: Some("A readme".to_string()),
+                mime_type: Some("text/plain".to_string()),
+                content: "Hello from TL!".to_string(),
+            })
+            .build();
+
+        let resource = handler.resources.iter().find(|r| r.uri == "tl://readme");
+        assert!(resource.is_some());
+        let r = resource.unwrap();
+        assert_eq!(r.content, "Hello from TL!");
+        assert_eq!(r.mime_type.as_deref(), Some("text/plain"));
+    }
+
+    #[test]
+    fn test_read_resource_not_found() {
+        let handler = TlServerHandler::builder()
+            .name("read-res-test")
+            .version("1.0.0")
+            .resource(ResourceDef {
+                name: "readme".to_string(),
+                uri: "tl://readme".to_string(),
+                description: None,
+                mime_type: None,
+                content: "content".to_string(),
+            })
+            .build();
+
+        let resource = handler
+            .resources
+            .iter()
+            .find(|r| r.uri == "tl://nonexistent");
+        assert!(resource.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Prompt tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_server_with_prompts() {
+        let handler = TlServerHandler::builder()
+            .name("prompt-test")
+            .version("1.0.0")
+            .prompt(PromptDef {
+                name: "greeting".to_string(),
+                description: Some("Greet someone".to_string()),
+                arguments: vec![PromptArgDef {
+                    name: "name".to_string(),
+                    description: Some("Person to greet".to_string()),
+                    required: true,
+                }],
+                handler: Arc::new(|args| {
+                    let name = args
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("World");
+                    Ok(vec![PromptMessageDef {
+                        role: "user".to_string(),
+                        content: format!("Please greet {name} warmly"),
+                    }])
+                }),
+            })
+            .build();
+
+        assert_eq!(handler.prompt_count(), 1);
+        assert!(handler.server_info.capabilities.prompts.is_some());
+        assert!(handler.server_info.capabilities.tools.is_some());
+    }
+
+    #[test]
+    fn test_server_no_prompts_capability_disabled() {
+        let handler = TlServerHandler::builder()
+            .name("no-prompt-test")
+            .version("1.0.0")
+            .build();
+
+        assert_eq!(handler.prompt_count(), 0);
+        assert!(
+            handler.server_info.capabilities.prompts.is_none(),
+            "Prompts capability should be disabled when no prompts registered"
+        );
+    }
+
+    #[test]
+    fn test_prompt_handler_invocation() {
+        let handler = TlServerHandler::builder()
+            .name("prompt-invoke-test")
+            .version("1.0.0")
+            .prompt(PromptDef {
+                name: "greeting".to_string(),
+                description: Some("Greet someone".to_string()),
+                arguments: vec![PromptArgDef {
+                    name: "name".to_string(),
+                    description: Some("Person to greet".to_string()),
+                    required: true,
+                }],
+                handler: Arc::new(|args| {
+                    let name = args
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("World");
+                    Ok(vec![
+                        PromptMessageDef {
+                            role: "user".to_string(),
+                            content: format!("Please greet {name} warmly"),
+                        },
+                        PromptMessageDef {
+                            role: "assistant".to_string(),
+                            content: format!("Hello, {name}! Welcome!"),
+                        },
+                    ])
+                }),
+            })
+            .build();
+
+        let prompt = &handler.prompts[0];
+        let args = json!({"name": "Alice"});
+        let messages = (prompt.handler)(args).unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[0].content, "Please greet Alice warmly");
+        assert_eq!(messages[1].role, "assistant");
+        assert_eq!(messages[1].content, "Hello, Alice! Welcome!");
+    }
+
+    #[test]
+    fn test_prompt_handler_error() {
+        let handler = TlServerHandler::builder()
+            .name("prompt-err-test")
+            .version("1.0.0")
+            .prompt(PromptDef {
+                name: "failing".to_string(),
+                description: None,
+                arguments: vec![],
+                handler: Arc::new(|_| Err("Missing required argument".to_string())),
+            })
+            .build();
+
+        let prompt = &handler.prompts[0];
+        let result = (prompt.handler)(json!({}));
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Missing required argument");
+    }
+
+    #[test]
+    fn test_prompt_not_found() {
+        let handler = TlServerHandler::builder()
+            .name("prompt-notfound-test")
+            .version("1.0.0")
+            .prompt(PromptDef {
+                name: "existing".to_string(),
+                description: None,
+                arguments: vec![],
+                handler: Arc::new(|_| Ok(vec![])),
+            })
+            .build();
+
+        let found = handler.prompts.iter().find(|p| p.name == "nonexistent");
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn test_server_all_capabilities() {
+        let handler = TlServerHandler::builder()
+            .name("full-test")
+            .version("1.0.0")
+            .tool(make_echo_tool())
+            .resource(ResourceDef {
+                name: "readme".to_string(),
+                uri: "tl://readme".to_string(),
+                description: None,
+                mime_type: None,
+                content: "content".to_string(),
+            })
+            .prompt(PromptDef {
+                name: "greet".to_string(),
+                description: None,
+                arguments: vec![],
+                handler: Arc::new(|_| Ok(vec![])),
+            })
+            .build();
+
+        assert_eq!(handler.tool_count(), 1);
+        assert_eq!(handler.resource_count(), 1);
+        assert_eq!(handler.prompt_count(), 1);
+        assert!(handler.server_info.capabilities.tools.is_some());
+        assert!(handler.server_info.capabilities.resources.is_some());
+        assert!(handler.server_info.capabilities.prompts.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_list_resources_via_trait() {
+        let handler = TlServerHandler::builder()
+            .name("trait-res-test")
+            .version("1.0.0")
+            .resource(ResourceDef {
+                name: "readme".to_string(),
+                uri: "tl://readme".to_string(),
+                description: Some("A readme".to_string()),
+                mime_type: Some("text/plain".to_string()),
+                content: "Hello from TL!".to_string(),
+            })
+            .build();
+
+        // Convert using the same logic as list_resources
+        let resources: Vec<rmcp::model::Resource> = handler
+            .resources
+            .iter()
+            .map(|r| {
+                let mut raw = RawResource::new(&r.uri, &r.name);
+                if let Some(desc) = &r.description {
+                    raw = raw.with_description(desc.as_str());
+                }
+                if let Some(mime) = &r.mime_type {
+                    raw = raw.with_mime_type(mime.as_str());
+                }
+                raw.no_annotation()
+            })
+            .collect();
+
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].name, "readme");
+        assert_eq!(resources[0].uri, "tl://readme");
+        assert_eq!(resources[0].description.as_deref(), Some("A readme"));
+        assert_eq!(resources[0].mime_type.as_deref(), Some("text/plain"));
+    }
+
+    #[tokio::test]
+    async fn test_list_prompts_via_trait() {
+        let handler = TlServerHandler::builder()
+            .name("trait-prompt-test")
+            .version("1.0.0")
+            .prompt(PromptDef {
+                name: "greeting".to_string(),
+                description: Some("Greet someone".to_string()),
+                arguments: vec![
+                    PromptArgDef {
+                        name: "name".to_string(),
+                        description: Some("Person to greet".to_string()),
+                        required: true,
+                    },
+                    PromptArgDef {
+                        name: "style".to_string(),
+                        description: None,
+                        required: false,
+                    },
+                ],
+                handler: Arc::new(|_| Ok(vec![])),
+            })
+            .build();
+
+        // Convert using the same logic as list_prompts
+        let prompts: Vec<Prompt> = handler
+            .prompts
+            .iter()
+            .map(|p| {
+                let args: Option<Vec<PromptArgument>> = if p.arguments.is_empty() {
+                    None
+                } else {
+                    Some(
+                        p.arguments
+                            .iter()
+                            .map(|a| {
+                                let mut arg = PromptArgument::new(&a.name);
+                                if let Some(desc) = &a.description {
+                                    arg = arg.with_description(desc.as_str());
+                                }
+                                arg = arg.with_required(a.required);
+                                arg
+                            })
+                            .collect(),
+                    )
+                };
+                Prompt::new(&p.name, p.description.as_deref(), args)
+            })
+            .collect();
+
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].name, "greeting");
+        assert_eq!(prompts[0].description.as_deref(), Some("Greet someone"));
+        let args = prompts[0].arguments.as_ref().unwrap();
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0].name, "name");
+        assert_eq!(args[0].description.as_deref(), Some("Person to greet"));
+        assert_eq!(args[0].required, Some(true));
+        assert_eq!(args[1].name, "style");
+        assert_eq!(args[1].description, None);
+        assert_eq!(args[1].required, Some(false));
     }
 }
