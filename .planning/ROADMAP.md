@@ -138,4 +138,4 @@ Phases 1 → 2 → 3 → {4, 5, 6} parallel → 7 → 8
 | 5. Agent Integration | 3/3 | Complete | 2026-03-11 |
 | 6. MCP Server — Tools | 3/3 | Complete | 2026-03-11 |
 | 7. Resources & Prompts | 3/3 | Complete | 2026-03-11 |
-| 8. Sampling & Hardening | 0/TBD | Not started | - |
+| 8. Sampling & Hardening | 3/3 | Complete | 2026-03-11 |

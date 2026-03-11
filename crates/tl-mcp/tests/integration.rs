@@ -4,6 +4,7 @@
 //! connect via [`McpClient`], and verify the full MCP lifecycle:
 //! handshake, tool discovery, tool invocation, error handling, and cleanup.
 
+use std::sync::Arc;
 use tl_errors::security::SecurityPolicy;
 use tl_mcp::client::McpClient;
 use tl_mcp::error::McpError;
@@ -501,4 +502,492 @@ fn test_http_client_server_roundtrip() {
     // the test exits)
     drop(client);
     drop(server_handle);
+}
+
+// ---------------------------------------------------------------------------
+// Test 14: Tool call with invalid (non-object) arguments
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_call_tool_invalid_arguments() {
+    let client = connect_test_server();
+
+    // Array argument should be rejected
+    let result = client.call_tool("echo", serde_json::json!(["not", "an", "object"]));
+    assert!(result.is_err(), "Array arguments should be rejected");
+    match result.unwrap_err() {
+        McpError::ProtocolError(msg) => {
+            assert!(
+                msg.contains("JSON object"),
+                "Error should mention JSON object, got: {}",
+                msg
+            );
+        }
+        other => panic!("Expected ProtocolError, got: {:?}", other),
+    }
+
+    // String argument should be rejected
+    let result = client.call_tool("echo", serde_json::json!("just a string"));
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        McpError::ProtocolError(_)
+    ));
+
+    // Number argument should be rejected
+    let result = client.call_tool("echo", serde_json::json!(42));
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        McpError::ProtocolError(_)
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Test 15: Tool call with null arguments (should be accepted)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_call_tool_null_arguments() {
+    let client = connect_test_server();
+
+    // Null arguments should be accepted (echo defaults to "no message")
+    let result = client
+        .call_tool("echo", serde_json::Value::Null)
+        .expect("null arguments should be accepted");
+    assert_ne!(result.is_error, Some(true));
+    let text = result.content[0].raw.as_text().unwrap();
+    assert!(
+        text.text.contains("no message"),
+        "Echo with null args should default, got: {}",
+        text.text
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 16: Tool call with empty object arguments
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_call_tool_empty_object() {
+    let client = connect_test_server();
+
+    // Empty object should be accepted (echo defaults to "no message")
+    let result = client
+        .call_tool("echo", serde_json::json!({}))
+        .expect("empty object arguments should be accepted");
+    assert_ne!(result.is_error, Some(true));
+    let text = result.content[0].raw.as_text().unwrap();
+    assert!(
+        text.text.contains("no message"),
+        "Echo with empty args should default, got: {}",
+        text.text
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 17: Tool with Unicode arguments
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_call_tool_unicode_arguments() {
+    let client = connect_test_server();
+
+    // Unicode string
+    let result = client
+        .call_tool("echo", serde_json::json!({"message": "Hello \u{1F680}\u{2728} World"}))
+        .expect("unicode arguments should work");
+    let text = result.content[0].raw.as_text().unwrap();
+    assert!(
+        text.text.contains("\u{1F680}"),
+        "Should preserve unicode, got: {}",
+        text.text
+    );
+
+    // Empty string argument
+    let result = client
+        .call_tool("echo", serde_json::json!({"message": ""}))
+        .expect("empty string argument should work");
+    assert_ne!(result.is_error, Some(true));
+}
+
+// ---------------------------------------------------------------------------
+// Test 18: Add tool with edge case numbers
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_call_tool_add_edge_numbers() {
+    let client = connect_test_server();
+
+    // Zero + zero
+    let result = client
+        .call_tool("add", serde_json::json!({"a": 0, "b": 0}))
+        .expect("add 0+0 should work");
+    let text = result.content[0].raw.as_text().unwrap();
+    assert!(text.text.contains("0"), "0+0 should give 0, got: {}", text.text);
+
+    // Negative numbers
+    let result = client
+        .call_tool("add", serde_json::json!({"a": -10, "b": -20}))
+        .expect("add negatives should work");
+    let text = result.content[0].raw.as_text().unwrap();
+    assert!(
+        text.text.contains("-30"),
+        "(-10)+(-20) should give -30, got: {}",
+        text.text
+    );
+
+    // Large numbers
+    let result = client
+        .call_tool("add", serde_json::json!({"a": 999999999, "b": 1}))
+        .expect("add large numbers should work");
+    let text = result.content[0].raw.as_text().unwrap();
+    assert!(
+        text.text.contains("1000000000"),
+        "Should give 1000000000, got: {}",
+        text.text
+    );
+
+    // Float precision
+    let result = client
+        .call_tool("add", serde_json::json!({"a": 0.1, "b": 0.2}))
+        .expect("add floats should work");
+    let text = result.content[0].raw.as_text().unwrap();
+    assert!(
+        text.text.contains("0.3"),
+        "0.1+0.2 should contain 0.3, got: {}",
+        text.text
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 19: Resources listing and reading
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_list_and_read_resources() {
+    let client = connect_test_server();
+
+    let resources = client.list_resources().expect("list_resources should succeed");
+    assert!(!resources.is_empty(), "Test server should have resources");
+
+    // Find the readme resource
+    let readme = resources
+        .iter()
+        .find(|r| r.name.as_str() == "readme")
+        .expect("Should have 'readme' resource");
+    assert_eq!(readme.uri.as_str(), "tl://readme");
+
+    // Read the resource
+    let result = client.read_resource("tl://readme").expect("read_resource should succeed");
+    assert!(
+        !result.contents.is_empty(),
+        "Resource should have contents"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 20: Prompts listing and retrieval
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_list_and_get_prompts() {
+    let client = connect_test_server();
+
+    let prompts = client.list_prompts().expect("list_prompts should succeed");
+    assert!(!prompts.is_empty(), "Test server should have prompts");
+
+    // Find the greeting prompt
+    let greeting = prompts
+        .iter()
+        .find(|p| p.name.as_str() == "greeting")
+        .expect("Should have 'greeting' prompt");
+    assert!(
+        greeting.description.is_some(),
+        "Prompt should have description"
+    );
+
+    // Get prompt with arguments
+    let mut args = serde_json::Map::new();
+    args.insert("name".to_string(), serde_json::json!("TL"));
+    let result = client
+        .get_prompt("greeting", Some(args))
+        .expect("get_prompt should succeed");
+    assert!(
+        !result.messages.is_empty(),
+        "Prompt result should have messages"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 21: Read nonexistent resource
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_read_nonexistent_resource() {
+    let client = connect_test_server();
+
+    let result = client.read_resource("tl://nonexistent");
+    assert!(result.is_err(), "Reading nonexistent resource should fail");
+}
+
+// ---------------------------------------------------------------------------
+// Test 22: Get nonexistent prompt
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_get_nonexistent_prompt() {
+    let client = connect_test_server();
+
+    let result = client.get_prompt("nonexistent", None);
+    assert!(result.is_err(), "Getting nonexistent prompt should fail");
+}
+
+// ---------------------------------------------------------------------------
+// Test 23: Double disconnect is safe
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_double_disconnect() {
+    let mut client = connect_test_server();
+
+    client.disconnect().expect("first disconnect should succeed");
+    assert!(!client.is_connected());
+
+    // Second disconnect should also succeed (no-op)
+    client
+        .disconnect()
+        .expect("second disconnect should succeed (no-op)");
+    assert!(!client.is_connected());
+}
+
+// ---------------------------------------------------------------------------
+// Test 24: Sampling callback construction
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_sampling_callback_unit() {
+    use tl_mcp::client::{SamplingCallback, SamplingResponse};
+
+    let cb: SamplingCallback = Arc::new(|req| {
+        let last_msg = req
+            .messages
+            .last()
+            .map(|(_, c)| c.clone())
+            .unwrap_or_default();
+        Ok(SamplingResponse {
+            model: "test-model".to_string(),
+            content: format!("Echo: {}", last_msg),
+            stop_reason: Some("endTurn".to_string()),
+        })
+    });
+
+    // Invoke the callback directly
+    let req = tl_mcp::client::SamplingRequest {
+        messages: vec![("user".to_string(), "hello".to_string())],
+        system_prompt: None,
+        max_tokens: 100,
+        temperature: None,
+        model_hint: None,
+        stop_sequences: None,
+    };
+    let resp = cb(req).unwrap();
+    assert_eq!(resp.model, "test-model");
+    assert_eq!(resp.content, "Echo: hello");
+    assert_eq!(resp.stop_reason, Some("endTurn".to_string()));
+}
+
+// ---------------------------------------------------------------------------
+// Test 25: Sampling callback error path
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_sampling_callback_error() {
+    use tl_mcp::client::{SamplingCallback, SamplingRequest};
+
+    let cb: SamplingCallback = Arc::new(|_req| {
+        Err("LLM provider unavailable".to_string())
+    });
+
+    let req = SamplingRequest {
+        messages: vec![("user".to_string(), "test".to_string())],
+        system_prompt: None,
+        max_tokens: 100,
+        temperature: None,
+        model_hint: None,
+        stop_sequences: None,
+    };
+    let result = cb(req);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err(), "LLM provider unavailable");
+}
+
+// ---------------------------------------------------------------------------
+// Test 26: Server builder with all capability types (roundtrip)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_server_builder_all_capabilities() {
+    use tl_mcp::server::{
+        PromptArgDef, PromptDef, PromptMessageDef, ResourceDef, TlServerHandler, ToolDef,
+    };
+
+    let handler = TlServerHandler::builder()
+        .name("full-server")
+        .version("2.0.0")
+        .tool(ToolDef {
+            name: "t1".to_string(),
+            description: "Tool 1".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+            handler: Arc::new(|_| Ok(serde_json::json!("ok"))),
+        })
+        .tool(ToolDef {
+            name: "t2".to_string(),
+            description: "Tool 2".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+            handler: Arc::new(|_| Ok(serde_json::json!("ok"))),
+        })
+        .resource(ResourceDef {
+            name: "r1".to_string(),
+            uri: "tl://r1".to_string(),
+            description: Some("Resource 1".to_string()),
+            mime_type: Some("text/plain".to_string()),
+            content: "resource content".to_string(),
+        })
+        .prompt(PromptDef {
+            name: "p1".to_string(),
+            description: Some("Prompt 1".to_string()),
+            arguments: vec![PromptArgDef {
+                name: "arg1".to_string(),
+                description: Some("First arg".to_string()),
+                required: true,
+            }],
+            handler: Arc::new(|_args| {
+                Ok(vec![PromptMessageDef {
+                    role: "user".to_string(),
+                    content: "test".to_string(),
+                }])
+            }),
+        })
+        .build();
+
+    // Verify via HTTP roundtrip that all capabilities work
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    let _server = std::thread::spawn(move || {
+        tl_mcp::server::serve_http(handler, port)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    let client = McpClient::connect_http(&format!("http://127.0.0.1:{port}/mcp"))
+        .expect("connect should succeed");
+
+    let info = client.server_info().expect("info");
+    assert_eq!(info.server_info.name, "full-server");
+    assert_eq!(info.server_info.version, "2.0.0");
+
+    let tools = client.list_tools().expect("list_tools");
+    assert_eq!(tools.len(), 2);
+
+    let resources = client.list_resources().expect("list_resources");
+    assert_eq!(resources.len(), 1);
+
+    let prompts = client.list_prompts().expect("list_prompts");
+    assert_eq!(prompts.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Test 27: McpError Display coverage
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_mcp_error_variants() {
+    // Ensure all error variants have proper Display
+    let errors: Vec<McpError> = vec![
+        McpError::PermissionDenied("blocked".into()),
+        McpError::ConnectionFailed("refused".into()),
+        McpError::ProtocolError("bad message".into()),
+        McpError::ToolError("crash".into()),
+        McpError::TransportClosed,
+        McpError::Timeout,
+        McpError::RuntimeError("exhausted".into()),
+    ];
+
+    let displays = vec![
+        "Permission denied: blocked",
+        "Connection failed: refused",
+        "Protocol error: bad message",
+        "Tool error: crash",
+        "Transport closed",
+        "Timeout",
+        "Runtime error: exhausted",
+    ];
+
+    for (err, expected) in errors.iter().zip(displays.iter()) {
+        assert_eq!(err.to_string(), *expected);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 28: Security policy edge cases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_security_policy_edge_cases() {
+    // Sandbox with no allowed commands
+    let policy = SecurityPolicy::sandbox();
+    let result = McpClient::connect("anything", &[], Some(&policy));
+    assert!(matches!(
+        result.unwrap_err(),
+        McpError::PermissionDenied(_)
+    ));
+
+    // Permissive policy should not block (will fail at connection, not security)
+    let policy = SecurityPolicy::permissive();
+    let result = McpClient::connect("__nonexistent__", &[], Some(&policy));
+    assert!(matches!(
+        result.unwrap_err(),
+        McpError::ConnectionFailed(_)
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Test 29: Server builder with empty capabilities (roundtrip)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_server_builder_no_capabilities() {
+    use tl_mcp::server::TlServerHandler;
+
+    let handler = TlServerHandler::builder()
+        .name("empty-server")
+        .version("0.0.1")
+        .build();
+
+    // Verify via HTTP roundtrip that empty capabilities work
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    let _server = std::thread::spawn(move || {
+        tl_mcp::server::serve_http(handler, port)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    let client = McpClient::connect_http(&format!("http://127.0.0.1:{port}/mcp"))
+        .expect("connect should succeed");
+
+    let info = client.server_info().expect("info");
+    assert_eq!(info.server_info.name, "empty-server");
+
+    // Empty server should return empty lists (or error since capabilities not declared)
+    // Tools capability may not be declared, so list_tools could fail
+    let tools_result = client.list_tools();
+    // Either returns empty list or errors (both acceptable for server with no tools declared)
+    match tools_result {
+        Ok(tools) => assert!(tools.is_empty()),
+        Err(_) => {} // Expected: tools capability not declared
+    }
 }
