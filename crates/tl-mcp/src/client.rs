@@ -22,6 +22,19 @@ use tl_errors::security::SecurityPolicy;
 use crate::error::McpError;
 
 // ---------------------------------------------------------------------------
+// Timeout constants
+// ---------------------------------------------------------------------------
+
+/// Timeout for initial MCP handshake (connect / serve).
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Timeout for tool calls (may do substantial work).
+const TOOL_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Timeout for metadata / lightweight operations (ping, list, read).
+const METADATA_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+// ---------------------------------------------------------------------------
 // Client handler (minimal — we just identify ourselves)
 // ---------------------------------------------------------------------------
 
@@ -126,16 +139,17 @@ impl McpClient {
                 McpError::ConnectionFailed(format!("Failed to spawn '{}': {}", command, e))
             })?;
 
-            // Perform 3-step handshake: initialize -> response -> initialized
-            let service = TlClientHandler
-                .serve(transport)
-                .await
-                .map_err(|e| McpError::ConnectionFailed(format!("Handshake failed: {}", e)))?;
-
-            // Cache server info
-            let server_info = service.peer().peer_info().cloned();
-
-            Ok::<_, McpError>((service, server_info))
+            // Perform 3-step handshake with timeout
+            match tokio::time::timeout(CONNECT_TIMEOUT, TlClientHandler.serve(transport)).await {
+                Ok(Ok(service)) => {
+                    let server_info = service.peer().peer_info().cloned();
+                    Ok::<_, McpError>((service, server_info))
+                }
+                Ok(Err(e)) => {
+                    Err(McpError::ConnectionFailed(format!("Handshake failed: {}", e)))
+                }
+                Err(_) => Err(McpError::Timeout),
+            }
         })?;
 
         Ok(McpClient {
@@ -174,14 +188,17 @@ impl McpClient {
                 McpError::ConnectionFailed(format!("Failed to spawn '{}': {}", command, e))
             })?;
 
-            let service = TlClientHandler
-                .serve(transport)
-                .await
-                .map_err(|e| McpError::ConnectionFailed(format!("Handshake failed: {}", e)))?;
-
-            let server_info = service.peer().peer_info().cloned();
-
-            Ok::<_, McpError>((service, server_info))
+            // Perform 3-step handshake with timeout
+            match tokio::time::timeout(CONNECT_TIMEOUT, TlClientHandler.serve(transport)).await {
+                Ok(Ok(service)) => {
+                    let server_info = service.peer().peer_info().cloned();
+                    Ok::<_, McpError>((service, server_info))
+                }
+                Ok(Err(e)) => {
+                    Err(McpError::ConnectionFailed(format!("Handshake failed: {}", e)))
+                }
+                Err(_) => Err(McpError::Timeout),
+            }
         })?;
 
         Ok(McpClient {
@@ -228,14 +245,16 @@ impl McpClient {
             use rmcp::transport::StreamableHttpClientTransport;
 
             let transport = StreamableHttpClientTransport::from_uri(url_str);
-            let service = TlClientHandler
-                .serve(transport)
-                .await
-                .map_err(|e| {
-                    McpError::ConnectionFailed(format!("HTTP connect failed: {e}"))
-                })?;
-            let info = service.peer_info().cloned();
-            Ok::<_, McpError>((service, info))
+            match tokio::time::timeout(CONNECT_TIMEOUT, TlClientHandler.serve(transport)).await {
+                Ok(Ok(service)) => {
+                    let info = service.peer_info().cloned();
+                    Ok::<_, McpError>((service, info))
+                }
+                Ok(Err(e)) => {
+                    Err(McpError::ConnectionFailed(format!("HTTP connect failed: {e}")))
+                }
+                Err(_) => Err(McpError::Timeout),
+            }
         })?;
 
         Ok(McpClient {
@@ -252,14 +271,15 @@ impl McpClient {
     /// List all tools exposed by the connected MCP server.
     ///
     /// Uses `list_all_tools()` which automatically handles pagination.
+    /// Times out after [`METADATA_TIMEOUT`] (10 seconds).
     pub fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
         let service = self.service.as_ref().ok_or(McpError::TransportClosed)?;
         self.runtime.block_on(async {
-            service
-                .peer()
-                .list_all_tools()
-                .await
-                .map_err(|e| McpError::ProtocolError(e.to_string()))
+            match tokio::time::timeout(METADATA_TIMEOUT, service.peer().list_all_tools()).await {
+                Ok(Ok(tools)) => Ok(tools),
+                Ok(Err(e)) => Err(McpError::ProtocolError(e.to_string())),
+                Err(_) => Err(McpError::Timeout),
+            }
         })
     }
 
@@ -298,11 +318,11 @@ impl McpClient {
         }
 
         let result = self.runtime.block_on(async {
-            service
-                .peer()
-                .call_tool(params)
-                .await
-                .map_err(|e| McpError::ProtocolError(e.to_string()))
+            match tokio::time::timeout(TOOL_CALL_TIMEOUT, service.peer().call_tool(params)).await {
+                Ok(Ok(r)) => Ok(r),
+                Ok(Err(e)) => Err(McpError::ProtocolError(e.to_string())),
+                Err(_) => Err(McpError::Timeout),
+            }
         })?;
 
         // Check is_error flag
@@ -327,69 +347,76 @@ impl McpClient {
     /// Ping the connected MCP server.
     ///
     /// Sends a ping request and waits for a response. Useful for health checks.
+    /// Times out after [`METADATA_TIMEOUT`] (10 seconds).
     pub fn ping(&self) -> Result<(), McpError> {
         let service = self.service.as_ref().ok_or(McpError::TransportClosed)?;
         self.runtime.block_on(async {
-            service
-                .peer()
-                .send_request(rmcp::model::ClientRequest::PingRequest(
-                    rmcp::model::PingRequest {
-                        method: Default::default(),
-                        extensions: Default::default(),
-                    },
-                ))
-                .await
-                .map_err(|e| McpError::ProtocolError(e.to_string()))?;
-            Ok(())
+            let ping_fut = service.peer().send_request(
+                rmcp::model::ClientRequest::PingRequest(rmcp::model::PingRequest {
+                    method: Default::default(),
+                    extensions: Default::default(),
+                }),
+            );
+            match tokio::time::timeout(METADATA_TIMEOUT, ping_fut).await {
+                Ok(Ok(_)) => Ok(()),
+                Ok(Err(e)) => Err(McpError::ProtocolError(e.to_string())),
+                Err(_) => Err(McpError::Timeout),
+            }
         })
     }
 
     /// List all resources exposed by the connected MCP server.
     ///
     /// Uses `list_all_resources()` which automatically handles pagination.
+    /// Times out after [`METADATA_TIMEOUT`] (10 seconds).
     pub fn list_resources(&self) -> Result<Vec<rmcp::model::Resource>, McpError> {
         let service = self.service.as_ref().ok_or(McpError::TransportClosed)?;
         self.runtime.block_on(async {
-            service
-                .peer()
-                .list_all_resources()
-                .await
-                .map_err(|e| McpError::ProtocolError(e.to_string()))
+            match tokio::time::timeout(METADATA_TIMEOUT, service.peer().list_all_resources()).await
+            {
+                Ok(Ok(resources)) => Ok(resources),
+                Ok(Err(e)) => Err(McpError::ProtocolError(e.to_string())),
+                Err(_) => Err(McpError::Timeout),
+            }
         })
     }
 
     /// Read a resource by URI.
     ///
     /// Returns the resource contents (text or blob).
+    /// Times out after [`METADATA_TIMEOUT`] (10 seconds).
     pub fn read_resource(&self, uri: &str) -> Result<ReadResourceResult, McpError> {
         let service = self.service.as_ref().ok_or(McpError::TransportClosed)?;
         let params = ReadResourceRequestParams::new(uri);
         self.runtime.block_on(async {
-            service
-                .peer()
-                .read_resource(params)
-                .await
-                .map_err(|e| McpError::ProtocolError(e.to_string()))
+            match tokio::time::timeout(METADATA_TIMEOUT, service.peer().read_resource(params)).await
+            {
+                Ok(Ok(result)) => Ok(result),
+                Ok(Err(e)) => Err(McpError::ProtocolError(e.to_string())),
+                Err(_) => Err(McpError::Timeout),
+            }
         })
     }
 
     /// List all prompts exposed by the connected MCP server.
     ///
     /// Uses `list_all_prompts()` which automatically handles pagination.
+    /// Times out after [`METADATA_TIMEOUT`] (10 seconds).
     pub fn list_prompts(&self) -> Result<Vec<rmcp::model::Prompt>, McpError> {
         let service = self.service.as_ref().ok_or(McpError::TransportClosed)?;
         self.runtime.block_on(async {
-            service
-                .peer()
-                .list_all_prompts()
-                .await
-                .map_err(|e| McpError::ProtocolError(e.to_string()))
+            match tokio::time::timeout(METADATA_TIMEOUT, service.peer().list_all_prompts()).await {
+                Ok(Ok(prompts)) => Ok(prompts),
+                Ok(Err(e)) => Err(McpError::ProtocolError(e.to_string())),
+                Err(_) => Err(McpError::Timeout),
+            }
         })
     }
 
     /// Get a prompt by name with optional arguments.
     ///
     /// Returns the prompt result containing description and messages.
+    /// Times out after [`METADATA_TIMEOUT`] (10 seconds).
     pub fn get_prompt(
         &self,
         name: &str,
@@ -401,11 +428,11 @@ impl McpClient {
             params.arguments = Some(args);
         }
         self.runtime.block_on(async {
-            service
-                .peer()
-                .get_prompt(params)
-                .await
-                .map_err(|e| McpError::ProtocolError(e.to_string()))
+            match tokio::time::timeout(METADATA_TIMEOUT, service.peer().get_prompt(params)).await {
+                Ok(Ok(result)) => Ok(result),
+                Ok(Err(e)) => Err(McpError::ProtocolError(e.to_string())),
+                Err(_) => Err(McpError::Timeout),
+            }
         })
     }
 

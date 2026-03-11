@@ -358,7 +358,73 @@ fn test_connect_with_runtime() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 11: HTTP client-server round-trip
+// Test 11: Operations on disconnected client return TransportClosed
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_call_on_disconnected_client() {
+    let mut client = connect_test_server();
+    client.disconnect().unwrap();
+
+    // All operations should fail with TransportClosed
+    assert!(
+        matches!(client.list_tools(), Err(McpError::TransportClosed)),
+        "list_tools on disconnected should be TransportClosed"
+    );
+    assert!(
+        matches!(
+            client.call_tool("echo", serde_json::json!({})),
+            Err(McpError::TransportClosed)
+        ),
+        "call_tool on disconnected should be TransportClosed"
+    );
+    assert!(
+        matches!(client.ping(), Err(McpError::TransportClosed)),
+        "ping on disconnected should be TransportClosed"
+    );
+    assert!(
+        matches!(client.list_resources(), Err(McpError::TransportClosed)),
+        "list_resources on disconnected should be TransportClosed"
+    );
+    assert!(
+        matches!(client.list_prompts(), Err(McpError::TransportClosed)),
+        "list_prompts on disconnected should be TransportClosed"
+    );
+    assert!(
+        matches!(
+            client.read_resource("tl://readme"),
+            Err(McpError::TransportClosed)
+        ),
+        "read_resource on disconnected should be TransportClosed"
+    );
+    assert!(
+        matches!(
+            client.get_prompt("greeting", None),
+            Err(McpError::TransportClosed)
+        ),
+        "get_prompt on disconnected should be TransportClosed"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 12: Multiple operations after disconnect (no panics)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_multiple_operations_after_disconnect() {
+    let mut client = connect_test_server();
+    client.disconnect().unwrap();
+
+    // Multiple calls should all fail cleanly, no panics
+    for _ in 0..5 {
+        assert!(client.list_tools().is_err());
+        assert!(client.call_tool("echo", serde_json::json!({})).is_err());
+        assert!(client.ping().is_err());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 13: HTTP client-server round-trip
 // ---------------------------------------------------------------------------
 
 #[test]
