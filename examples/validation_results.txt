@@ -1,0 +1,66 @@
+====================================================
+  ThinkingLanguage -- Validation Results
+  Run date: 2026-05-22
+  Instance: GCP tl-gpu-bench (NVIDIA Tesla T4, Vulkan)
+  Version:  tl v0.3.1
+====================================================
+
+  ---------------------------------------------------
+  1. CORE LANGUAGE                          24 / 24
+  ---------------------------------------------------
+
+  OK  integer arithmetic
+  OK  float arithmetic
+  OK  integer division
+  OK  modulo via division
+  OK  string concat
+  OK  string length
+  OK  .to_upper()
+  OK  .to_lower()
+  OK  .contains()
+  OK  .trim()
+  OK  .replace()
+  OK  .split()
+  OK  .starts_with()
+  OK  boolean logic
+  OK  comparisons
+  OK  recursion fib(10)=55
+  OK  recursion fact(10)=3628800
+  OK  while loop sum 1..100 = 5050
+  OK  list length
+  OK  list index
+  OK  sum()
+  OK  filter()
+  OK  map()
+  OK  reduce()
+  OK  abs()
+  OK  sqrt()
+  OK  int() truncates float
+  OK  float() converts int
+
+  ---------------------------------------------------
+  2. DATA PIPELINE  (Apache DataFusion)      6 / 6
+  ---------------------------------------------------
+
+  Dataset: measurements.parquet  (1,000,000,000 rows, 4.5 GB)
+
+  OK  read_parquet + aggregate
+  OK  sort: Abha is first station
+  OK  count() column in results
+  OK  min() column in results
+  OK  filter() on 1B rows
+  OK  sort descending
+
+  ---------------------------------------------------
+  3. GPU  (wgpu / Vulkan / NVIDIA Tesla T4)  3 / 3
+  ---------------------------------------------------
+
+  OK  gpu_available()
+  OK  GPU online + matmul 32x32
+  OK  GPU device: NVIDIA Tesla T4  (Vulkan backend)
+
+  ====================================================
+  TOTAL: 33 / 33 checks passed   (0 failures, 0 skipped)
+
+  thinkingdbx.com  .  github.com/mplusm/thinkinglanguage
+  ====================================================
