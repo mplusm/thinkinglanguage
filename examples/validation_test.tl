@@ -22,11 +22,11 @@ print("  1. CORE LANGUAGE")
 print("  " + hline("-", 51))
 print("")
 
-// Arithmetic
+// Arithmetic & modulo
 if 2 + 3 * 4 == 14          { print("  OK  integer arithmetic") } else { print("  FAIL  integer arithmetic") }
 if int(3.14 * 2.0) == 6     { print("  OK  float arithmetic") } else { print("  FAIL  float arithmetic") }
 if 10 / 3 == 3               { print("  OK  integer division") } else { print("  FAIL  integer division") }
-if 10 - (10 / 3) * 3 == 1   { print("  OK  modulo via division") } else { print("  FAIL  modulo") }
+if 10 % 3 == 1               { print("  OK  modulo %") } else { print("  FAIL  modulo") }
 
 // Strings
 if "hello" + " world" == "hello world" { print("  OK  string concat") } else { print("  FAIL  string concat") }
@@ -66,13 +66,17 @@ if nums[2] == 3                             { print("  OK  list index") } else {
 if sum(nums) == 15                          { print("  OK  sum()") } else { print("  FAIL  sum()") }
 if len(filter(nums, (x) => x > 3)) == 2    { print("  OK  filter()") } else { print("  FAIL  filter()") }
 if sum(map(nums, (x) => x * 2)) == 30      { print("  OK  map()") } else { print("  FAIL  map()") }
-if reduce(nums, 0, (a, b) => a + b) == 15  { print("  OK  reduce()") } else { print("  FAIL  reduce()") }
+if reduce(nums, 0, (a, b) => a + b) == 15  { print("  OK  reduce(list, init, fn)") } else { print("  FAIL  reduce()") }
 
 // Math builtins
 if abs(-42) == 42                     { print("  OK  abs()") } else { print("  FAIL  abs()") }
 if sqrt(16.0) > 3.9                   { print("  OK  sqrt()") } else { print("  FAIL  sqrt()") }
 if int(3.9) == 3                      { print("  OK  int() truncates float") } else { print("  FAIL  int()") }
 if float(5) > 4.9                     { print("  OK  float() converts int") } else { print("  FAIL  float()") }
+if floor(3.7) == 3.0                  { print("  OK  floor()") } else { print("  FAIL  floor()") }
+if ceil(3.2) == 4.0                   { print("  OK  ceil()") } else { print("  FAIL  ceil()") }
+if min(3, 7) == 3                     { print("  OK  min(a,b) scalar") } else { print("  FAIL  min(a,b)") }
+if max(3, 7) == 7                     { print("  OK  max(a,b) scalar") } else { print("  FAIL  max(a,b)") }
 
 print("")
 
@@ -88,6 +92,7 @@ let agg = df.clone()
     |> aggregate(by: "station", cnt: count(), lo: min(temperature), hi: max(temperature))
     |> sort("station")
 
+// collect() returns display string — use .contains() for assertions
 let top5_str = agg.clone() |> head(5) |> collect()
 if len(top5_str) > 0           { print("  OK  read_parquet + aggregate") } else { print("  FAIL  read_parquet") }
 if top5_str.contains("Abha")  { print("  OK  sort: Abha is first station") } else { print("  FAIL  sort") }
@@ -97,16 +102,29 @@ if top5_str.contains("lo")    { print("  OK  min() column in results") } else { 
 let filtered_str = df.clone() |> filter(temperature > 40.0) |> head(10) |> collect()
 if len(filtered_str) > 0 { print("  OK  filter() on 1B rows") } else { print("  FAIL  filter") }
 
-let desc_str = agg |> sort("lo", "desc") |> head(3) |> collect()
+let desc_str = agg.clone() |> sort("lo", "desc") |> head(3) |> collect()
 if len(desc_str) > 0 { print("  OK  sort descending") } else { print("  FAIL  sort desc") }
 
+// to_rows() returns List<Map> — use for programmatic row access
+let rows = agg |> head(3) |> to_rows()
+let ok_rows = len(rows) == 3
+if ok_rows { print("  OK  to_rows() returns List<Map>") } else { print("  FAIL  to_rows()") }
+let first_row = rows[0]
+let has_station = first_row["station"] == "Abha"
+if has_station { print("  OK  to_rows() row[\"station\"] == Abha") } else { print("  FAIL  to_rows() row access") }
+
 print("")
 
-// -- 3. GPU
+// -- 3. Tensors & GPU
 print("  " + hline("-", 51))
-print("  3. GPU  (wgpu / Vulkan / NVIDIA Tesla T4)")
+print("  3. TENSORS & GPU")
 print("  " + hline("-", 51))
 print("")
+
+// shape() on CPU tensor
+let t = tensor_ones([2, 2])
+let sh = shape(t)
+if sh[0] == 2 and sh[1] == 2 { print("  OK  shape(tensor) -> [2, 2]") } else { print("  FAIL  shape()") }
 
 let has_gpu = gpu_available()
 if has_gpu == true or has_gpu == false { print("  OK  gpu_available()") } else { print("  FAIL  gpu_available") }
@@ -115,9 +133,9 @@ if has_gpu {
     let a = tensor_ones([32, 32])
     let g = to_gpu(a)
     let r = gpu_matmul(g, g)
-    let c = to_cpu(r)
+    let _c = to_cpu(r)
     print("  OK  GPU online + matmul 32x32")
-    print("  OK  GPU device: NVIDIA Tesla T4  (Vulkan backend)")
+    print("  OK  GPU device: Vulkan backend")
 } else {
     print("  SKIP  GPU offline")
 }

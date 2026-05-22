@@ -2348,6 +2348,7 @@ impl Compiler {
         "head",
         "limit",
         "collect",
+        "to_rows",
         "show",
         "describe",
         "write_csv",

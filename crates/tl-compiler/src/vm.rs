@@ -3019,6 +3019,64 @@ impl Vm {
                 Ok(VmValue::String(Arc::from(formatted.as_str())))
             }
             #[cfg(feature = "native")]
+            BuiltinId::ToRows => {
+                use tl_data::datafusion::arrow::array::{
+                    Array, BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array,
+                    LargeStringArray, StringArray, UInt32Array, UInt64Array,
+                };
+                if args.len() != 1 {
+                    return Err(runtime_err("to_rows() expects 1 argument (table)"));
+                }
+                let df = match &args[0] {
+                    VmValue::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err("to_rows() expects a table")),
+                };
+                let batches = self.engine().collect(df).map_err(runtime_err)?;
+                let mut rows: Vec<VmValue> = Vec::new();
+                for batch in &batches {
+                    let schema = batch.schema();
+                    let num_rows = batch.num_rows();
+                    for row_idx in 0..num_rows {
+                        let mut map: Vec<(Arc<str>, VmValue)> = Vec::new();
+                        for col_idx in 0..batch.num_columns() {
+                            let col_name: Arc<str> =
+                                Arc::from(schema.field(col_idx).name().as_str());
+                            let col = batch.column(col_idx);
+                            let val = if col.is_null(row_idx) {
+                                VmValue::None
+                            } else if let Some(arr) = col.as_any().downcast_ref::<Float64Array>() {
+                                VmValue::Float(arr.value(row_idx))
+                            } else if let Some(arr) = col.as_any().downcast_ref::<Float32Array>() {
+                                VmValue::Float(arr.value(row_idx) as f64)
+                            } else if let Some(arr) = col.as_any().downcast_ref::<Int64Array>() {
+                                VmValue::Int(arr.value(row_idx))
+                            } else if let Some(arr) = col.as_any().downcast_ref::<Int32Array>() {
+                                VmValue::Int(arr.value(row_idx) as i64)
+                            } else if let Some(arr) = col.as_any().downcast_ref::<UInt64Array>() {
+                                VmValue::Int(arr.value(row_idx) as i64)
+                            } else if let Some(arr) = col.as_any().downcast_ref::<UInt32Array>() {
+                                VmValue::Int(arr.value(row_idx) as i64)
+                            } else if let Some(arr) = col.as_any().downcast_ref::<StringArray>() {
+                                VmValue::String(Arc::from(arr.value(row_idx)))
+                            } else if let Some(arr) =
+                                col.as_any().downcast_ref::<LargeStringArray>()
+                            {
+                                VmValue::String(Arc::from(arr.value(row_idx)))
+                            } else if let Some(arr) = col.as_any().downcast_ref::<BooleanArray>() {
+                                VmValue::Bool(arr.value(row_idx))
+                            } else {
+                                VmValue::String(Arc::from(
+                                    format!("{:?}", col.data_type()).as_str(),
+                                ))
+                            };
+                            map.push((col_name, val));
+                        }
+                        rows.push(VmValue::Map(Box::new(map)));
+                    }
+                }
+                Ok(VmValue::List(Box::new(rows)))
+            }
+            #[cfg(feature = "native")]
             BuiltinId::Show => {
                 let df = match args.first() {
                     Some(VmValue::Table(t)) => t.df.clone(),
@@ -3170,6 +3228,7 @@ impl Vm {
             | BuiltinId::WriteCsv
             | BuiltinId::WriteParquet
             | BuiltinId::Collect
+            | BuiltinId::ToRows
             | BuiltinId::Show
             | BuiltinId::Describe
             | BuiltinId::Head

@@ -94,11 +94,30 @@ users |> describe()
 
 ### collect
 
-Materialize lazy evaluation into a concrete table:
+Materialize a table into a formatted display string. Useful for assertions and output capture:
 
 ```tl
-let result = users |> filter(age > 30) |> collect()
+let s = users |> filter(age > 30) |> collect()
+// s is a string — use .contains() to check values
+if s.contains("Alice") { print("found") }
 ```
+
+### to_rows
+
+Materialize a table into a `List<Map>` — one map per row, keyed by column name. Use this when you need to programmatically access individual cell values:
+
+```tl
+let rows = users |> filter(age > 30) |> to_rows()
+for row in rows {
+    print(row["name"] + " is " + str(row["age"]))
+}
+
+// Access by index
+let first = rows[0]
+print(first["department"])
+```
+
+`to_rows()` returns typed values: integers as `int`, floats as `float`, strings as `string`, and nulls as `none`. It is the recommended way to bridge table data into regular TL code.
 
 ## Writing Tables
 
@@ -121,9 +140,10 @@ schema User { id: int64, name: string, age: int64 }
 
 Table operations are lazy by default. No computation occurs until a terminal operation triggers execution:
 
-- `show()` -- prints and triggers evaluation
-- `collect()` -- materializes the result
-- `write_csv()` / `write_parquet()` -- writes output and triggers evaluation
+- `show()` — prints and triggers evaluation
+- `collect()` — materializes the result as a display string
+- `to_rows()` — materializes the result as a `List<Map>` for programmatic access
+- `write_csv()` / `write_parquet()` — writes output and triggers evaluation
 
 This allows DataFusion to optimize the entire query plan before execution.
 

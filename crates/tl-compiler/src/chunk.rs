@@ -673,6 +673,7 @@ pub enum BuiltinId {
     McpReadResource = 224,
     McpListPrompts = 225,
     McpGetPrompt = 226,
+    ToRows = 227,
 }
 
 impl TryFrom<u16> for BuiltinId {
@@ -907,6 +908,7 @@ impl TryFrom<u16> for BuiltinId {
             224 => Ok(BuiltinId::McpReadResource),
             225 => Ok(BuiltinId::McpListPrompts),
             226 => Ok(BuiltinId::McpGetPrompt),
+            227 => Ok(BuiltinId::ToRows),
             _ => Err(value),
         }
     }
@@ -945,7 +947,7 @@ impl BuiltinId {
             "tensor" => Some(BuiltinId::Tensor),
             "tensor_zeros" => Some(BuiltinId::TensorZeros),
             "tensor_ones" => Some(BuiltinId::TensorOnes),
-            "tensor_shape" => Some(BuiltinId::TensorShape),
+            "tensor_shape" | "shape" => Some(BuiltinId::TensorShape),
             "tensor_reshape" => Some(BuiltinId::TensorReshape),
             "tensor_transpose" => Some(BuiltinId::TensorTranspose),
             "tensor_sum" => Some(BuiltinId::TensorSum),
@@ -1152,6 +1154,7 @@ impl BuiltinId {
             "mcp_read_resource" => Some(BuiltinId::McpReadResource),
             "mcp_list_prompts" => Some(BuiltinId::McpListPrompts),
             "mcp_get_prompt" => Some(BuiltinId::McpGetPrompt),
+            "to_rows" => Some(BuiltinId::ToRows),
             _ => None,
         }
     }
@@ -1396,6 +1399,7 @@ impl BuiltinId {
             BuiltinId::McpReadResource => "mcp_read_resource",
             BuiltinId::McpListPrompts => "mcp_list_prompts",
             BuiltinId::McpGetPrompt => "mcp_get_prompt",
+            BuiltinId::ToRows => "to_rows",
         }
     }
 }
@@ -1479,7 +1483,7 @@ mod tests {
 
     #[test]
     fn test_builtin_id_try_from_invalid() {
-        assert_eq!(BuiltinId::try_from(227u16), Err(227u16));
+        assert_eq!(BuiltinId::try_from(228u16), Err(228u16));
         assert_eq!(BuiltinId::try_from(65535u16), Err(65535u16));
     }
 }

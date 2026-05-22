@@ -85,7 +85,7 @@ tl shell
 
 ### Variables and Functions
 
-```
+```tl
 let name = "world"
 let nums = [1, 2, 3, 4, 5]
 
@@ -94,22 +94,32 @@ fn greet(who: string) -> string {
 }
 
 let doubled = nums |> map((x) => x * 2) |> filter((x) => x > 4)
+let total   = reduce(nums, 0, (acc, x) => acc + x)  // 15
 print(greet(name))
 print(doubled)
+print(floor(3.7))    // 3.0
+print(7 % 3)         // 1
+print(min(4, 9))     // 4
 ```
 
 ### Data Pipelines
 
-```
+```tl
 let users = read_csv("users.csv")
 
+// Display results
 users
     |> filter(age > 30)
     |> select(name, age, department)
-    |> with { senior = age > 35 }
     |> aggregate(by: department, count: count(), avg_age: avg(age))
-    |> sort(count, "desc")
+    |> sort("count", "desc")
     |> show()
+
+// Access rows as List<Map> for programmatic use
+let rows = users |> filter(age > 30) |> to_rows()
+for row in rows {
+    print(row["name"] + " — dept: " + row["department"])
+}
 ```
 
 ### AI / Machine Learning
@@ -119,8 +129,8 @@ let data = read_csv("iris.csv")
 let model = train_model(data, target: "species", algorithm: "random_forest")
 let predictions = predict(model, new_data)
 
-let t = tensor([[1.0, 2.0], [3.0, 4.0]])
-let result = t |> matmul(tensor([[5.0], [6.0]]))
+let t = tensor_ones([4, 4])
+let result = t |> matmul(t)
 ```
 
 ### AI Agents

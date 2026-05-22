@@ -570,6 +570,10 @@ impl Environment {
             Value::Builtin("write_parquet".to_string()),
         );
         global.insert("collect".to_string(), Value::Builtin("collect".to_string()));
+        global.insert(
+            "to_rows".to_string(),
+            Value::Builtin("to_rows".to_string()),
+        );
         global.insert("show".to_string(), Value::Builtin("show".to_string()));
         global.insert(
             "describe".to_string(),
@@ -605,6 +609,10 @@ impl Environment {
         );
         global.insert(
             "tensor_shape".to_string(),
+            Value::Builtin("tensor_shape".to_string()),
+        );
+        global.insert(
+            "shape".to_string(),
             Value::Builtin("tensor_shape".to_string()),
         );
         global.insert(
@@ -3530,6 +3538,60 @@ impl Interpreter {
                 let formatted = DataEngine::format_batches(&batches).map_err(runtime_err)?;
                 Ok(Value::String(formatted))
             }
+            "to_rows" => {
+                use tl_data::datafusion::arrow::array::{
+                    Array, BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array,
+                    LargeStringArray, StringArray, UInt32Array, UInt64Array,
+                };
+                if args.len() != 1 {
+                    return Err(runtime_err("to_rows() expects 1 argument (table)".into()));
+                }
+                let df = match &args[0] {
+                    Value::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err("to_rows() expects a table".into())),
+                };
+                let batches = self.engine().collect(df).map_err(runtime_err)?;
+                let mut rows: Vec<Value> = Vec::new();
+                for batch in &batches {
+                    let schema = batch.schema();
+                    let num_rows = batch.num_rows();
+                    for row_idx in 0..num_rows {
+                        let mut map: Vec<(String, Value)> = Vec::new();
+                        for col_idx in 0..batch.num_columns() {
+                            let col_name = schema.field(col_idx).name().clone();
+                            let col = batch.column(col_idx);
+                            let val = if col.is_null(row_idx) {
+                                Value::None
+                            } else if let Some(arr) = col.as_any().downcast_ref::<Float64Array>() {
+                                Value::Float(arr.value(row_idx))
+                            } else if let Some(arr) = col.as_any().downcast_ref::<Float32Array>() {
+                                Value::Float(arr.value(row_idx) as f64)
+                            } else if let Some(arr) = col.as_any().downcast_ref::<Int64Array>() {
+                                Value::Int(arr.value(row_idx))
+                            } else if let Some(arr) = col.as_any().downcast_ref::<Int32Array>() {
+                                Value::Int(arr.value(row_idx) as i64)
+                            } else if let Some(arr) = col.as_any().downcast_ref::<UInt64Array>() {
+                                Value::Int(arr.value(row_idx) as i64)
+                            } else if let Some(arr) = col.as_any().downcast_ref::<UInt32Array>() {
+                                Value::Int(arr.value(row_idx) as i64)
+                            } else if let Some(arr) = col.as_any().downcast_ref::<StringArray>() {
+                                Value::String(arr.value(row_idx).to_string())
+                            } else if let Some(arr) =
+                                col.as_any().downcast_ref::<LargeStringArray>()
+                            {
+                                Value::String(arr.value(row_idx).to_string())
+                            } else if let Some(arr) = col.as_any().downcast_ref::<BooleanArray>() {
+                                Value::Bool(arr.value(row_idx))
+                            } else {
+                                Value::String(format!("{:?}", col.data_type()))
+                            };
+                            map.push((col_name, val));
+                        }
+                        rows.push(Value::Map(map));
+                    }
+                }
+                Ok(Value::List(rows))
+            }
             "show" => {
                 let df = match args.first() {
                     Some(Value::Table(t)) => t.df.clone(),
@@ -3672,7 +3734,7 @@ impl Interpreter {
             "tensor" => self.builtin_tensor(args),
             "tensor_zeros" => self.builtin_tensor_zeros(args),
             "tensor_ones" => self.builtin_tensor_ones(args),
-            "tensor_shape" => self.builtin_tensor_shape(args),
+            "tensor_shape" | "shape" => self.builtin_tensor_shape(args),
             "tensor_reshape" => self.builtin_tensor_reshape(args),
             "tensor_transpose" => self.builtin_tensor_transpose(args),
             "tensor_sum" => self.builtin_tensor_sum(args),
@@ -8644,6 +8706,69 @@ impl Interpreter {
                         let formatted =
                             DataEngine::format_batches(&batches).map_err(runtime_err)?;
                         Ok(Value::String(formatted))
+                    }
+                    "to_rows" => {
+                        use tl_data::datafusion::arrow::array::{
+                            Array, BooleanArray, Float32Array, Float64Array, Int32Array,
+                            Int64Array, LargeStringArray, StringArray, UInt32Array, UInt64Array,
+                        };
+                        let batches = self.engine().collect(df).map_err(runtime_err)?;
+                        let mut rows: Vec<Value> = Vec::new();
+                        for batch in &batches {
+                            let schema = batch.schema();
+                            let num_rows = batch.num_rows();
+                            for row_idx in 0..num_rows {
+                                let mut map: Vec<(String, Value)> = Vec::new();
+                                for col_idx in 0..batch.num_columns() {
+                                    let col_name = schema.field(col_idx).name().clone();
+                                    let col = batch.column(col_idx);
+                                    let val = if col.is_null(row_idx) {
+                                        Value::None
+                                    } else if let Some(arr) =
+                                        col.as_any().downcast_ref::<Float64Array>()
+                                    {
+                                        Value::Float(arr.value(row_idx))
+                                    } else if let Some(arr) =
+                                        col.as_any().downcast_ref::<Float32Array>()
+                                    {
+                                        Value::Float(arr.value(row_idx) as f64)
+                                    } else if let Some(arr) =
+                                        col.as_any().downcast_ref::<Int64Array>()
+                                    {
+                                        Value::Int(arr.value(row_idx))
+                                    } else if let Some(arr) =
+                                        col.as_any().downcast_ref::<Int32Array>()
+                                    {
+                                        Value::Int(arr.value(row_idx) as i64)
+                                    } else if let Some(arr) =
+                                        col.as_any().downcast_ref::<UInt64Array>()
+                                    {
+                                        Value::Int(arr.value(row_idx) as i64)
+                                    } else if let Some(arr) =
+                                        col.as_any().downcast_ref::<UInt32Array>()
+                                    {
+                                        Value::Int(arr.value(row_idx) as i64)
+                                    } else if let Some(arr) =
+                                        col.as_any().downcast_ref::<StringArray>()
+                                    {
+                                        Value::String(arr.value(row_idx).to_string())
+                                    } else if let Some(arr) =
+                                        col.as_any().downcast_ref::<LargeStringArray>()
+                                    {
+                                        Value::String(arr.value(row_idx).to_string())
+                                    } else if let Some(arr) =
+                                        col.as_any().downcast_ref::<BooleanArray>()
+                                    {
+                                        Value::Bool(arr.value(row_idx))
+                                    } else {
+                                        Value::String(format!("{:?}", col.data_type()))
+                                    };
+                                    map.push((col_name, val));
+                                }
+                                rows.push(Value::Map(map));
+                            }
+                        }
+                        Ok(Value::List(rows))
                     }
                     "show" => {
                         let limit = match args.first() {

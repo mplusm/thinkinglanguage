@@ -117,11 +117,14 @@ let evens = [1, 2, 3, 4, 5] |> filter((x) => x % 2 == 0)
 
 ### reduce
 
-Combine all elements into a single value:
+Combine all elements into a single value. Takes three arguments: the list, an initial accumulator value, and a combining function:
 
 ```tl
-let total = [1, 2, 3, 4] |> reduce((acc, x) => acc + x)
+let total = reduce([1, 2, 3, 4], 0, (acc, x) => acc + x)
 // 10
+
+let product = reduce([1, 2, 3, 4], 1, (acc, x) => acc * x)
+// 24
 ```
 
 ### sum

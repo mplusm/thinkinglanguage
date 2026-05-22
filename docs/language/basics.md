@@ -176,6 +176,28 @@ for i in 1..5 {
 }
 ```
 
+## Math Builtins
+
+TL provides a standard set of math functions:
+
+```tl
+abs(-42)          // 42
+sqrt(16.0)        // 4.0
+floor(3.7)        // 3.0
+ceil(3.2)         // 4.0
+int(3.9)          // 3  (truncate to integer)
+float(5)          // 5.0
+min(3, 7)         // 3  (scalar minimum of two values)
+max(3, 7)         // 7  (scalar maximum of two values)
+```
+
+Type conversion:
+```tl
+str(42)           // "42"
+int("10")         // 10
+float("3.14")     // 3.14
+```
+
 ## Comments
 
 ```tl
