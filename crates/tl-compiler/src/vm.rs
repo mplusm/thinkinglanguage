@@ -1330,39 +1330,25 @@ impl Vm {
                 };
                 let list = &self.stack[base + b as usize];
                 let done = match list {
-                    VmValue::List(items) => {
-                        if idx < items.len() {
-                            let item = items[idx].clone();
-                            self.stack[base + c as usize] = item;
-                            self.stack[base + a as usize] = VmValue::Int((idx + 1) as i64);
-                            false
-                        } else {
-                            true
-                        }
+                    VmValue::List(items) if idx < items.len() => {
+                        let item = items[idx].clone();
+                        self.stack[base + c as usize] = item;
+                        self.stack[base + a as usize] = VmValue::Int((idx + 1) as i64);
+                        false
                     }
-                    VmValue::Map(pairs) => {
-                        if idx < pairs.len() {
-                            let (k, v) = &pairs[idx];
-                            let pair = VmValue::List(Box::new(vec![
-                                VmValue::String(k.clone()),
-                                v.clone(),
-                            ]));
-                            self.stack[base + c as usize] = pair;
-                            self.stack[base + a as usize] = VmValue::Int((idx + 1) as i64);
-                            false
-                        } else {
-                            true
-                        }
+                    VmValue::Map(pairs) if idx < pairs.len() => {
+                        let (k, v) = &pairs[idx];
+                        let pair =
+                            VmValue::List(Box::new(vec![VmValue::String(k.clone()), v.clone()]));
+                        self.stack[base + c as usize] = pair;
+                        self.stack[base + a as usize] = VmValue::Int((idx + 1) as i64);
+                        false
                     }
-                    VmValue::Set(items) => {
-                        if idx < items.len() {
-                            let item = items[idx].clone();
-                            self.stack[base + c as usize] = item;
-                            self.stack[base + a as usize] = VmValue::Int((idx + 1) as i64);
-                            false
-                        } else {
-                            true
-                        }
+                    VmValue::Set(items) if idx < items.len() => {
+                        let item = items[idx].clone();
+                        self.stack[base + c as usize] = item;
+                        self.stack[base + a as usize] = VmValue::Int((idx + 1) as i64);
+                        false
                     }
                     VmValue::Generator(gen_arc) => {
                         let g = gen_arc.clone();
