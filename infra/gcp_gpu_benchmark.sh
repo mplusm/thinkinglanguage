@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ThinkingLanguage GPU Benchmark — GCP Spot T4 Setup & Run
-# Usage: bash deploy/gcp_gpu_benchmark.sh [create|run|ssh|delete]
+# Usage: bash infra/gcp_gpu_benchmark.sh [create|run|ssh|delete]
 #
 # Prerequisites: gcloud authenticated as thinkingdbx@gmail.com
 #                Project: thinkingmodel-tpu
@@ -168,7 +168,7 @@ case "$CMD" in
         ;;
     help|*)
         echo ""
-        echo "Usage: bash deploy/gcp_gpu_benchmark.sh <command>"
+        echo "Usage: bash infra/gcp_gpu_benchmark.sh <command>"
         echo ""
         echo "Commands:"
         echo "  all      Full setup + run in one shot (create → upload → build → run)"
@@ -181,9 +181,9 @@ case "$CMD" in
         echo "  delete   Tear down the instance"
         echo ""
         echo "Typical flow:"
-        echo "  bash deploy/gcp_gpu_benchmark.sh all     # first time"
-        echo "  bash deploy/gcp_gpu_benchmark.sh ssh     # for live demo / screen recording"
-        echo "  bash deploy/gcp_gpu_benchmark.sh delete  # after demo"
+        echo "  bash infra/gcp_gpu_benchmark.sh all     # first time"
+        echo "  bash infra/gcp_gpu_benchmark.sh ssh     # for live demo / screen recording"
+        echo "  bash infra/gcp_gpu_benchmark.sh delete  # after demo"
         echo ""
         ;;
 esac
