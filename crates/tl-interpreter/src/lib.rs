@@ -8107,15 +8107,11 @@ impl Interpreter {
                     let mut result = items[0].clone();
                     for item in &items[1..] {
                         match (&result, item) {
-                            (Value::Int(a), Value::Int(b)) => {
-                                if b < a {
-                                    result = item.clone();
-                                }
+                            (Value::Int(a), Value::Int(b)) if b < a => {
+                                result = item.clone();
                             }
-                            (Value::Float(a), Value::Float(b)) => {
-                                if b < a {
-                                    result = item.clone();
-                                }
+                            (Value::Float(a), Value::Float(b)) if b < a => {
+                                result = item.clone();
                             }
                             _ => {}
                         }
@@ -8129,15 +8125,11 @@ impl Interpreter {
                     let mut result = items[0].clone();
                     for item in &items[1..] {
                         match (&result, item) {
-                            (Value::Int(a), Value::Int(b)) => {
-                                if b > a {
-                                    result = item.clone();
-                                }
+                            (Value::Int(a), Value::Int(b)) if b > a => {
+                                result = item.clone();
                             }
-                            (Value::Float(a), Value::Float(b)) => {
-                                if b > a {
-                                    result = item.clone();
-                                }
+                            (Value::Float(a), Value::Float(b)) if b > a => {
+                                result = item.clone();
                             }
                             _ => {}
                         }
