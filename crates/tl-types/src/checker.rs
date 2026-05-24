@@ -1290,10 +1290,8 @@ pub fn check_match_exhaustiveness(
                 missing.push("Err".to_string());
             }
         }
-        Type::Option(_) => {
-            if !arm_patterns.iter().any(|p| *p == "none" || *p == "_") {
-                missing.push("none".to_string());
-            }
+        Type::Option(_) if !arm_patterns.iter().any(|p| *p == "none" || *p == "_") => {
+            missing.push("none".to_string());
         }
         Type::Enum(name) => {
             if let Some(variants) = env.lookup_enum(name) {
