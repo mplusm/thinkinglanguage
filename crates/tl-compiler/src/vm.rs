@@ -8689,7 +8689,12 @@ impl Vm {
                     Ok(VmValue::Tensor(Arc::new(cpu)))
                 }
                 "shape" => {
-                    let shape_list = Box::new(gt.shape.iter().map(|&d| VmValue::Int(d as i64)).collect::<Vec<_>>());
+                    let shape_list = Box::new(
+                        gt.shape
+                            .iter()
+                            .map(|&d| VmValue::Int(d as i64))
+                            .collect::<Vec<_>>(),
+                    );
                     Ok(VmValue::List(shape_list))
                 }
                 "dtype" => Ok(VmValue::String(Arc::from(format!("{}", gt.dtype).as_str()))),

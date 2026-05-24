@@ -570,10 +570,7 @@ impl Environment {
             Value::Builtin("write_parquet".to_string()),
         );
         global.insert("collect".to_string(), Value::Builtin("collect".to_string()));
-        global.insert(
-            "to_rows".to_string(),
-            Value::Builtin("to_rows".to_string()),
-        );
+        global.insert("to_rows".to_string(), Value::Builtin("to_rows".to_string()));
         global.insert("show".to_string(), Value::Builtin("show".to_string()));
         global.insert(
             "describe".to_string(),
