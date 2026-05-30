@@ -73,6 +73,29 @@ pub trait SqlDialect {
     fn create_table_suffix(&self) -> String {
         String::new()
     }
+
+    /// `DROP TABLE` statement. Default uses standard `IF EXISTS`.
+    fn drop_table_sql(&self, qtable: &str) -> String {
+        format!("DROP TABLE IF EXISTS {qtable}")
+    }
+
+    /// `CREATE TABLE` statement. `table` is the raw (unquoted) name, `qtable`
+    /// the quoted form. Default uses standard `IF NOT EXISTS`; dialects without
+    /// that syntax (e.g. MSSQL) override.
+    fn create_table_sql(
+        &self,
+        _table: &str,
+        qtable: &str,
+        cols: &str,
+        suffix: &str,
+        if_not_exists: bool,
+    ) -> String {
+        if if_not_exists {
+            format!("CREATE TABLE IF NOT EXISTS {qtable} ({cols}){suffix}")
+        } else {
+            format!("CREATE TABLE {qtable} ({cols}){suffix}")
+        }
+    }
 }
 
 /// Render one Arrow cell as a SQL literal for the given dialect.
@@ -164,19 +187,14 @@ pub fn build_write_statements(
         })
         .collect();
     let suffix = dialect.create_table_suffix();
+    let cols_joined = col_defs.join(", ");
     match mode {
         WriteMode::Overwrite => {
-            stmts.push(format!("DROP TABLE IF EXISTS {qtable}"));
-            stmts.push(format!(
-                "CREATE TABLE {qtable} ({}){suffix}",
-                col_defs.join(", ")
-            ));
+            stmts.push(dialect.drop_table_sql(&qtable));
+            stmts.push(dialect.create_table_sql(table, &qtable, &cols_joined, &suffix, false));
         }
         WriteMode::Create => {
-            stmts.push(format!(
-                "CREATE TABLE IF NOT EXISTS {qtable} ({}){suffix}",
-                col_defs.join(", ")
-            ));
+            stmts.push(dialect.create_table_sql(table, &qtable, &cols_joined, &suffix, true));
         }
         WriteMode::Append => {}
     }
@@ -398,6 +416,56 @@ impl SqlDialect for DatabricksDialect {
     }
 }
 
+/// Microsoft SQL Server dialect. Bracketed identifiers; no `CREATE TABLE IF
+/// NOT EXISTS`, so the create is guarded with an `OBJECT_ID` check.
+pub struct MssqlDialect;
+
+impl SqlDialect for MssqlDialect {
+    fn column_type(&self, dt: &DataType) -> String {
+        match dt {
+            DataType::Boolean => "BIT",
+            DataType::Int8 | DataType::Int16 => "SMALLINT",
+            DataType::Int32 | DataType::UInt8 | DataType::UInt16 => "INT",
+            DataType::Int64 | DataType::UInt32 | DataType::UInt64 => "BIGINT",
+            DataType::Float32 => "REAL",
+            DataType::Float64 => "FLOAT",
+            DataType::Date32 | DataType::Date64 => "DATE",
+            DataType::Timestamp(_, _) => "DATETIME2",
+            DataType::Decimal128(p, s) | DataType::Decimal256(p, s) => {
+                return format!("DECIMAL({p}, {s})");
+            }
+            _ => "NVARCHAR(MAX)",
+        }
+        .to_string()
+    }
+
+    fn quote_ident(&self, name: &str) -> String {
+        format!("[{}]", name.replace(']', "]]"))
+    }
+
+    fn bool_literal(&self, b: bool) -> String {
+        if b { "1".to_string() } else { "0".to_string() }
+    }
+
+    fn create_table_sql(
+        &self,
+        table: &str,
+        qtable: &str,
+        cols: &str,
+        suffix: &str,
+        if_not_exists: bool,
+    ) -> String {
+        if if_not_exists {
+            format!(
+                "IF OBJECT_ID(N'{}', N'U') IS NULL CREATE TABLE {qtable} ({cols}){suffix}",
+                table.replace('\'', "''")
+            )
+        } else {
+            format!("CREATE TABLE {qtable} ({cols}){suffix}")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,6 +563,21 @@ mod tests {
         )
         .unwrap();
         assert!(db[0].contains("`id` BIGINT"));
+    }
+
+    #[test]
+    fn mssql_brackets_and_object_id_guard() {
+        let create =
+            build_write_statements(&MssqlDialect, "t", &[sample_batch()], WriteMode::Create)
+                .unwrap();
+        assert!(create[0].starts_with("IF OBJECT_ID(N't', N'U') IS NULL CREATE TABLE [t]"));
+        assert!(create[0].contains("[id] BIGINT"));
+        assert!(create[0].contains("[name] NVARCHAR(MAX)"));
+        let over =
+            build_write_statements(&MssqlDialect, "t", &[sample_batch()], WriteMode::Overwrite)
+                .unwrap();
+        assert!(over[0].starts_with("DROP TABLE IF EXISTS [t]"));
+        assert!(over[1].starts_with("CREATE TABLE [t]"));
     }
 
     #[test]

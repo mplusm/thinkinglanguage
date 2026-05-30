@@ -250,7 +250,8 @@ let t = read_mssql(
 )
 ```
 
-**Aliases:** `mssql()`, `read_mssql()`
+**Aliases:** `mssql()`, `read_mssql()`.
+**Write:** `write_mssql(table, conn, table_name, [mode])` — bracketed identifiers; create-if-not-exists is guarded with an `OBJECT_ID` check (SQL Server has no `CREATE TABLE IF NOT EXISTS`).
 
 Supports both ADO-style (`Server=...;Database=...`) and key=value connection strings. Uses batched streaming (50K rows per batch).
 
@@ -278,7 +279,15 @@ register_s3("bucket", "region", "key_id", "secret")
 
 let data = read_csv("s3://bucket/path.csv")
 let events = read_parquet("s3://bucket/events.parquet")
+
+// Writing works the same way — write_parquet/write_csv to an s3:// path
+write_parquet(data, "s3://bucket/out/results.parquet")
+write_csv(events, "s3://bucket/out/events.csv")
 ```
+
+`write_parquet` and `write_csv` write to any path; once a bucket is registered,
+an `s3://` URL is routed through the object store — so S3 writes need no
+separate builtin.
 
 ---
 
@@ -418,7 +427,8 @@ let t = read_mongodb(
 t |> filter(event_type == "purchase") |> aggregate(total: sum(amount)) |> show()
 ```
 
-**Aliases:** `mongo()`, `read_mongo()`, `read_mongodb()`
+**Aliases:** `mongo()`, `read_mongo()`, `read_mongodb()`.
+**Write:** `write_mongo(table, conn, database, collection, [mode])` — each row becomes a BSON document (null fields omitted); `overwrite` drops the collection first.
 
 **Arguments:** `(connection_string, database, collection, filter_json)`
 

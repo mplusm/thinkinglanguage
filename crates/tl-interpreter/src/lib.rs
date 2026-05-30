@@ -617,6 +617,18 @@ impl Environment {
             "write_databricks".to_string(),
             Value::Builtin("write_databricks".to_string()),
         );
+        global.insert(
+            "write_mssql".to_string(),
+            Value::Builtin("write_mssql".to_string()),
+        );
+        global.insert(
+            "write_mongo".to_string(),
+            Value::Builtin("write_mongo".to_string()),
+        );
+        global.insert(
+            "write_mongodb".to_string(),
+            Value::Builtin("write_mongo".to_string()),
+        );
         global.insert("fold".to_string(), Value::Builtin("fold".to_string()));
         global.insert(
             "tl_config_resolve".to_string(),
@@ -3941,6 +3953,109 @@ impl Interpreter {
                 #[cfg(not(feature = "databricks"))]
                 Err(runtime_err_s(
                     "write_databricks() requires the 'databricks' feature",
+                ))
+            }
+            "write_mssql" => {
+                #[cfg(feature = "mssql")]
+                {
+                    if args.len() < 3 {
+                        return Err(runtime_err(
+                            "write_mssql() expects (table, conn_str, table_name, [mode])".into(),
+                        ));
+                    }
+                    let df = match &args[0] {
+                        Value::Table(t) => t.df.clone(),
+                        _ => {
+                            return Err(runtime_err(
+                                "write_mssql() first arg must be a table".into(),
+                            ));
+                        }
+                    };
+                    let conn_str = match &args[1] {
+                        Value::String(s) => resolve_tl_config_connection_interp(s),
+                        _ => {
+                            return Err(runtime_err(
+                                "write_mssql() conn_str must be a string".into(),
+                            ));
+                        }
+                    };
+                    let table_name = match &args[2] {
+                        Value::String(s) => s.clone(),
+                        _ => {
+                            return Err(runtime_err(
+                                "write_mssql() table_name must be a string".into(),
+                            ));
+                        }
+                    };
+                    let mode = match args.get(3) {
+                        None | Some(Value::None) => "create".to_string(),
+                        Some(Value::String(s)) => s.clone(),
+                        _ => return Err(runtime_err("write_mssql() mode must be a string".into())),
+                    };
+                    let n = self
+                        .engine()
+                        .write_mssql(df, &conn_str, &table_name, &mode)
+                        .map_err(runtime_err)?;
+                    Ok(Value::Int(n as i64))
+                }
+                #[cfg(not(feature = "mssql"))]
+                Err(runtime_err_s("write_mssql() requires the 'mssql' feature"))
+            }
+            "write_mongo" | "write_mongodb" => {
+                #[cfg(feature = "mongodb")]
+                {
+                    if args.len() < 4 {
+                        return Err(runtime_err(
+                            "write_mongo() expects (table, conn_str, database, collection, [mode])"
+                                .into(),
+                        ));
+                    }
+                    let df = match &args[0] {
+                        Value::Table(t) => t.df.clone(),
+                        _ => {
+                            return Err(runtime_err(
+                                "write_mongo() first arg must be a table".into(),
+                            ));
+                        }
+                    };
+                    let conn_str = match &args[1] {
+                        Value::String(s) => resolve_tl_config_connection_interp(s),
+                        _ => {
+                            return Err(runtime_err(
+                                "write_mongo() conn_str must be a string".into(),
+                            ));
+                        }
+                    };
+                    let database = match &args[2] {
+                        Value::String(s) => s.clone(),
+                        _ => {
+                            return Err(runtime_err(
+                                "write_mongo() database must be a string".into(),
+                            ));
+                        }
+                    };
+                    let collection = match &args[3] {
+                        Value::String(s) => s.clone(),
+                        _ => {
+                            return Err(runtime_err(
+                                "write_mongo() collection must be a string".into(),
+                            ));
+                        }
+                    };
+                    let mode = match args.get(4) {
+                        None | Some(Value::None) => "create".to_string(),
+                        Some(Value::String(s)) => s.clone(),
+                        _ => return Err(runtime_err("write_mongo() mode must be a string".into())),
+                    };
+                    let n = self
+                        .engine()
+                        .write_mongo(df, &conn_str, &database, &collection, &mode)
+                        .map_err(runtime_err)?;
+                    Ok(Value::Int(n as i64))
+                }
+                #[cfg(not(feature = "mongodb"))]
+                Err(runtime_err_s(
+                    "write_mongo() requires the 'mongodb' feature",
                 ))
             }
             "postgres_query" => {

@@ -202,7 +202,115 @@ fn build_mongo_batch(
         .map_err(|e| format!("Arrow RecordBatch creation error: {e}"))
 }
 
+/// Convert one Arrow cell to a BSON value. Returns `None` for nulls (the field
+/// is omitted from the document).
+fn arrow_cell_to_bson(array: &dyn Array, row: usize) -> Option<Bson> {
+    if array.is_null(row) {
+        return None;
+    }
+    match array.data_type() {
+        DataType::Boolean => array
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .map(|a| Bson::Boolean(a.value(row))),
+        DataType::Int8 => array
+            .as_any()
+            .downcast_ref::<Int8Array>()
+            .map(|a| Bson::Int32(a.value(row) as i32)),
+        DataType::Int16 => array
+            .as_any()
+            .downcast_ref::<Int16Array>()
+            .map(|a| Bson::Int32(a.value(row) as i32)),
+        DataType::Int32 => array
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .map(|a| Bson::Int32(a.value(row))),
+        DataType::Int64 => array
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .map(|a| Bson::Int64(a.value(row))),
+        DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => {
+            datafusion::arrow::util::display::array_value_to_string(array, row)
+                .ok()
+                .and_then(|s| s.parse::<i64>().ok())
+                .map(Bson::Int64)
+        }
+        DataType::Float32 => array
+            .as_any()
+            .downcast_ref::<Float32Array>()
+            .map(|a| Bson::Double(a.value(row) as f64)),
+        DataType::Float64 => array
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .map(|a| Bson::Double(a.value(row))),
+        DataType::Utf8 => array
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .map(|a| Bson::String(a.value(row).to_string())),
+        _ => datafusion::arrow::util::display::array_value_to_string(array, row)
+            .ok()
+            .map(Bson::String),
+    }
+}
+
 impl DataEngine {
+    /// Write a DataFrame to a MongoDB collection. Each row becomes a document
+    /// (null fields are omitted). `mode` `overwrite` drops the collection first;
+    /// `create`/`append` insert into the (auto-created) collection. Returns the
+    /// document count.
+    pub fn write_mongo(
+        &self,
+        df: datafusion::prelude::DataFrame,
+        conn_str: &str,
+        database: &str,
+        collection: &str,
+        mode: &str,
+    ) -> Result<usize, String> {
+        let mode = crate::write::WriteMode::parse(mode)?;
+        let batches = self.collect(df)?;
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+
+        self.rt.block_on(async {
+            let client_options = ClientOptions::parse(conn_str)
+                .await
+                .map_err(|e| format!("MongoDB connection string error: {e}"))?;
+            let client = Client::with_options(client_options)
+                .map_err(|e| format!("MongoDB client error: {e}"))?;
+            let coll = client.database(database).collection::<Document>(collection);
+
+            if mode == crate::write::WriteMode::Overwrite {
+                // Ignore errors (e.g. collection does not exist yet).
+                let _ = coll.drop().await;
+            }
+
+            let mut docs: Vec<Document> = Vec::with_capacity(total_rows);
+            for batch in &batches {
+                let names: Vec<String> = batch
+                    .schema()
+                    .fields()
+                    .iter()
+                    .map(|f| f.name().to_string())
+                    .collect();
+                for row in 0..batch.num_rows() {
+                    let mut doc = Document::new();
+                    for (col, name) in names.iter().enumerate() {
+                        if let Some(b) = arrow_cell_to_bson(batch.column(col).as_ref(), row) {
+                            doc.insert(name.clone(), b);
+                        }
+                    }
+                    docs.push(doc);
+                }
+            }
+
+            if !docs.is_empty() {
+                coll.insert_many(docs)
+                    .await
+                    .map_err(|e| format!("MongoDB insert error: {e}"))?;
+            }
+            Ok(total_rows)
+        })
+    }
+
     /// Read from MongoDB using a connection string, database, collection, and optional filter.
     /// Uses schema inference from the first 100 documents and batched Arrow conversion
     /// (50K docs per batch) to reduce peak memory and enable DataFusion partition parallelism.

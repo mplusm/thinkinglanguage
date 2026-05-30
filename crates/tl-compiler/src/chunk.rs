@@ -684,6 +684,8 @@ pub enum BuiltinId {
     WriteSnowflake = 235,
     WriteBigQuery = 236,
     WriteDatabricks = 237,
+    WriteMssql = 238,
+    WriteMongo = 239,
 }
 
 impl TryFrom<u16> for BuiltinId {
@@ -929,6 +931,8 @@ impl TryFrom<u16> for BuiltinId {
             235 => Ok(BuiltinId::WriteSnowflake),
             236 => Ok(BuiltinId::WriteBigQuery),
             237 => Ok(BuiltinId::WriteDatabricks),
+            238 => Ok(BuiltinId::WriteMssql),
+            239 => Ok(BuiltinId::WriteMongo),
             _ => Err(value),
         }
     }
@@ -1185,6 +1189,8 @@ impl BuiltinId {
             "write_snowflake" => Some(BuiltinId::WriteSnowflake),
             "write_bigquery" => Some(BuiltinId::WriteBigQuery),
             "write_databricks" => Some(BuiltinId::WriteDatabricks),
+            "write_mssql" => Some(BuiltinId::WriteMssql),
+            "write_mongo" | "write_mongodb" => Some(BuiltinId::WriteMongo),
             _ => None,
         }
     }
@@ -1440,6 +1446,8 @@ impl BuiltinId {
             BuiltinId::WriteSnowflake => "write_snowflake",
             BuiltinId::WriteBigQuery => "write_bigquery",
             BuiltinId::WriteDatabricks => "write_databricks",
+            BuiltinId::WriteMssql => "write_mssql",
+            BuiltinId::WriteMongo => "write_mongo",
         }
     }
 }
@@ -1523,7 +1531,7 @@ mod tests {
 
     #[test]
     fn test_builtin_id_try_from_invalid() {
-        assert_eq!(BuiltinId::try_from(238u16), Err(238u16));
+        assert_eq!(BuiltinId::try_from(240u16), Err(240u16));
         assert_eq!(BuiltinId::try_from(65535u16), Err(65535u16));
     }
 }

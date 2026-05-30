@@ -3394,6 +3394,82 @@ impl Vm {
                 ))
             }
             #[cfg(feature = "native")]
+            BuiltinId::WriteMssql => {
+                #[cfg(feature = "mssql")]
+                {
+                    if args.len() < 3 {
+                        return Err(runtime_err(
+                            "write_mssql() expects (table, conn_str, table_name, [mode])",
+                        ));
+                    }
+                    self.check_permission("connector:mssql")?;
+                    let df = match &args[0] {
+                        VmValue::Table(t) => t.df.clone(),
+                        _ => return Err(runtime_err("write_mssql() first arg must be a table")),
+                    };
+                    let conn_str = match &args[1] {
+                        VmValue::String(s) => resolve_tl_config_connection(s),
+                        _ => return Err(runtime_err("write_mssql() conn_str must be a string")),
+                    };
+                    let table_name = match &args[2] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("write_mssql() table_name must be a string")),
+                    };
+                    let mode = match args.get(3) {
+                        None | Some(VmValue::None) => "create".to_string(),
+                        Some(VmValue::String(s)) => s.to_string(),
+                        _ => return Err(runtime_err("write_mssql() mode must be a string")),
+                    };
+                    let n = self
+                        .engine()
+                        .write_mssql(df, &conn_str, &table_name, &mode)
+                        .map_err(runtime_err)?;
+                    Ok(VmValue::Int(n as i64))
+                }
+                #[cfg(not(feature = "mssql"))]
+                Err(runtime_err("write_mssql() requires the 'mssql' feature"))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::WriteMongo => {
+                #[cfg(feature = "mongodb")]
+                {
+                    if args.len() < 4 {
+                        return Err(runtime_err(
+                            "write_mongo() expects (table, conn_str, database, collection, [mode])",
+                        ));
+                    }
+                    self.check_permission("connector:mongodb")?;
+                    let df = match &args[0] {
+                        VmValue::Table(t) => t.df.clone(),
+                        _ => return Err(runtime_err("write_mongo() first arg must be a table")),
+                    };
+                    let conn_str = match &args[1] {
+                        VmValue::String(s) => resolve_tl_config_connection(s),
+                        _ => return Err(runtime_err("write_mongo() conn_str must be a string")),
+                    };
+                    let database = match &args[2] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("write_mongo() database must be a string")),
+                    };
+                    let collection = match &args[3] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("write_mongo() collection must be a string")),
+                    };
+                    let mode = match args.get(4) {
+                        None | Some(VmValue::None) => "create".to_string(),
+                        Some(VmValue::String(s)) => s.to_string(),
+                        _ => return Err(runtime_err("write_mongo() mode must be a string")),
+                    };
+                    let n = self
+                        .engine()
+                        .write_mongo(df, &conn_str, &database, &collection, &mode)
+                        .map_err(runtime_err)?;
+                    Ok(VmValue::Int(n as i64))
+                }
+                #[cfg(not(feature = "mongodb"))]
+                Err(runtime_err("write_mongo() requires the 'mongodb' feature"))
+            }
+            #[cfg(feature = "native")]
             BuiltinId::PostgresQuery => {
                 if args.len() != 2 {
                     return Err(runtime_err(
@@ -3457,6 +3533,8 @@ impl Vm {
             | BuiltinId::WriteSnowflake
             | BuiltinId::WriteBigQuery
             | BuiltinId::WriteDatabricks
+            | BuiltinId::WriteMssql
+            | BuiltinId::WriteMongo
             | BuiltinId::PostgresQuery => Err(runtime_err("Data operations not available in WASM")),
             // ── AI builtins ──
             #[cfg(feature = "native")]

@@ -423,9 +423,14 @@ All notable changes to ThinkingLanguage are documented here, organized by implem
 - **`write_snowflake`** (235, feature `snowflake`) — `SnowflakeDialect`, via the SQL REST API
 - **`write_bigquery`** (236, feature `bigquery`) — `BigQueryDialect`, via the `jobs.query` DML API
 - **`write_databricks`** (237, feature `databricks`) — `DatabricksDialect`, via the statements API
+- **`write_mssql`** (238, feature `mssql`) — `MssqlDialect` (bracketed identifiers, SQL Server
+  types, `OBJECT_ID` guard for create-if-not-exists), via tiberius
+- **`write_mongo`** / **`write_mongodb`** (239, feature `mongodb`) — each row becomes a BSON
+  document (`insert_many`); `overwrite` drops the collection first
+- **S3 writes**: `write_parquet`/`write_csv` write to any path; after `register_s3(...)` an
+  `s3://` URL routes through the object store (no separate builtin needed)
 - Writes are gated by the sandbox connector policy (`--allow-connector <type>`) — a sandbox
   can allow reads while denying writes
 - Each new SQL connector is a thin `SqlDialect` impl over the shared layer
-- Foundation for the remaining write connectors (MSSQL, MongoDB, S3)
 - Fixed `read_mysql` returning MySQL/MariaDB numeric columns as null (the text protocol
   returns numerics as bytes, which the numeric arms now parse)
