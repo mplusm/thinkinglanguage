@@ -1495,7 +1495,7 @@ mod tests {
 
     #[test]
     fn test_builtin_id_try_from_invalid() {
-        assert_eq!(BuiltinId::try_from(228u16), Err(228u16));
+        assert_eq!(BuiltinId::try_from(231u16), Err(231u16));
         assert_eq!(BuiltinId::try_from(65535u16), Err(65535u16));
     }
 }
