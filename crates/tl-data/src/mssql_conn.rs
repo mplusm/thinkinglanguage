@@ -152,6 +152,48 @@ fn build_mssql_batch(
 }
 
 impl DataEngine {
+    /// Write a DataFrame to a SQL Server table via tiberius. See
+    /// `write_postgres` for `mode` semantics. Returns the row count.
+    pub fn write_mssql(
+        &self,
+        df: datafusion::prelude::DataFrame,
+        conn_str: &str,
+        table_name: &str,
+        mode: &str,
+    ) -> Result<usize, String> {
+        let mode = crate::write::WriteMode::parse(mode)?;
+        let batches = self.collect(df)?;
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        let stmts = crate::write::build_write_statements(
+            &crate::write::MssqlDialect,
+            table_name,
+            &batches,
+            mode,
+        )?;
+        if stmts.is_empty() {
+            return Ok(0);
+        }
+
+        self.rt.block_on(async {
+            let config = parse_mssql_config(conn_str)?;
+            let tcp = TcpStream::connect(config.get_addr())
+                .await
+                .map_err(|e| format!("MSSQL TCP connection error: {e}"))?;
+            tcp.set_nodelay(true)
+                .map_err(|e| format!("TCP nodelay error: {e}"))?;
+            let mut client = Client::connect(config, tcp.compat_write())
+                .await
+                .map_err(|e| format!("MSSQL connection error: {e}"))?;
+            for stmt in &stmts {
+                client
+                    .execute(stmt.as_str(), &[])
+                    .await
+                    .map_err(|e| format!("MSSQL write error: {e}"))?;
+            }
+            Ok(total_rows)
+        })
+    }
+
     /// Read from MSSQL using an ADO-style connection string and SQL query.
     /// Uses tiberius async client with row streaming and batched Arrow conversion.
     pub fn read_mssql(

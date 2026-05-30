@@ -4,6 +4,7 @@ pub mod pg;
 pub mod quality;
 pub mod translate;
 pub mod validate;
+pub mod write;
 
 #[cfg(feature = "bigquery")]
 pub mod bigquery;

@@ -45,6 +45,41 @@ fn runtime_err(msg: impl Into<String>) -> TlError {
     })
 }
 
+/// Extract the common `(table, config, table_name, [mode])` arguments shared by
+/// the REST-warehouse write builtins.
+#[cfg(all(
+    feature = "native",
+    any(feature = "snowflake", feature = "bigquery", feature = "databricks")
+))]
+fn write_args(
+    args: &[VmValue],
+    name: &str,
+) -> Result<(tl_data::DataFrame, String, String, String), TlError> {
+    if args.len() < 3 {
+        return Err(runtime_err(format!(
+            "{name}() expects (table, config, table_name, [mode])"
+        )));
+    }
+    let df = match &args[0] {
+        VmValue::Table(t) => t.df.clone(),
+        _ => return Err(runtime_err(format!("{name}() first arg must be a table"))),
+    };
+    let cfg = match &args[1] {
+        VmValue::String(s) => resolve_tl_config_connection(s),
+        _ => return Err(runtime_err(format!("{name}() config must be a string"))),
+    };
+    let table_name = match &args[2] {
+        VmValue::String(s) => s.to_string(),
+        _ => return Err(runtime_err(format!("{name}() table_name must be a string"))),
+    };
+    let mode = match args.get(3) {
+        None | Some(VmValue::None) => "create".to_string(),
+        Some(VmValue::String(s)) => s.to_string(),
+        _ => return Err(runtime_err(format!("{name}() mode must be a string"))),
+    };
+    Ok((df, cfg, table_name, mode))
+}
+
 /// Resolve a connection name via TL_CONFIG_PATH config file.
 /// If `name` looks like a connection string (contains `=` or `://`), return it as-is.
 /// Otherwise, look it up in the JSON config file at `TL_CONFIG_PATH` (or `./tl_config.json`).
@@ -3163,6 +3198,278 @@ impl Vm {
                 }
             }
             #[cfg(feature = "native")]
+            BuiltinId::WritePostgres => {
+                if args.len() < 3 {
+                    return Err(runtime_err(
+                        "write_postgres() expects (table, conn_str, table_name, [mode])",
+                    ));
+                }
+                // Writes are state-mutating — gate on the sandbox connector policy.
+                self.check_permission("connector:postgres")?;
+                let df = match &args[0] {
+                    VmValue::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err("write_postgres() first arg must be a table")),
+                };
+                let conn_str = match &args[1] {
+                    VmValue::String(s) => resolve_tl_config_connection(s),
+                    _ => return Err(runtime_err("write_postgres() conn_str must be a string")),
+                };
+                let table_name = match &args[2] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("write_postgres() table_name must be a string")),
+                };
+                let mode = match args.get(3) {
+                    None | Some(VmValue::None) => "create".to_string(),
+                    Some(VmValue::String(s)) => s.to_string(),
+                    _ => return Err(runtime_err("write_postgres() mode must be a string")),
+                };
+                let n = self
+                    .engine()
+                    .write_postgres(df, &conn_str, &table_name, &mode)
+                    .map_err(runtime_err)?;
+                Ok(VmValue::Int(n as i64))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::WriteRedshift => {
+                if args.len() < 3 {
+                    return Err(runtime_err(
+                        "write_redshift() expects (table, conn_str, table_name, [mode])",
+                    ));
+                }
+                self.check_permission("connector:redshift")?;
+                let df = match &args[0] {
+                    VmValue::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err("write_redshift() first arg must be a table")),
+                };
+                let conn_str = match &args[1] {
+                    VmValue::String(s) => resolve_tl_config_connection(s),
+                    _ => return Err(runtime_err("write_redshift() conn_str must be a string")),
+                };
+                let table_name = match &args[2] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("write_redshift() table_name must be a string")),
+                };
+                let mode = match args.get(3) {
+                    None | Some(VmValue::None) => "create".to_string(),
+                    Some(VmValue::String(s)) => s.to_string(),
+                    _ => return Err(runtime_err("write_redshift() mode must be a string")),
+                };
+                let n = self
+                    .engine()
+                    .write_redshift(df, &conn_str, &table_name, &mode)
+                    .map_err(runtime_err)?;
+                Ok(VmValue::Int(n as i64))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::WriteMysql => {
+                #[cfg(feature = "mysql")]
+                {
+                    if args.len() < 3 {
+                        return Err(runtime_err(
+                            "write_mysql() expects (table, conn_str, table_name, [mode])",
+                        ));
+                    }
+                    self.check_permission("connector:mysql")?;
+                    let df = match &args[0] {
+                        VmValue::Table(t) => t.df.clone(),
+                        _ => return Err(runtime_err("write_mysql() first arg must be a table")),
+                    };
+                    let conn_str = match &args[1] {
+                        VmValue::String(s) => resolve_tl_config_connection(s),
+                        _ => return Err(runtime_err("write_mysql() conn_str must be a string")),
+                    };
+                    let table_name = match &args[2] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("write_mysql() table_name must be a string")),
+                    };
+                    let mode = match args.get(3) {
+                        None | Some(VmValue::None) => "create".to_string(),
+                        Some(VmValue::String(s)) => s.to_string(),
+                        _ => return Err(runtime_err("write_mysql() mode must be a string")),
+                    };
+                    let n = self
+                        .engine()
+                        .write_mysql(df, &conn_str, &table_name, &mode)
+                        .map_err(runtime_err)?;
+                    Ok(VmValue::Int(n as i64))
+                }
+                #[cfg(not(feature = "mysql"))]
+                Err(runtime_err("write_mysql() requires the 'mysql' feature"))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::WriteClickHouse => {
+                #[cfg(feature = "clickhouse")]
+                {
+                    if args.len() < 3 {
+                        return Err(runtime_err(
+                            "write_clickhouse() expects (table, url, table_name, [mode])",
+                        ));
+                    }
+                    self.check_permission("connector:clickhouse")?;
+                    let df = match &args[0] {
+                        VmValue::Table(t) => t.df.clone(),
+                        _ => {
+                            return Err(runtime_err(
+                                "write_clickhouse() first arg must be a table",
+                            ));
+                        }
+                    };
+                    let url = match &args[1] {
+                        VmValue::String(s) => resolve_tl_config_connection(s),
+                        _ => return Err(runtime_err("write_clickhouse() url must be a string")),
+                    };
+                    let table_name = match &args[2] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => {
+                            return Err(runtime_err(
+                                "write_clickhouse() table_name must be a string",
+                            ));
+                        }
+                    };
+                    let mode = match args.get(3) {
+                        None | Some(VmValue::None) => "create".to_string(),
+                        Some(VmValue::String(s)) => s.to_string(),
+                        _ => return Err(runtime_err("write_clickhouse() mode must be a string")),
+                    };
+                    let n = self
+                        .engine()
+                        .write_clickhouse(df, &url, &table_name, &mode)
+                        .map_err(runtime_err)?;
+                    Ok(VmValue::Int(n as i64))
+                }
+                #[cfg(not(feature = "clickhouse"))]
+                Err(runtime_err(
+                    "write_clickhouse() requires the 'clickhouse' feature",
+                ))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::WriteSnowflake => {
+                #[cfg(feature = "snowflake")]
+                {
+                    let (df, cfg, table_name, mode) = write_args(&args, "write_snowflake")?;
+                    self.check_permission("connector:snowflake")?;
+                    let n = self
+                        .engine()
+                        .write_snowflake(df, &cfg, &table_name, &mode)
+                        .map_err(runtime_err)?;
+                    Ok(VmValue::Int(n as i64))
+                }
+                #[cfg(not(feature = "snowflake"))]
+                Err(runtime_err(
+                    "write_snowflake() requires the 'snowflake' feature",
+                ))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::WriteBigQuery => {
+                #[cfg(feature = "bigquery")]
+                {
+                    let (df, cfg, table_name, mode) = write_args(&args, "write_bigquery")?;
+                    self.check_permission("connector:bigquery")?;
+                    let n = self
+                        .engine()
+                        .write_bigquery(df, &cfg, &table_name, &mode)
+                        .map_err(runtime_err)?;
+                    Ok(VmValue::Int(n as i64))
+                }
+                #[cfg(not(feature = "bigquery"))]
+                Err(runtime_err(
+                    "write_bigquery() requires the 'bigquery' feature",
+                ))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::WriteDatabricks => {
+                #[cfg(feature = "databricks")]
+                {
+                    let (df, cfg, table_name, mode) = write_args(&args, "write_databricks")?;
+                    self.check_permission("connector:databricks")?;
+                    let n = self
+                        .engine()
+                        .write_databricks(df, &cfg, &table_name, &mode)
+                        .map_err(runtime_err)?;
+                    Ok(VmValue::Int(n as i64))
+                }
+                #[cfg(not(feature = "databricks"))]
+                Err(runtime_err(
+                    "write_databricks() requires the 'databricks' feature",
+                ))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::WriteMssql => {
+                #[cfg(feature = "mssql")]
+                {
+                    if args.len() < 3 {
+                        return Err(runtime_err(
+                            "write_mssql() expects (table, conn_str, table_name, [mode])",
+                        ));
+                    }
+                    self.check_permission("connector:mssql")?;
+                    let df = match &args[0] {
+                        VmValue::Table(t) => t.df.clone(),
+                        _ => return Err(runtime_err("write_mssql() first arg must be a table")),
+                    };
+                    let conn_str = match &args[1] {
+                        VmValue::String(s) => resolve_tl_config_connection(s),
+                        _ => return Err(runtime_err("write_mssql() conn_str must be a string")),
+                    };
+                    let table_name = match &args[2] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("write_mssql() table_name must be a string")),
+                    };
+                    let mode = match args.get(3) {
+                        None | Some(VmValue::None) => "create".to_string(),
+                        Some(VmValue::String(s)) => s.to_string(),
+                        _ => return Err(runtime_err("write_mssql() mode must be a string")),
+                    };
+                    let n = self
+                        .engine()
+                        .write_mssql(df, &conn_str, &table_name, &mode)
+                        .map_err(runtime_err)?;
+                    Ok(VmValue::Int(n as i64))
+                }
+                #[cfg(not(feature = "mssql"))]
+                Err(runtime_err("write_mssql() requires the 'mssql' feature"))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::WriteMongo => {
+                #[cfg(feature = "mongodb")]
+                {
+                    if args.len() < 4 {
+                        return Err(runtime_err(
+                            "write_mongo() expects (table, conn_str, database, collection, [mode])",
+                        ));
+                    }
+                    self.check_permission("connector:mongodb")?;
+                    let df = match &args[0] {
+                        VmValue::Table(t) => t.df.clone(),
+                        _ => return Err(runtime_err("write_mongo() first arg must be a table")),
+                    };
+                    let conn_str = match &args[1] {
+                        VmValue::String(s) => resolve_tl_config_connection(s),
+                        _ => return Err(runtime_err("write_mongo() conn_str must be a string")),
+                    };
+                    let database = match &args[2] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("write_mongo() database must be a string")),
+                    };
+                    let collection = match &args[3] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("write_mongo() collection must be a string")),
+                    };
+                    let mode = match args.get(4) {
+                        None | Some(VmValue::None) => "create".to_string(),
+                        Some(VmValue::String(s)) => s.to_string(),
+                        _ => return Err(runtime_err("write_mongo() mode must be a string")),
+                    };
+                    let n = self
+                        .engine()
+                        .write_mongo(df, &conn_str, &database, &collection, &mode)
+                        .map_err(runtime_err)?;
+                    Ok(VmValue::Int(n as i64))
+                }
+                #[cfg(not(feature = "mongodb"))]
+                Err(runtime_err("write_mongo() requires the 'mongodb' feature"))
+            }
+            #[cfg(feature = "native")]
             BuiltinId::PostgresQuery => {
                 if args.len() != 2 {
                     return Err(runtime_err(
@@ -3219,6 +3526,15 @@ impl Vm {
             | BuiltinId::Describe
             | BuiltinId::Head
             | BuiltinId::Postgres
+            | BuiltinId::WritePostgres
+            | BuiltinId::WriteRedshift
+            | BuiltinId::WriteMysql
+            | BuiltinId::WriteClickHouse
+            | BuiltinId::WriteSnowflake
+            | BuiltinId::WriteBigQuery
+            | BuiltinId::WriteDatabricks
+            | BuiltinId::WriteMssql
+            | BuiltinId::WriteMongo
             | BuiltinId::PostgresQuery => Err(runtime_err("Data operations not available in WASM")),
             // ── AI builtins ──
             #[cfg(feature = "native")]

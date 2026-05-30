@@ -68,6 +68,50 @@ fn build_bq_batch(
 }
 
 impl DataEngine {
+    /// Write a DataFrame to BigQuery via the `jobs.query` REST API (DML).
+    /// See `write_postgres` for `mode` semantics. Returns the row count.
+    pub fn write_bigquery(
+        &self,
+        df: datafusion::prelude::DataFrame,
+        config_str: &str,
+        table_name: &str,
+        mode: &str,
+    ) -> Result<usize, String> {
+        let mode = crate::write::WriteMode::parse(mode)?;
+        let batches = self.collect(df)?;
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        let stmts = crate::write::build_write_statements(
+            &crate::write::BigQueryDialect,
+            table_name,
+            &batches,
+            mode,
+        )?;
+        if stmts.is_empty() {
+            return Ok(0);
+        }
+
+        let (project_id, access_token) = parse_bq_config(config_str)?;
+        let url =
+            format!("https://bigquery.googleapis.com/bigquery/v2/projects/{project_id}/queries");
+        let client = reqwest::blocking::Client::new();
+        for stmt in &stmts {
+            let body = serde_json::json!({ "query": stmt, "useLegacySql": false });
+            let resp = client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .bearer_auth(&access_token)
+                .json(&body)
+                .send()
+                .map_err(|e| format!("BigQuery HTTP error: {e}"))?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().unwrap_or_default();
+                return Err(format!("BigQuery write error {status}: {text}"));
+            }
+        }
+        Ok(total_rows)
+    }
+
     /// Read from BigQuery using a project ID and SQL query.
     /// Requires `GOOGLE_APPLICATION_CREDENTIALS` env var or `TL_BIGQUERY_KEY` for API key.
     /// Config can be JSON: `{"project":"my-project","credentials_file":"/path/to/sa.json"}`

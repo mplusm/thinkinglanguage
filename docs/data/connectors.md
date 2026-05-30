@@ -64,11 +64,23 @@ users |> filter(active == true) |> show()
 // Run a custom SQL query
 let result = postgres_query("postgresql://user:pass@host/db", "SELECT * FROM orders WHERE amount > 100")
 result |> aggregate(total: sum(amount)) |> show()
+
+// Write a table back to PostgreSQL — returns the row count
+let n = write_postgres(users, "postgresql://user:pass@host/db", "users_copy", "overwrite")
 ```
 
-**Aliases:** `postgres()`, `read_postgres()`
+**Read aliases:** `postgres()`, `read_postgres()`.
+**Write:** `write_postgres(table, conn, table_name, [mode])`.
 
 PostgreSQL uses server-side cursors (`DECLARE CURSOR` + `FETCH 50000`) for memory-efficient streaming of large result sets.
+
+`write_postgres` writes the whole table in a single **transaction**. `mode` is one of:
+
+- `create` *(default)* — `CREATE TABLE IF NOT EXISTS` then insert
+- `append` — insert only (table must exist)
+- `overwrite` — drop, recreate, then insert
+
+In `--sandbox`, writes require `--allow-connector postgres` (same gate as reads).
 
 ### Redshift
 
@@ -82,7 +94,8 @@ let data = redshift(
 data |> aggregate(by: event_type, count: count()) |> show()
 ```
 
-**Aliases:** `redshift()`, `read_redshift()`
+**Aliases:** `redshift()`, `read_redshift()`.
+**Write:** `write_redshift(table, conn, table_name, [mode])` — PostgreSQL-compatible write with SSL enforced; modes `create`/`append`/`overwrite`.
 
 If `sslmode=require` is not present in the connection string, it is added automatically.
 
@@ -105,9 +118,13 @@ let result = graphql_query("https://api.example.com/graphql", "{ users { id name
 ```tl
 let t = read_mysql("mysql://user:pass@host:3306/db", "SELECT * FROM users")
 t |> select(id, name, email) |> show()
+
+// Write a table to MySQL
+let n = write_mysql(t, "mysql://user:pass@host:3306/db", "users_copy", "overwrite")
 ```
 
 Uses chunked batching (50K rows per batch) for efficient Arrow conversion.
+**Write:** `write_mysql(table, conn, table_name, [mode])`. Note: MySQL implicitly commits DDL, so `create`/`overwrite` are not fully atomic with the inserts.
 
 ### SQLite
 
@@ -233,7 +250,8 @@ let t = read_mssql(
 )
 ```
 
-**Aliases:** `mssql()`, `read_mssql()`
+**Aliases:** `mssql()`, `read_mssql()`.
+**Write:** `write_mssql(table, conn, table_name, [mode])` — bracketed identifiers; create-if-not-exists is guarded with an `OBJECT_ID` check (SQL Server has no `CREATE TABLE IF NOT EXISTS`).
 
 Supports both ADO-style (`Server=...;Database=...`) and key=value connection strings. Uses batched streaming (50K rows per batch).
 
@@ -261,7 +279,15 @@ register_s3("bucket", "region", "key_id", "secret")
 
 let data = read_csv("s3://bucket/path.csv")
 let events = read_parquet("s3://bucket/events.parquet")
+
+// Writing works the same way — write_parquet/write_csv to an s3:// path
+write_parquet(data, "s3://bucket/out/results.parquet")
+write_csv(events, "s3://bucket/out/events.csv")
 ```
+
+`write_parquet` and `write_csv` write to any path; once a bucket is registered,
+an `s3://` URL is routed through the object store — so S3 writes need no
+separate builtin.
 
 ---
 
@@ -288,7 +314,8 @@ let t = read_snowflake(
 )
 ```
 
-**Aliases:** `snowflake()`, `read_snowflake()`
+**Aliases:** `snowflake()`, `read_snowflake()`.
+**Write:** `write_snowflake(table, config, table_name, [mode])` — writes via the SQL REST API.
 
 **Config fields:** `account` (required), `user`, `password`, `database`, `warehouse`, `schema`
 
@@ -313,7 +340,8 @@ let t = read_bigquery(
 )
 ```
 
-**Aliases:** `bigquery()`, `read_bigquery()`
+**Aliases:** `bigquery()`, `read_bigquery()`.
+**Write:** `write_bigquery(table, config, table_name, [mode])` — writes via the `jobs.query` DML API.
 
 **Config fields:** `project` (required), `access_token` (optional, falls back to `TL_BIGQUERY_TOKEN` or `GOOGLE_ACCESS_TOKEN` env vars)
 
@@ -338,7 +366,8 @@ let t = read_databricks(
 )
 ```
 
-**Aliases:** `databricks()`, `read_databricks()`
+**Aliases:** `databricks()`, `read_databricks()`.
+**Write:** `write_databricks(table, config, table_name, [mode])` — writes via the SQL statements API.
 
 **Config fields:** `host` (required), `token`, `warehouse_id`
 
@@ -363,7 +392,8 @@ let t = read_clickhouse(
 )
 ```
 
-**Aliases:** `clickhouse()`, `read_clickhouse()`
+**Aliases:** `clickhouse()`, `read_clickhouse()`.
+**Write:** `write_clickhouse(table, url, table_name, [mode])` — creates `Nullable(...)` columns with a `MergeTree` engine and inserts over HTTP.
 
 The connection string is the ClickHouse HTTP endpoint URL. Authentication can be embedded in the URL or handled by ClickHouse's default user.
 
@@ -397,7 +427,8 @@ let t = read_mongodb(
 t |> filter(event_type == "purchase") |> aggregate(total: sum(amount)) |> show()
 ```
 
-**Aliases:** `mongo()`, `read_mongo()`, `read_mongodb()`
+**Aliases:** `mongo()`, `read_mongo()`, `read_mongodb()`.
+**Write:** `write_mongo(table, conn, database, collection, [mode])` — each row becomes a BSON document (null fields omitted); `overwrite` drops the collection first.
 
 **Arguments:** `(connection_string, database, collection, filter_json)`
 

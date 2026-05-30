@@ -589,6 +589,46 @@ impl Environment {
             "postgres_query".to_string(),
             Value::Builtin("postgres_query".to_string()),
         );
+        global.insert(
+            "write_postgres".to_string(),
+            Value::Builtin("write_postgres".to_string()),
+        );
+        global.insert(
+            "write_redshift".to_string(),
+            Value::Builtin("write_redshift".to_string()),
+        );
+        global.insert(
+            "write_mysql".to_string(),
+            Value::Builtin("write_mysql".to_string()),
+        );
+        global.insert(
+            "write_clickhouse".to_string(),
+            Value::Builtin("write_clickhouse".to_string()),
+        );
+        global.insert(
+            "write_snowflake".to_string(),
+            Value::Builtin("write_snowflake".to_string()),
+        );
+        global.insert(
+            "write_bigquery".to_string(),
+            Value::Builtin("write_bigquery".to_string()),
+        );
+        global.insert(
+            "write_databricks".to_string(),
+            Value::Builtin("write_databricks".to_string()),
+        );
+        global.insert(
+            "write_mssql".to_string(),
+            Value::Builtin("write_mssql".to_string()),
+        );
+        global.insert(
+            "write_mongo".to_string(),
+            Value::Builtin("write_mongo".to_string()),
+        );
+        global.insert(
+            "write_mongodb".to_string(),
+            Value::Builtin("write_mongo".to_string()),
+        );
         global.insert("fold".to_string(), Value::Builtin("fold".to_string()));
         global.insert(
             "tl_config_resolve".to_string(),
@@ -3689,6 +3729,334 @@ impl Interpreter {
                     .read_postgres(&conn_str, &table_name)
                     .map_err(runtime_err)?;
                 Ok(Value::Table(TlTable { df }))
+            }
+            "write_postgres" => {
+                if args.len() < 3 {
+                    return Err(runtime_err(
+                        "write_postgres() expects (table, conn_str, table_name, [mode])".into(),
+                    ));
+                }
+                let df = match &args[0] {
+                    Value::Table(t) => t.df.clone(),
+                    _ => {
+                        return Err(runtime_err(
+                            "write_postgres() first arg must be a table".into(),
+                        ));
+                    }
+                };
+                let conn_str = match &args[1] {
+                    Value::String(s) => resolve_tl_config_connection_interp(s),
+                    _ => {
+                        return Err(runtime_err(
+                            "write_postgres() conn_str must be a string".into(),
+                        ));
+                    }
+                };
+                let table_name = match &args[2] {
+                    Value::String(s) => s.clone(),
+                    _ => {
+                        return Err(runtime_err(
+                            "write_postgres() table_name must be a string".into(),
+                        ));
+                    }
+                };
+                let mode = match args.get(3) {
+                    None | Some(Value::None) => "create".to_string(),
+                    Some(Value::String(s)) => s.clone(),
+                    _ => return Err(runtime_err("write_postgres() mode must be a string".into())),
+                };
+                let n = self
+                    .engine()
+                    .write_postgres(df, &conn_str, &table_name, &mode)
+                    .map_err(runtime_err)?;
+                Ok(Value::Int(n as i64))
+            }
+            "write_redshift" => {
+                if args.len() < 3 {
+                    return Err(runtime_err(
+                        "write_redshift() expects (table, conn_str, table_name, [mode])".into(),
+                    ));
+                }
+                let df = match &args[0] {
+                    Value::Table(t) => t.df.clone(),
+                    _ => {
+                        return Err(runtime_err(
+                            "write_redshift() first arg must be a table".into(),
+                        ));
+                    }
+                };
+                let conn_str = match &args[1] {
+                    Value::String(s) => resolve_tl_config_connection_interp(s),
+                    _ => {
+                        return Err(runtime_err(
+                            "write_redshift() conn_str must be a string".into(),
+                        ));
+                    }
+                };
+                let table_name = match &args[2] {
+                    Value::String(s) => s.clone(),
+                    _ => {
+                        return Err(runtime_err(
+                            "write_redshift() table_name must be a string".into(),
+                        ));
+                    }
+                };
+                let mode = match args.get(3) {
+                    None | Some(Value::None) => "create".to_string(),
+                    Some(Value::String(s)) => s.clone(),
+                    _ => return Err(runtime_err("write_redshift() mode must be a string".into())),
+                };
+                let n = self
+                    .engine()
+                    .write_redshift(df, &conn_str, &table_name, &mode)
+                    .map_err(runtime_err)?;
+                Ok(Value::Int(n as i64))
+            }
+            "write_mysql" => {
+                #[cfg(feature = "mysql")]
+                {
+                    if args.len() < 3 {
+                        return Err(runtime_err(
+                            "write_mysql() expects (table, conn_str, table_name, [mode])".into(),
+                        ));
+                    }
+                    let df = match &args[0] {
+                        Value::Table(t) => t.df.clone(),
+                        _ => {
+                            return Err(runtime_err(
+                                "write_mysql() first arg must be a table".into(),
+                            ));
+                        }
+                    };
+                    let conn_str = match &args[1] {
+                        Value::String(s) => resolve_tl_config_connection_interp(s),
+                        _ => {
+                            return Err(runtime_err(
+                                "write_mysql() conn_str must be a string".into(),
+                            ));
+                        }
+                    };
+                    let table_name = match &args[2] {
+                        Value::String(s) => s.clone(),
+                        _ => {
+                            return Err(runtime_err(
+                                "write_mysql() table_name must be a string".into(),
+                            ));
+                        }
+                    };
+                    let mode = match args.get(3) {
+                        None | Some(Value::None) => "create".to_string(),
+                        Some(Value::String(s)) => s.clone(),
+                        _ => return Err(runtime_err("write_mysql() mode must be a string".into())),
+                    };
+                    let n = self
+                        .engine()
+                        .write_mysql(df, &conn_str, &table_name, &mode)
+                        .map_err(runtime_err)?;
+                    Ok(Value::Int(n as i64))
+                }
+                #[cfg(not(feature = "mysql"))]
+                Err(runtime_err_s("write_mysql() requires the 'mysql' feature"))
+            }
+            "write_clickhouse" => {
+                #[cfg(feature = "clickhouse")]
+                {
+                    if args.len() < 3 {
+                        return Err(runtime_err(
+                            "write_clickhouse() expects (table, url, table_name, [mode])".into(),
+                        ));
+                    }
+                    let df = match &args[0] {
+                        Value::Table(t) => t.df.clone(),
+                        _ => {
+                            return Err(runtime_err(
+                                "write_clickhouse() first arg must be a table".into(),
+                            ));
+                        }
+                    };
+                    let url = match &args[1] {
+                        Value::String(s) => resolve_tl_config_connection_interp(s),
+                        _ => {
+                            return Err(runtime_err(
+                                "write_clickhouse() url must be a string".into(),
+                            ));
+                        }
+                    };
+                    let table_name = match &args[2] {
+                        Value::String(s) => s.clone(),
+                        _ => {
+                            return Err(runtime_err(
+                                "write_clickhouse() table_name must be a string".into(),
+                            ));
+                        }
+                    };
+                    let mode = match args.get(3) {
+                        None | Some(Value::None) => "create".to_string(),
+                        Some(Value::String(s)) => s.clone(),
+                        _ => {
+                            return Err(runtime_err(
+                                "write_clickhouse() mode must be a string".into(),
+                            ));
+                        }
+                    };
+                    let n = self
+                        .engine()
+                        .write_clickhouse(df, &url, &table_name, &mode)
+                        .map_err(runtime_err)?;
+                    Ok(Value::Int(n as i64))
+                }
+                #[cfg(not(feature = "clickhouse"))]
+                Err(runtime_err_s(
+                    "write_clickhouse() requires the 'clickhouse' feature",
+                ))
+            }
+            "write_snowflake" => {
+                #[cfg(feature = "snowflake")]
+                {
+                    let (df, cfg, table_name, mode) = interp_write_args(args, "write_snowflake")?;
+                    let n = self
+                        .engine()
+                        .write_snowflake(df, &cfg, &table_name, &mode)
+                        .map_err(runtime_err)?;
+                    Ok(Value::Int(n as i64))
+                }
+                #[cfg(not(feature = "snowflake"))]
+                Err(runtime_err_s(
+                    "write_snowflake() requires the 'snowflake' feature",
+                ))
+            }
+            "write_bigquery" => {
+                #[cfg(feature = "bigquery")]
+                {
+                    let (df, cfg, table_name, mode) = interp_write_args(args, "write_bigquery")?;
+                    let n = self
+                        .engine()
+                        .write_bigquery(df, &cfg, &table_name, &mode)
+                        .map_err(runtime_err)?;
+                    Ok(Value::Int(n as i64))
+                }
+                #[cfg(not(feature = "bigquery"))]
+                Err(runtime_err_s(
+                    "write_bigquery() requires the 'bigquery' feature",
+                ))
+            }
+            "write_databricks" => {
+                #[cfg(feature = "databricks")]
+                {
+                    let (df, cfg, table_name, mode) = interp_write_args(args, "write_databricks")?;
+                    let n = self
+                        .engine()
+                        .write_databricks(df, &cfg, &table_name, &mode)
+                        .map_err(runtime_err)?;
+                    Ok(Value::Int(n as i64))
+                }
+                #[cfg(not(feature = "databricks"))]
+                Err(runtime_err_s(
+                    "write_databricks() requires the 'databricks' feature",
+                ))
+            }
+            "write_mssql" => {
+                #[cfg(feature = "mssql")]
+                {
+                    if args.len() < 3 {
+                        return Err(runtime_err(
+                            "write_mssql() expects (table, conn_str, table_name, [mode])".into(),
+                        ));
+                    }
+                    let df = match &args[0] {
+                        Value::Table(t) => t.df.clone(),
+                        _ => {
+                            return Err(runtime_err(
+                                "write_mssql() first arg must be a table".into(),
+                            ));
+                        }
+                    };
+                    let conn_str = match &args[1] {
+                        Value::String(s) => resolve_tl_config_connection_interp(s),
+                        _ => {
+                            return Err(runtime_err(
+                                "write_mssql() conn_str must be a string".into(),
+                            ));
+                        }
+                    };
+                    let table_name = match &args[2] {
+                        Value::String(s) => s.clone(),
+                        _ => {
+                            return Err(runtime_err(
+                                "write_mssql() table_name must be a string".into(),
+                            ));
+                        }
+                    };
+                    let mode = match args.get(3) {
+                        None | Some(Value::None) => "create".to_string(),
+                        Some(Value::String(s)) => s.clone(),
+                        _ => return Err(runtime_err("write_mssql() mode must be a string".into())),
+                    };
+                    let n = self
+                        .engine()
+                        .write_mssql(df, &conn_str, &table_name, &mode)
+                        .map_err(runtime_err)?;
+                    Ok(Value::Int(n as i64))
+                }
+                #[cfg(not(feature = "mssql"))]
+                Err(runtime_err_s("write_mssql() requires the 'mssql' feature"))
+            }
+            "write_mongo" | "write_mongodb" => {
+                #[cfg(feature = "mongodb")]
+                {
+                    if args.len() < 4 {
+                        return Err(runtime_err(
+                            "write_mongo() expects (table, conn_str, database, collection, [mode])"
+                                .into(),
+                        ));
+                    }
+                    let df = match &args[0] {
+                        Value::Table(t) => t.df.clone(),
+                        _ => {
+                            return Err(runtime_err(
+                                "write_mongo() first arg must be a table".into(),
+                            ));
+                        }
+                    };
+                    let conn_str = match &args[1] {
+                        Value::String(s) => resolve_tl_config_connection_interp(s),
+                        _ => {
+                            return Err(runtime_err(
+                                "write_mongo() conn_str must be a string".into(),
+                            ));
+                        }
+                    };
+                    let database = match &args[2] {
+                        Value::String(s) => s.clone(),
+                        _ => {
+                            return Err(runtime_err(
+                                "write_mongo() database must be a string".into(),
+                            ));
+                        }
+                    };
+                    let collection = match &args[3] {
+                        Value::String(s) => s.clone(),
+                        _ => {
+                            return Err(runtime_err(
+                                "write_mongo() collection must be a string".into(),
+                            ));
+                        }
+                    };
+                    let mode = match args.get(4) {
+                        None | Some(Value::None) => "create".to_string(),
+                        Some(Value::String(s)) => s.clone(),
+                        _ => return Err(runtime_err("write_mongo() mode must be a string".into())),
+                    };
+                    let n = self
+                        .engine()
+                        .write_mongo(df, &conn_str, &database, &collection, &mode)
+                        .map_err(runtime_err)?;
+                    Ok(Value::Int(n as i64))
+                }
+                #[cfg(not(feature = "mongodb"))]
+                Err(runtime_err_s(
+                    "write_mongo() requires the 'mongodb' feature",
+                ))
             }
             "postgres_query" => {
                 if args.len() != 2 {
@@ -9651,6 +10019,38 @@ fn runtime_err(message: String) -> TlError {
         span: None,
         stack_trace: vec![],
     })
+}
+
+/// Extract the common `(table, config, table_name, [mode])` arguments shared by
+/// the REST-warehouse write builtins.
+#[cfg(any(feature = "snowflake", feature = "bigquery", feature = "databricks"))]
+fn interp_write_args(
+    args: &[Value],
+    name: &str,
+) -> Result<(DataFrame, String, String, String), TlError> {
+    if args.len() < 3 {
+        return Err(runtime_err(format!(
+            "{name}() expects (table, config, table_name, [mode])"
+        )));
+    }
+    let df = match &args[0] {
+        Value::Table(t) => t.df.clone(),
+        _ => return Err(runtime_err(format!("{name}() first arg must be a table"))),
+    };
+    let cfg = match &args[1] {
+        Value::String(s) => resolve_tl_config_connection_interp(s),
+        _ => return Err(runtime_err(format!("{name}() config must be a string"))),
+    };
+    let table_name = match &args[2] {
+        Value::String(s) => s.clone(),
+        _ => return Err(runtime_err(format!("{name}() table_name must be a string"))),
+    };
+    let mode = match args.get(3) {
+        None | Some(Value::None) => "create".to_string(),
+        Some(Value::String(s)) => s.clone(),
+        _ => return Err(runtime_err(format!("{name}() mode must be a string"))),
+    };
+    Ok((df, cfg, table_name, mode))
 }
 
 fn runtime_err_s(message: &str) -> TlError {

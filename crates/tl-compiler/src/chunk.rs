@@ -677,6 +677,15 @@ pub enum BuiltinId {
     ReadIceberg = 228,
     IcebergSnapshots = 229,
     IcebergSchema = 230,
+    WritePostgres = 231,
+    WriteRedshift = 232,
+    WriteMysql = 233,
+    WriteClickHouse = 234,
+    WriteSnowflake = 235,
+    WriteBigQuery = 236,
+    WriteDatabricks = 237,
+    WriteMssql = 238,
+    WriteMongo = 239,
 }
 
 impl TryFrom<u16> for BuiltinId {
@@ -915,6 +924,15 @@ impl TryFrom<u16> for BuiltinId {
             228 => Ok(BuiltinId::ReadIceberg),
             229 => Ok(BuiltinId::IcebergSnapshots),
             230 => Ok(BuiltinId::IcebergSchema),
+            231 => Ok(BuiltinId::WritePostgres),
+            232 => Ok(BuiltinId::WriteRedshift),
+            233 => Ok(BuiltinId::WriteMysql),
+            234 => Ok(BuiltinId::WriteClickHouse),
+            235 => Ok(BuiltinId::WriteSnowflake),
+            236 => Ok(BuiltinId::WriteBigQuery),
+            237 => Ok(BuiltinId::WriteDatabricks),
+            238 => Ok(BuiltinId::WriteMssql),
+            239 => Ok(BuiltinId::WriteMongo),
             _ => Err(value),
         }
     }
@@ -1164,6 +1182,15 @@ impl BuiltinId {
             "iceberg" | "read_iceberg" => Some(BuiltinId::ReadIceberg),
             "iceberg_snapshots" => Some(BuiltinId::IcebergSnapshots),
             "iceberg_schema" => Some(BuiltinId::IcebergSchema),
+            "write_postgres" => Some(BuiltinId::WritePostgres),
+            "write_redshift" => Some(BuiltinId::WriteRedshift),
+            "write_mysql" => Some(BuiltinId::WriteMysql),
+            "write_clickhouse" => Some(BuiltinId::WriteClickHouse),
+            "write_snowflake" => Some(BuiltinId::WriteSnowflake),
+            "write_bigquery" => Some(BuiltinId::WriteBigQuery),
+            "write_databricks" => Some(BuiltinId::WriteDatabricks),
+            "write_mssql" => Some(BuiltinId::WriteMssql),
+            "write_mongo" | "write_mongodb" => Some(BuiltinId::WriteMongo),
             _ => None,
         }
     }
@@ -1412,6 +1439,15 @@ impl BuiltinId {
             BuiltinId::ReadIceberg => "iceberg",
             BuiltinId::IcebergSnapshots => "iceberg_snapshots",
             BuiltinId::IcebergSchema => "iceberg_schema",
+            BuiltinId::WritePostgres => "write_postgres",
+            BuiltinId::WriteRedshift => "write_redshift",
+            BuiltinId::WriteMysql => "write_mysql",
+            BuiltinId::WriteClickHouse => "write_clickhouse",
+            BuiltinId::WriteSnowflake => "write_snowflake",
+            BuiltinId::WriteBigQuery => "write_bigquery",
+            BuiltinId::WriteDatabricks => "write_databricks",
+            BuiltinId::WriteMssql => "write_mssql",
+            BuiltinId::WriteMongo => "write_mongo",
         }
     }
 }
@@ -1495,7 +1531,7 @@ mod tests {
 
     #[test]
     fn test_builtin_id_try_from_invalid() {
-        assert_eq!(BuiltinId::try_from(231u16), Err(231u16));
+        assert_eq!(BuiltinId::try_from(240u16), Err(240u16));
         assert_eq!(BuiltinId::try_from(65535u16), Err(65535u16));
     }
 }

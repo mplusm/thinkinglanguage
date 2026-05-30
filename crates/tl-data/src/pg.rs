@@ -113,6 +113,45 @@ fn build_record_batch(rows: &[postgres::Row], schema: &Arc<Schema>) -> Result<Re
 }
 
 impl DataEngine {
+    /// Write a DataFusion DataFrame into a PostgreSQL table.
+    ///
+    /// `mode` is one of `create` (CREATE IF NOT EXISTS + insert, the default),
+    /// `append` (insert only), or `overwrite` (drop + recreate + insert).
+    /// The whole write runs in a single transaction. Returns the row count.
+    pub fn write_postgres(
+        &self,
+        df: datafusion::prelude::DataFrame,
+        conn_str: &str,
+        table_name: &str,
+        mode: &str,
+    ) -> Result<usize, String> {
+        let mode = crate::write::WriteMode::parse(mode)?;
+        let batches = self.collect(df)?;
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+
+        let stmts = crate::write::build_write_statements(
+            &crate::write::PostgresDialect,
+            table_name,
+            &batches,
+            mode,
+        )?;
+        if stmts.is_empty() {
+            return Ok(0);
+        }
+
+        let mut client = pg_connect(conn_str)?;
+        let mut txn = client
+            .transaction()
+            .map_err(|e| format!("Postgres begin transaction error: {e}"))?;
+        for stmt in &stmts {
+            txn.batch_execute(stmt)
+                .map_err(|e| format!("Postgres write error: {e}"))?;
+        }
+        txn.commit()
+            .map_err(|e| format!("Postgres commit error: {e}"))?;
+        Ok(total_rows)
+    }
+
     /// Read a PostgreSQL table into a DataFusion DataFrame.
     pub fn read_postgres(
         &self,

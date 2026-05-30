@@ -408,3 +408,29 @@ All notable changes to ThinkingLanguage are documented here, organized by implem
 - All connectors support `TL_CONFIG_PATH` / `tl_config.json` named connection resolution
 - BuiltinId 202-215 allocated for new connectors; 228-230 for Apache Iceberg (read, snapshots, schema)
 - Structured `ConnectorError` with `AuthError`, `QueryError`, `ConfigError` variants
+
+### Connector Write Support (Phase 0 + Postgres)
+
+- Shared write layer (`tl-data/src/write.rs`): `WriteMode` (create/append/overwrite),
+  `SqlDialect` trait, Arrow→SQL-literal rendering, batched multi-row `INSERT` generation —
+  reused by every SQL write connector
+- **`write_postgres(table, conn, table_name, [mode])`** (BuiltinId 231) — writes a DataFrame to
+  PostgreSQL in a single transaction; returns the row count
+- **`write_redshift`** (232) — reuses the Postgres write path with SSL enforced
+- **`write_mysql`** (233, feature `mysql`) — `MySqlDialect` (backtick idents, backslash escaping)
+- **`write_clickhouse`** (234, feature `clickhouse`) — `ClickHouseDialect` with `Nullable(...)`
+  columns + `MergeTree` engine, written over the HTTP interface
+- **`write_snowflake`** (235, feature `snowflake`) — `SnowflakeDialect`, via the SQL REST API
+- **`write_bigquery`** (236, feature `bigquery`) — `BigQueryDialect`, via the `jobs.query` DML API
+- **`write_databricks`** (237, feature `databricks`) — `DatabricksDialect`, via the statements API
+- **`write_mssql`** (238, feature `mssql`) — `MssqlDialect` (bracketed identifiers, SQL Server
+  types, `OBJECT_ID` guard for create-if-not-exists), via tiberius
+- **`write_mongo`** / **`write_mongodb`** (239, feature `mongodb`) — each row becomes a BSON
+  document (`insert_many`); `overwrite` drops the collection first
+- **S3 writes**: `write_parquet`/`write_csv` write to any path; after `register_s3(...)` an
+  `s3://` URL routes through the object store (no separate builtin needed)
+- Writes are gated by the sandbox connector policy (`--allow-connector <type>`) — a sandbox
+  can allow reads while denying writes
+- Each new SQL connector is a thin `SqlDialect` impl over the shared layer
+- Fixed `read_mysql` returning MySQL/MariaDB numeric columns as null (the text protocol
+  returns numerics as bytes, which the numeric arms now parse)

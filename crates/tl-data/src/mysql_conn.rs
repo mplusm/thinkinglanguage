@@ -30,6 +30,16 @@ fn mysql_type_to_arrow(col_type: mysql::consts::ColumnType) -> DataType {
     }
 }
 
+/// MySQL's text protocol (`Conn::query`) returns numeric values as `Bytes`
+/// (their text form), so numeric columns must parse the bytes.
+fn bytes_to_i64(b: &[u8]) -> Option<i64> {
+    std::str::from_utf8(b).ok()?.trim().parse::<i64>().ok()
+}
+
+fn bytes_to_f64(b: &[u8]) -> Option<f64> {
+    std::str::from_utf8(b).ok()?.trim().parse::<f64>().ok()
+}
+
 /// Build a RecordBatch from a chunk of MySQL rows.
 fn build_mysql_batch(
     rows: &[mysql::Row],
@@ -45,6 +55,7 @@ fn build_mysql_batch(
                     .map(|r| match &r[col_idx] {
                         MysqlValue::Int(n) => Some(*n != 0),
                         MysqlValue::UInt(n) => Some(*n != 0),
+                        MysqlValue::Bytes(b) => bytes_to_i64(b).map(|n| n != 0),
                         MysqlValue::NULL => None,
                         _ => None,
                     })
@@ -57,6 +68,7 @@ fn build_mysql_batch(
                     .map(|r| match &r[col_idx] {
                         MysqlValue::Int(n) => Some(*n as i16),
                         MysqlValue::UInt(n) => Some(*n as i16),
+                        MysqlValue::Bytes(b) => bytes_to_i64(b).map(|n| n as i16),
                         MysqlValue::NULL => None,
                         _ => None,
                     })
@@ -69,6 +81,7 @@ fn build_mysql_batch(
                     .map(|r| match &r[col_idx] {
                         MysqlValue::Int(n) => Some(*n as i32),
                         MysqlValue::UInt(n) => Some(*n as i32),
+                        MysqlValue::Bytes(b) => bytes_to_i64(b).map(|n| n as i32),
                         MysqlValue::NULL => None,
                         _ => None,
                     })
@@ -81,6 +94,7 @@ fn build_mysql_batch(
                     .map(|r| match &r[col_idx] {
                         MysqlValue::Int(n) => Some(*n),
                         MysqlValue::UInt(n) => Some(*n as i64),
+                        MysqlValue::Bytes(b) => bytes_to_i64(b),
                         MysqlValue::NULL => None,
                         _ => None,
                     })
@@ -91,9 +105,10 @@ fn build_mysql_batch(
                 let values: Vec<Option<f32>> = rows
                     .iter()
                     .map(|r| match &r[col_idx] {
-                        MysqlValue::Float(f) => Some(*f as f32),
+                        MysqlValue::Float(f) => Some(*f),
                         MysqlValue::Double(f) => Some(*f as f32),
                         MysqlValue::Int(n) => Some(*n as f32),
+                        MysqlValue::Bytes(b) => bytes_to_f64(b).map(|f| f as f32),
                         MysqlValue::NULL => None,
                         _ => None,
                     })
@@ -107,6 +122,7 @@ fn build_mysql_batch(
                         MysqlValue::Float(f) => Some(*f as f64),
                         MysqlValue::Double(f) => Some(*f),
                         MysqlValue::Int(n) => Some(*n as f64),
+                        MysqlValue::Bytes(b) => bytes_to_f64(b),
                         MysqlValue::NULL => None,
                         _ => None,
                     })
@@ -133,6 +149,41 @@ fn build_mysql_batch(
 }
 
 impl DataEngine {
+    /// Write a DataFrame to a MySQL table. See `write_postgres` for `mode`
+    /// semantics. Note: MySQL implicitly commits DDL, so `create`/`overwrite`
+    /// are not fully atomic with the following inserts.
+    pub fn write_mysql(
+        &self,
+        df: datafusion::prelude::DataFrame,
+        conn_str: &str,
+        table_name: &str,
+        mode: &str,
+    ) -> Result<usize, String> {
+        let mode = crate::write::WriteMode::parse(mode)?;
+        let batches = self.collect(df)?;
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+
+        let stmts = crate::write::build_write_statements(
+            &crate::write::MySqlDialect,
+            table_name,
+            &batches,
+            mode,
+        )?;
+        if stmts.is_empty() {
+            return Ok(0);
+        }
+
+        let pool = Pool::new(conn_str).map_err(|e| format!("MySQL connection error: {e}"))?;
+        let mut conn = pool
+            .get_conn()
+            .map_err(|e| format!("MySQL connection error: {e}"))?;
+        for stmt in &stmts {
+            conn.query_drop(stmt)
+                .map_err(|e| format!("MySQL write error: {e}"))?;
+        }
+        Ok(total_rows)
+    }
+
     /// Read from MySQL using a connection string and SQL query.
     /// Uses batched Arrow conversion (50K rows per batch) to reduce peak memory
     /// and enable DataFusion partition parallelism on large result sets.
