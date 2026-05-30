@@ -678,6 +678,9 @@ pub enum BuiltinId {
     IcebergSnapshots = 229,
     IcebergSchema = 230,
     WritePostgres = 231,
+    WriteRedshift = 232,
+    WriteMysql = 233,
+    WriteClickHouse = 234,
 }
 
 impl TryFrom<u16> for BuiltinId {
@@ -917,6 +920,9 @@ impl TryFrom<u16> for BuiltinId {
             229 => Ok(BuiltinId::IcebergSnapshots),
             230 => Ok(BuiltinId::IcebergSchema),
             231 => Ok(BuiltinId::WritePostgres),
+            232 => Ok(BuiltinId::WriteRedshift),
+            233 => Ok(BuiltinId::WriteMysql),
+            234 => Ok(BuiltinId::WriteClickHouse),
             _ => Err(value),
         }
     }
@@ -1167,6 +1173,9 @@ impl BuiltinId {
             "iceberg_snapshots" => Some(BuiltinId::IcebergSnapshots),
             "iceberg_schema" => Some(BuiltinId::IcebergSchema),
             "write_postgres" => Some(BuiltinId::WritePostgres),
+            "write_redshift" => Some(BuiltinId::WriteRedshift),
+            "write_mysql" => Some(BuiltinId::WriteMysql),
+            "write_clickhouse" => Some(BuiltinId::WriteClickHouse),
             _ => None,
         }
     }
@@ -1416,6 +1425,9 @@ impl BuiltinId {
             BuiltinId::IcebergSnapshots => "iceberg_snapshots",
             BuiltinId::IcebergSchema => "iceberg_schema",
             BuiltinId::WritePostgres => "write_postgres",
+            BuiltinId::WriteRedshift => "write_redshift",
+            BuiltinId::WriteMysql => "write_mysql",
+            BuiltinId::WriteClickHouse => "write_clickhouse",
         }
     }
 }
@@ -1499,7 +1511,7 @@ mod tests {
 
     #[test]
     fn test_builtin_id_try_from_invalid() {
-        assert_eq!(BuiltinId::try_from(232u16), Err(232u16));
+        assert_eq!(BuiltinId::try_from(235u16), Err(235u16));
         assert_eq!(BuiltinId::try_from(65535u16), Err(65535u16));
     }
 }

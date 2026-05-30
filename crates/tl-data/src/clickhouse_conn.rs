@@ -98,6 +98,49 @@ fn build_clickhouse_batch(
 }
 
 impl DataEngine {
+    /// Write a DataFrame to a ClickHouse table over the HTTP interface.
+    /// See `write_postgres` for `mode` semantics. Columns are created as
+    /// `Nullable(...)` with a `MergeTree` engine.
+    pub fn write_clickhouse(
+        &self,
+        df: datafusion::prelude::DataFrame,
+        url: &str,
+        table_name: &str,
+        mode: &str,
+    ) -> Result<usize, String> {
+        let mode = crate::write::WriteMode::parse(mode)?;
+        let batches = self.collect(df)?;
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+
+        let stmts = crate::write::build_write_statements(
+            &crate::write::ClickHouseDialect,
+            table_name,
+            &batches,
+            mode,
+        )?;
+        if stmts.is_empty() {
+            return Ok(0);
+        }
+
+        let client = reqwest::blocking::Client::new();
+        let endpoint = format!("{}/", url.trim_end_matches('/'));
+        for stmt in &stmts {
+            let response = client
+                .post(&endpoint)
+                .body(stmt.clone())
+                .send()
+                .map_err(|e| format!("ClickHouse HTTP request error: {e}"))?;
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response
+                    .text()
+                    .unwrap_or_else(|_| "<unreadable body>".to_string());
+                return Err(format!("ClickHouse write error (HTTP {status}): {body}"));
+            }
+        }
+        Ok(total_rows)
+    }
+
     /// Read from ClickHouse using its HTTP interface and a SQL query.
     /// Uses JSONEachRow format for streaming-friendly line-delimited JSON.
     /// Batches rows into 50K-row RecordBatches and registers them with

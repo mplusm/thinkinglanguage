@@ -67,6 +67,12 @@ pub trait SqlDialect {
     fn max_rows_per_insert(&self) -> usize {
         1000
     }
+
+    /// Text appended after the column list in `CREATE TABLE (...)`, e.g. a
+    /// ClickHouse `ENGINE = ...` clause. Empty for standard SQL.
+    fn create_table_suffix(&self) -> String {
+        String::new()
+    }
 }
 
 /// Render one Arrow cell as a SQL literal for the given dialect.
@@ -157,14 +163,18 @@ pub fn build_write_statements(
             )
         })
         .collect();
+    let suffix = dialect.create_table_suffix();
     match mode {
         WriteMode::Overwrite => {
             stmts.push(format!("DROP TABLE IF EXISTS {qtable}"));
-            stmts.push(format!("CREATE TABLE {qtable} ({})", col_defs.join(", ")));
+            stmts.push(format!(
+                "CREATE TABLE {qtable} ({}){suffix}",
+                col_defs.join(", ")
+            ));
         }
         WriteMode::Create => {
             stmts.push(format!(
-                "CREATE TABLE IF NOT EXISTS {qtable} ({})",
+                "CREATE TABLE IF NOT EXISTS {qtable} ({}){suffix}",
                 col_defs.join(", ")
             ));
         }
@@ -224,6 +234,86 @@ impl SqlDialect for PostgresDialect {
             _ => "TEXT",
         }
         .to_string()
+    }
+}
+
+/// MySQL / MariaDB dialect.
+pub struct MySqlDialect;
+
+impl SqlDialect for MySqlDialect {
+    fn column_type(&self, dt: &DataType) -> String {
+        match dt {
+            DataType::Boolean => "TINYINT",
+            DataType::Int8 | DataType::Int16 => "SMALLINT",
+            DataType::Int32 | DataType::UInt8 | DataType::UInt16 => "INT",
+            DataType::Int64 | DataType::UInt32 | DataType::UInt64 => "BIGINT",
+            DataType::Float32 => "FLOAT",
+            DataType::Float64 => "DOUBLE",
+            DataType::Date32 | DataType::Date64 => "DATE",
+            DataType::Timestamp(_, _) => "DATETIME",
+            DataType::Decimal128(p, s) | DataType::Decimal256(p, s) => {
+                return format!("DECIMAL({p}, {s})");
+            }
+            _ => "TEXT",
+        }
+        .to_string()
+    }
+
+    fn quote_ident(&self, name: &str) -> String {
+        format!("`{}`", name.replace('`', "``"))
+    }
+
+    fn quote_str(&self, s: &str) -> String {
+        // MySQL: escape backslashes and single quotes.
+        format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
+    }
+
+    fn bool_literal(&self, b: bool) -> String {
+        if b { "1".to_string() } else { "0".to_string() }
+    }
+}
+
+/// ClickHouse dialect. Columns are wrapped in `Nullable(...)` so arbitrary
+/// DataFrame nulls insert cleanly, and `CREATE TABLE` gets a MergeTree engine.
+pub struct ClickHouseDialect;
+
+impl SqlDialect for ClickHouseDialect {
+    fn column_type(&self, dt: &DataType) -> String {
+        let inner = match dt {
+            DataType::Boolean | DataType::UInt8 => "UInt8",
+            DataType::Int8 => "Int8",
+            DataType::Int16 => "Int16",
+            DataType::Int32 => "Int32",
+            DataType::Int64 => "Int64",
+            DataType::UInt16 => "UInt16",
+            DataType::UInt32 => "UInt32",
+            DataType::UInt64 => "UInt64",
+            DataType::Float32 => "Float32",
+            DataType::Float64 => "Float64",
+            DataType::Date32 | DataType::Date64 => "Date32",
+            DataType::Timestamp(_, _) => "DateTime64(3)",
+            DataType::Decimal128(p, s) | DataType::Decimal256(p, s) => {
+                return format!("Nullable(Decimal({p}, {s}))");
+            }
+            _ => "String",
+        };
+        format!("Nullable({inner})")
+    }
+
+    fn quote_ident(&self, name: &str) -> String {
+        format!("`{}`", name.replace('`', "``"))
+    }
+
+    fn quote_str(&self, s: &str) -> String {
+        format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
+    }
+
+    fn bool_literal(&self, b: bool) -> String {
+        if b { "1".to_string() } else { "0".to_string() }
+    }
+
+    fn create_table_suffix(&self) -> String {
+        " ENGINE = MergeTree() ORDER BY tuple()".to_string()
     }
 }
 
@@ -291,5 +381,30 @@ mod tests {
                 .unwrap();
         assert_eq!(stmts.len(), 1);
         assert!(stmts[0].starts_with("INSERT INTO \"t\""));
+    }
+
+    #[test]
+    fn mysql_uses_backtick_idents_and_backslash_escaping() {
+        let stmts =
+            build_write_statements(&MySqlDialect, "t", &[sample_batch()], WriteMode::Create)
+                .unwrap();
+        assert!(stmts[0].starts_with("CREATE TABLE IF NOT EXISTS `t`"));
+        assert!(stmts[0].contains("`id` BIGINT"));
+        // 'a\'b' escaped MySQL-style.
+        assert!(stmts[1].contains("(1, 'a\\'b')"));
+    }
+
+    #[test]
+    fn clickhouse_adds_engine_and_nullable_types() {
+        let stmts = build_write_statements(
+            &ClickHouseDialect,
+            "t",
+            &[sample_batch()],
+            WriteMode::Create,
+        )
+        .unwrap();
+        assert!(stmts[0].contains("`id` Nullable(Int64)"));
+        assert!(stmts[0].contains("`name` Nullable(String)"));
+        assert!(stmts[0].ends_with("ENGINE = MergeTree() ORDER BY tuple()"));
     }
 }

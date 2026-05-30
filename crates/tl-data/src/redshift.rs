@@ -22,6 +22,24 @@ impl DataEngine {
         };
         self.query_postgres(&conn_str, query, "__redshift_result")
     }
+
+    /// Write a DataFrame to Amazon Redshift. Redshift is PostgreSQL
+    /// wire-compatible, so this reuses the Postgres write path (with SSL
+    /// enforced). See `write_postgres` for `mode` semantics.
+    pub fn write_redshift(
+        &self,
+        df: datafusion::prelude::DataFrame,
+        conn_str: &str,
+        table_name: &str,
+        mode: &str,
+    ) -> Result<usize, String> {
+        let conn_str = if !conn_str.contains("sslmode") {
+            format!("{conn_str} sslmode=require")
+        } else {
+            conn_str.to_string()
+        };
+        self.write_postgres(df, &conn_str, table_name, mode)
+    }
 }
 
 #[cfg(test)]

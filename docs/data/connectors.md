@@ -94,7 +94,8 @@ let data = redshift(
 data |> aggregate(by: event_type, count: count()) |> show()
 ```
 
-**Aliases:** `redshift()`, `read_redshift()`
+**Aliases:** `redshift()`, `read_redshift()`.
+**Write:** `write_redshift(table, conn, table_name, [mode])` — PostgreSQL-compatible write with SSL enforced; modes `create`/`append`/`overwrite`.
 
 If `sslmode=require` is not present in the connection string, it is added automatically.
 
@@ -117,9 +118,13 @@ let result = graphql_query("https://api.example.com/graphql", "{ users { id name
 ```tl
 let t = read_mysql("mysql://user:pass@host:3306/db", "SELECT * FROM users")
 t |> select(id, name, email) |> show()
+
+// Write a table to MySQL
+let n = write_mysql(t, "mysql://user:pass@host:3306/db", "users_copy", "overwrite")
 ```
 
 Uses chunked batching (50K rows per batch) for efficient Arrow conversion.
+**Write:** `write_mysql(table, conn, table_name, [mode])`. Note: MySQL implicitly commits DDL, so `create`/`overwrite` are not fully atomic with the inserts.
 
 ### SQLite
 
@@ -375,7 +380,8 @@ let t = read_clickhouse(
 )
 ```
 
-**Aliases:** `clickhouse()`, `read_clickhouse()`
+**Aliases:** `clickhouse()`, `read_clickhouse()`.
+**Write:** `write_clickhouse(table, url, table_name, [mode])` — creates `Nullable(...)` columns with a `MergeTree` engine and inserts over HTTP.
 
 The connection string is the ClickHouse HTTP endpoint URL. Authentication can be embedded in the URL or handled by ClickHouse's default user.
 

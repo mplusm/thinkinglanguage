@@ -416,6 +416,11 @@ All notable changes to ThinkingLanguage are documented here, organized by implem
   reused by every SQL write connector
 - **`write_postgres(table, conn, table_name, [mode])`** (BuiltinId 231) — writes a DataFrame to
   PostgreSQL in a single transaction; returns the row count
-- Writes are gated by the sandbox connector policy (`--allow-connector postgres`) — a sandbox
+- **`write_redshift`** (232) — reuses the Postgres write path with SSL enforced
+- **`write_mysql`** (233, feature `mysql`) — `MySqlDialect` (backtick idents, backslash escaping)
+- **`write_clickhouse`** (234, feature `clickhouse`) — `ClickHouseDialect` with `Nullable(...)`
+  columns + `MergeTree` engine, written over the HTTP interface
+- Writes are gated by the sandbox connector policy (`--allow-connector <type>`) — a sandbox
   can allow reads while denying writes
-- Foundation for the remaining write connectors (MySQL, MSSQL, Redshift, warehouses, …)
+- Each new SQL connector is a thin `SqlDialect` impl over the shared layer
+- Foundation for the remaining write connectors (MSSQL, Snowflake, BigQuery, Databricks, Mongo, …)

@@ -3195,6 +3195,119 @@ impl Vm {
                 Ok(VmValue::Int(n as i64))
             }
             #[cfg(feature = "native")]
+            BuiltinId::WriteRedshift => {
+                if args.len() < 3 {
+                    return Err(runtime_err(
+                        "write_redshift() expects (table, conn_str, table_name, [mode])",
+                    ));
+                }
+                self.check_permission("connector:redshift")?;
+                let df = match &args[0] {
+                    VmValue::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err("write_redshift() first arg must be a table")),
+                };
+                let conn_str = match &args[1] {
+                    VmValue::String(s) => resolve_tl_config_connection(s),
+                    _ => return Err(runtime_err("write_redshift() conn_str must be a string")),
+                };
+                let table_name = match &args[2] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("write_redshift() table_name must be a string")),
+                };
+                let mode = match args.get(3) {
+                    None | Some(VmValue::None) => "create".to_string(),
+                    Some(VmValue::String(s)) => s.to_string(),
+                    _ => return Err(runtime_err("write_redshift() mode must be a string")),
+                };
+                let n = self
+                    .engine()
+                    .write_redshift(df, &conn_str, &table_name, &mode)
+                    .map_err(runtime_err)?;
+                Ok(VmValue::Int(n as i64))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::WriteMysql => {
+                #[cfg(feature = "mysql")]
+                {
+                    if args.len() < 3 {
+                        return Err(runtime_err(
+                            "write_mysql() expects (table, conn_str, table_name, [mode])",
+                        ));
+                    }
+                    self.check_permission("connector:mysql")?;
+                    let df = match &args[0] {
+                        VmValue::Table(t) => t.df.clone(),
+                        _ => return Err(runtime_err("write_mysql() first arg must be a table")),
+                    };
+                    let conn_str = match &args[1] {
+                        VmValue::String(s) => resolve_tl_config_connection(s),
+                        _ => return Err(runtime_err("write_mysql() conn_str must be a string")),
+                    };
+                    let table_name = match &args[2] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("write_mysql() table_name must be a string")),
+                    };
+                    let mode = match args.get(3) {
+                        None | Some(VmValue::None) => "create".to_string(),
+                        Some(VmValue::String(s)) => s.to_string(),
+                        _ => return Err(runtime_err("write_mysql() mode must be a string")),
+                    };
+                    let n = self
+                        .engine()
+                        .write_mysql(df, &conn_str, &table_name, &mode)
+                        .map_err(runtime_err)?;
+                    Ok(VmValue::Int(n as i64))
+                }
+                #[cfg(not(feature = "mysql"))]
+                Err(runtime_err("write_mysql() requires the 'mysql' feature"))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::WriteClickHouse => {
+                #[cfg(feature = "clickhouse")]
+                {
+                    if args.len() < 3 {
+                        return Err(runtime_err(
+                            "write_clickhouse() expects (table, url, table_name, [mode])",
+                        ));
+                    }
+                    self.check_permission("connector:clickhouse")?;
+                    let df = match &args[0] {
+                        VmValue::Table(t) => t.df.clone(),
+                        _ => {
+                            return Err(runtime_err(
+                                "write_clickhouse() first arg must be a table",
+                            ));
+                        }
+                    };
+                    let url = match &args[1] {
+                        VmValue::String(s) => resolve_tl_config_connection(s),
+                        _ => return Err(runtime_err("write_clickhouse() url must be a string")),
+                    };
+                    let table_name = match &args[2] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => {
+                            return Err(runtime_err(
+                                "write_clickhouse() table_name must be a string",
+                            ));
+                        }
+                    };
+                    let mode = match args.get(3) {
+                        None | Some(VmValue::None) => "create".to_string(),
+                        Some(VmValue::String(s)) => s.to_string(),
+                        _ => return Err(runtime_err("write_clickhouse() mode must be a string")),
+                    };
+                    let n = self
+                        .engine()
+                        .write_clickhouse(df, &url, &table_name, &mode)
+                        .map_err(runtime_err)?;
+                    Ok(VmValue::Int(n as i64))
+                }
+                #[cfg(not(feature = "clickhouse"))]
+                Err(runtime_err(
+                    "write_clickhouse() requires the 'clickhouse' feature",
+                ))
+            }
+            #[cfg(feature = "native")]
             BuiltinId::PostgresQuery => {
                 if args.len() != 2 {
                     return Err(runtime_err(
@@ -3252,6 +3365,9 @@ impl Vm {
             | BuiltinId::Head
             | BuiltinId::Postgres
             | BuiltinId::WritePostgres
+            | BuiltinId::WriteRedshift
+            | BuiltinId::WriteMysql
+            | BuiltinId::WriteClickHouse
             | BuiltinId::PostgresQuery => Err(runtime_err("Data operations not available in WASM")),
             // ── AI builtins ──
             #[cfg(feature = "native")]
