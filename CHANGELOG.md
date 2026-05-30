@@ -408,3 +408,14 @@ All notable changes to ThinkingLanguage are documented here, organized by implem
 - All connectors support `TL_CONFIG_PATH` / `tl_config.json` named connection resolution
 - BuiltinId 202-215 allocated for new connectors; 228-230 for Apache Iceberg (read, snapshots, schema)
 - Structured `ConnectorError` with `AuthError`, `QueryError`, `ConfigError` variants
+
+### Connector Write Support (Phase 0 + Postgres)
+
+- Shared write layer (`tl-data/src/write.rs`): `WriteMode` (create/append/overwrite),
+  `SqlDialect` trait, Arrow→SQL-literal rendering, batched multi-row `INSERT` generation —
+  reused by every SQL write connector
+- **`write_postgres(table, conn, table_name, [mode])`** (BuiltinId 231) — writes a DataFrame to
+  PostgreSQL in a single transaction; returns the row count
+- Writes are gated by the sandbox connector policy (`--allow-connector postgres`) — a sandbox
+  can allow reads while denying writes
+- Foundation for the remaining write connectors (MySQL, MSSQL, Redshift, warehouses, …)

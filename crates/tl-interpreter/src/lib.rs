@@ -589,6 +589,10 @@ impl Environment {
             "postgres_query".to_string(),
             Value::Builtin("postgres_query".to_string()),
         );
+        global.insert(
+            "write_postgres".to_string(),
+            Value::Builtin("write_postgres".to_string()),
+        );
         global.insert("fold".to_string(), Value::Builtin("fold".to_string()));
         global.insert(
             "tl_config_resolve".to_string(),
@@ -3689,6 +3693,47 @@ impl Interpreter {
                     .read_postgres(&conn_str, &table_name)
                     .map_err(runtime_err)?;
                 Ok(Value::Table(TlTable { df }))
+            }
+            "write_postgres" => {
+                if args.len() < 3 {
+                    return Err(runtime_err(
+                        "write_postgres() expects (table, conn_str, table_name, [mode])".into(),
+                    ));
+                }
+                let df = match &args[0] {
+                    Value::Table(t) => t.df.clone(),
+                    _ => {
+                        return Err(runtime_err(
+                            "write_postgres() first arg must be a table".into(),
+                        ));
+                    }
+                };
+                let conn_str = match &args[1] {
+                    Value::String(s) => resolve_tl_config_connection_interp(s),
+                    _ => {
+                        return Err(runtime_err(
+                            "write_postgres() conn_str must be a string".into(),
+                        ));
+                    }
+                };
+                let table_name = match &args[2] {
+                    Value::String(s) => s.clone(),
+                    _ => {
+                        return Err(runtime_err(
+                            "write_postgres() table_name must be a string".into(),
+                        ));
+                    }
+                };
+                let mode = match args.get(3) {
+                    None | Some(Value::None) => "create".to_string(),
+                    Some(Value::String(s)) => s.clone(),
+                    _ => return Err(runtime_err("write_postgres() mode must be a string".into())),
+                };
+                let n = self
+                    .engine()
+                    .write_postgres(df, &conn_str, &table_name, &mode)
+                    .map_err(runtime_err)?;
+                Ok(Value::Int(n as i64))
             }
             "postgres_query" => {
                 if args.len() != 2 {

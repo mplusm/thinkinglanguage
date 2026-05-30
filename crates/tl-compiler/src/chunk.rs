@@ -677,6 +677,7 @@ pub enum BuiltinId {
     ReadIceberg = 228,
     IcebergSnapshots = 229,
     IcebergSchema = 230,
+    WritePostgres = 231,
 }
 
 impl TryFrom<u16> for BuiltinId {
@@ -915,6 +916,7 @@ impl TryFrom<u16> for BuiltinId {
             228 => Ok(BuiltinId::ReadIceberg),
             229 => Ok(BuiltinId::IcebergSnapshots),
             230 => Ok(BuiltinId::IcebergSchema),
+            231 => Ok(BuiltinId::WritePostgres),
             _ => Err(value),
         }
     }
@@ -1164,6 +1166,7 @@ impl BuiltinId {
             "iceberg" | "read_iceberg" => Some(BuiltinId::ReadIceberg),
             "iceberg_snapshots" => Some(BuiltinId::IcebergSnapshots),
             "iceberg_schema" => Some(BuiltinId::IcebergSchema),
+            "write_postgres" => Some(BuiltinId::WritePostgres),
             _ => None,
         }
     }
@@ -1412,6 +1415,7 @@ impl BuiltinId {
             BuiltinId::ReadIceberg => "iceberg",
             BuiltinId::IcebergSnapshots => "iceberg_snapshots",
             BuiltinId::IcebergSchema => "iceberg_schema",
+            BuiltinId::WritePostgres => "write_postgres",
         }
     }
 }
@@ -1495,7 +1499,7 @@ mod tests {
 
     #[test]
     fn test_builtin_id_try_from_invalid() {
-        assert_eq!(BuiltinId::try_from(231u16), Err(231u16));
+        assert_eq!(BuiltinId::try_from(232u16), Err(232u16));
         assert_eq!(BuiltinId::try_from(65535u16), Err(65535u16));
     }
 }

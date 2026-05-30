@@ -3163,6 +3163,38 @@ impl Vm {
                 }
             }
             #[cfg(feature = "native")]
+            BuiltinId::WritePostgres => {
+                if args.len() < 3 {
+                    return Err(runtime_err(
+                        "write_postgres() expects (table, conn_str, table_name, [mode])",
+                    ));
+                }
+                // Writes are state-mutating — gate on the sandbox connector policy.
+                self.check_permission("connector:postgres")?;
+                let df = match &args[0] {
+                    VmValue::Table(t) => t.df.clone(),
+                    _ => return Err(runtime_err("write_postgres() first arg must be a table")),
+                };
+                let conn_str = match &args[1] {
+                    VmValue::String(s) => resolve_tl_config_connection(s),
+                    _ => return Err(runtime_err("write_postgres() conn_str must be a string")),
+                };
+                let table_name = match &args[2] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("write_postgres() table_name must be a string")),
+                };
+                let mode = match args.get(3) {
+                    None | Some(VmValue::None) => "create".to_string(),
+                    Some(VmValue::String(s)) => s.to_string(),
+                    _ => return Err(runtime_err("write_postgres() mode must be a string")),
+                };
+                let n = self
+                    .engine()
+                    .write_postgres(df, &conn_str, &table_name, &mode)
+                    .map_err(runtime_err)?;
+                Ok(VmValue::Int(n as i64))
+            }
+            #[cfg(feature = "native")]
             BuiltinId::PostgresQuery => {
                 if args.len() != 2 {
                     return Err(runtime_err(
@@ -3219,6 +3251,7 @@ impl Vm {
             | BuiltinId::Describe
             | BuiltinId::Head
             | BuiltinId::Postgres
+            | BuiltinId::WritePostgres
             | BuiltinId::PostgresQuery => Err(runtime_err("Data operations not available in WASM")),
             // ── AI builtins ──
             #[cfg(feature = "native")]

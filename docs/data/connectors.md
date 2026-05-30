@@ -64,11 +64,23 @@ users |> filter(active == true) |> show()
 // Run a custom SQL query
 let result = postgres_query("postgresql://user:pass@host/db", "SELECT * FROM orders WHERE amount > 100")
 result |> aggregate(total: sum(amount)) |> show()
+
+// Write a table back to PostgreSQL — returns the row count
+let n = write_postgres(users, "postgresql://user:pass@host/db", "users_copy", "overwrite")
 ```
 
-**Aliases:** `postgres()`, `read_postgres()`
+**Read aliases:** `postgres()`, `read_postgres()`.
+**Write:** `write_postgres(table, conn, table_name, [mode])`.
 
 PostgreSQL uses server-side cursors (`DECLARE CURSOR` + `FETCH 50000`) for memory-efficient streaming of large result sets.
+
+`write_postgres` writes the whole table in a single **transaction**. `mode` is one of:
+
+- `create` *(default)* — `CREATE TABLE IF NOT EXISTS` then insert
+- `append` — insert only (table must exist)
+- `overwrite` — drop, recreate, then insert
+
+In `--sandbox`, writes require `--allow-connector postgres` (same gate as reads).
 
 ### Redshift
 
