@@ -163,35 +163,54 @@ DataFusion table:
 let orders = read_iceberg("/warehouse/sales/orders/metadata/00002-....metadata.json")
 orders |> aggregate(by: region, revenue: sum(revenue)) |> sort(revenue, "desc") |> show()
 
-// Read from object storage — pass FileIO / object-store config as a props map
-let t = read_iceberg(
-    "s3://bucket/warehouse/sales/orders/metadata/00002-....metadata.json",
-    {
-        "s3.region": "us-east-1",
-        "s3.access-key-id": env_get("AWS_ACCESS_KEY_ID"),
-        "s3.secret-access-key": env_get("AWS_SECRET_ACCESS_KEY")
-    }
-)
+// Column projection — pass a list; only these columns are read off disk
+let slim = read_iceberg("/warehouse/sales/orders/metadata/00002-....metadata.json",
+                        ["region", "revenue"])
+
+// Time-travel — pass a snapshot_id (an int) to read an older snapshot
+let v1 = read_iceberg("/warehouse/sales/orders/metadata/00002-....metadata.json",
+                      8472033118273849001)
+
+// Projection + time-travel together
+let slim_v1 = read_iceberg("...metadata.json", ["region", "revenue"], 8472033118273849001)
+
+// Object storage — the scheme is inferred from the URL; credentials come from
+// the standard environment (AWS_REGION, AWS_ACCESS_KEY_ID, …)
+let s3t = read_iceberg("s3://bucket/warehouse/sales/orders/metadata/00002-....metadata.json")
 ```
 
-**Signature:** `read_iceberg(metadata_location, [props_map])`
+**Signature:** `read_iceberg(metadata_location, [columns | snapshot_id | props], [snapshot_id])`
 
 - `metadata_location` — path or URL to the table's `metadata.json`. Local paths
   (made absolute automatically), `s3://`, and `gs://` URLs are supported; the
   storage scheme is inferred from the location.
-- `props_map` *(optional)* — string→string FileIO/object-store properties
-  (e.g. `s3.region`, `s3.endpoint`, `s3.access-key-id`, `s3.secret-access-key`).
-  Omit for local files.
+- second arg *(optional)* — a **list** of column names (projection), an **int**
+  `snapshot_id` (time-travel), or a **map** of full options
+  (`columns`, `snapshot_id`, plus object-store props like `s3.region`).
+- third arg *(optional)* — `snapshot_id` int, when columns are given positionally.
 
-**Aliases:** `iceberg()`, `read_iceberg()`
+**Introspection:**
+
+```tl
+// Current schema as a table: field_id, name, type, required
+iceberg_schema("...metadata.json") |> show()
+
+// Snapshot history: snapshot_id, parent_snapshot_id, sequence_number,
+// timestamp_ms, operation, summary, manifest_list, is_current
+iceberg_snapshots("...metadata.json") |> show()
+```
+
+**Aliases:** `iceberg()`, `read_iceberg()`. Plus `iceberg_schema()`, `iceberg_snapshots()`.
 
 TL uses the core `iceberg` crate, which shares DataFusion's Arrow version — so
-Iceberg data flows into the engine with no version bridge. The connector reads
-the table's current snapshot (all columns). Reads are catalog-less via the
-metadata location; it is read-only.
+Iceberg data flows into the engine with no version bridge. Column projection and
+snapshot selection (time-travel) are pushed into the Iceberg scan. Reads are
+catalog-less via the metadata location; it is currently read-only (catalog-based
+multi-table access and writes are planned).
 
 A runnable end-to-end demo (generates a sample table with pyiceberg, then reads
-it from TL) lives at `examples/iceberg_demo.sh`.
+it from TL) lives at `examples/iceberg_demo.sh`; an animated feature tour is at
+`demos/iceberg_demo.sh`.
 
 ### MSSQL / SQL Server
 

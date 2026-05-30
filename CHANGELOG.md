@@ -385,10 +385,15 @@ All notable changes to ThinkingLanguage are documented here, organized by implem
 - **Apache Iceberg connector** (feature-gated `iceberg`)
   - Native read of Iceberg tables — no Spark/Trino/JVM required
   - Core `iceberg` crate shares DataFusion's Arrow version (no IPC bridge)
-  - Catalog-less `StaticTable` read from a `metadata.json` location; current snapshot, all columns
-  - Local paths, `s3://`, and `gs://` URLs; object-store config via optional props map
-  - `iceberg(metadata_location, [props])` / `read_iceberg()` — BuiltinId 228
-  - Demo: `examples/iceberg_demo.sh` + `examples/data_07_iceberg.tl`
+  - Catalog-less `StaticTable` read from a `metadata.json` location (local, `s3://`, `gs://`)
+  - **Column projection** (`read_iceberg(meta, ["a","b"])`) and **time-travel**
+    (`read_iceberg(meta, snapshot_id)`) pushed into the Iceberg scan
+  - **Schema introspection** — `iceberg_schema(meta)` → field_id, name, type, required (BuiltinId 230)
+  - **Snapshot history** — `iceberg_snapshots(meta)` → id, parent, sequence, timestamp,
+    operation, summary, manifest_list, is_current (BuiltinId 229)
+  - `iceberg(meta, [columns | snapshot_id | props], [snapshot_id])` / `read_iceberg()` — BuiltinId 228
+  - Catalog-based multi-table access and writes are planned follow-ups
+  - Demos: `demos/iceberg_demo.sh` (feature tour) + `examples/iceberg_demo.sh` (live end-to-end)
 - **SFTP/SCP file transfer** (feature-gated `sftp`)
   - ssh2 (libssh2) for SSH-based file transfer
   - `sftp_download(config, remote, local)` and `sftp_upload(config, local, remote)`
@@ -401,5 +406,5 @@ All notable changes to ThinkingLanguage are documented here, organized by implem
 - **PostgreSQL error detail** — full error messages via `as_db_error()` (severity, message, SQLSTATE)
 - **PostgreSQL fetch optimization** — 1M row cursor fetch + 100K local RecordBatch split
 - All connectors support `TL_CONFIG_PATH` / `tl_config.json` named connection resolution
-- BuiltinId 202-215 allocated for new connectors; 228 for Apache Iceberg
+- BuiltinId 202-215 allocated for new connectors; 228-230 for Apache Iceberg (read, snapshots, schema)
 - Structured `ConnectorError` with `AuthError`, `QueryError`, `ConfigError` variants

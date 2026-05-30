@@ -330,7 +330,7 @@ Some CLI features require building with specific Cargo feature flags:
 | Async I/O | `--features async-runtime` | Async file/network operations |
 | SQLite | `--features sqlite` | `sqlite_query`, `write_sqlite` builtins |
 | DuckDB | `--features duckdb` | `duckdb_query`, `write_duckdb` builtins |
-| Apache Iceberg | `--features iceberg` | `read_iceberg` builtin |
+| Apache Iceberg | `--features iceberg` | `read_iceberg`, `iceberg_schema`, `iceberg_snapshots` builtins |
 | Python FFI | `--features python` | `py_import`, `py_eval`, `py_call` builtins |
 
 ```bash

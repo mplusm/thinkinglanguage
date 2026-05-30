@@ -4,8 +4,11 @@
 // The table's `metadata.json` location is passed via the TL_ICEBERG_META env var
 // (see examples/iceberg_demo.sh, which generates a sample table and sets it).
 //
-//   read_iceberg(metadata_location)            // local path or s3:// URL
-//   read_iceberg(metadata_location, props_map) // props = FileIO/object-store config
+//   read_iceberg(metadata_location)               // local path or s3:// URL
+//   read_iceberg(metadata_location, ["a", "b"])   // column projection
+//   read_iceberg(metadata_location, snapshot_id)  // time-travel (int)
+//   iceberg_schema(metadata_location)             // schema as a table
+//   iceberg_snapshots(metadata_location)          // snapshot history
 //
 // Build/run with the `iceberg` feature:
 //   cargo run --features iceberg -- run examples/data_07_iceberg.tl
@@ -26,5 +29,20 @@ print("")
 print("=== Revenue & volume by region (DataFusion over Iceberg) ===")
 orders
     |> aggregate(by: region, revenue: sum(revenue), units: sum(units))
+    |> sort(revenue, "desc")
+    |> show()
+
+print("")
+print("=== Table schema (iceberg_schema) ===")
+iceberg_schema(meta) |> show()
+
+print("")
+print("=== Snapshot history (iceberg_snapshots) ===")
+iceberg_snapshots(meta) |> show()
+
+print("")
+print("=== Column projection — only region + revenue read off disk ===")
+read_iceberg(meta, ["region", "revenue"])
+    |> aggregate(by: region, revenue: sum(revenue))
     |> sort(revenue, "desc")
     |> show()
