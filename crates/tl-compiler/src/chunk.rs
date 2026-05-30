@@ -674,6 +674,7 @@ pub enum BuiltinId {
     McpListPrompts = 225,
     McpGetPrompt = 226,
     ToRows = 227,
+    ReadIceberg = 228,
 }
 
 impl TryFrom<u16> for BuiltinId {
@@ -909,6 +910,7 @@ impl TryFrom<u16> for BuiltinId {
             225 => Ok(BuiltinId::McpListPrompts),
             226 => Ok(BuiltinId::McpGetPrompt),
             227 => Ok(BuiltinId::ToRows),
+            228 => Ok(BuiltinId::ReadIceberg),
             _ => Err(value),
         }
     }
@@ -1155,6 +1157,7 @@ impl BuiltinId {
             "mcp_list_prompts" => Some(BuiltinId::McpListPrompts),
             "mcp_get_prompt" => Some(BuiltinId::McpGetPrompt),
             "to_rows" => Some(BuiltinId::ToRows),
+            "iceberg" | "read_iceberg" => Some(BuiltinId::ReadIceberg),
             _ => None,
         }
     }
@@ -1400,6 +1403,7 @@ impl BuiltinId {
             BuiltinId::McpListPrompts => "mcp_list_prompts",
             BuiltinId::McpGetPrompt => "mcp_get_prompt",
             BuiltinId::ToRows => "to_rows",
+            BuiltinId::ReadIceberg => "iceberg",
         }
     }
 }

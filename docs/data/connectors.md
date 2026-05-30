@@ -11,7 +11,7 @@ Enable connectors via Cargo feature flags:
 cargo build --release --features "sqlite,duckdb,mssql"
 
 # All database connectors + SFTP
-cargo build --release --features "sqlite,duckdb,mysql,mssql,clickhouse,snowflake,bigquery,databricks,mongodb,redis,sftp"
+cargo build --release --features "sqlite,duckdb,iceberg,mysql,mssql,clickhouse,snowflake,bigquery,databricks,mongodb,redis,sftp"
 ```
 
 ## Connection Configuration
@@ -149,6 +149,49 @@ write_duckdb(table, "/path/to/output.duckdb", "results")
 **Aliases:** `duckdb()`, `read_duckdb()`
 
 DuckDB uses Arrow natively. TL bridges DuckDB's Arrow v54 to DataFusion's Arrow v53 via IPC serialization for type-safe interop.
+
+### Apache Iceberg
+
+**Feature flag:** `iceberg`
+
+Read Apache Iceberg tables natively — no Spark, Trino, or JVM required. TL reads
+the table's metadata, manifests, and Parquet data files directly into a
+DataFusion table:
+
+```tl
+// Read from a local Iceberg table (point at the table's metadata.json)
+let orders = read_iceberg("/warehouse/sales/orders/metadata/00002-....metadata.json")
+orders |> aggregate(by: region, revenue: sum(revenue)) |> sort(revenue, "desc") |> show()
+
+// Read from object storage — pass FileIO / object-store config as a props map
+let t = read_iceberg(
+    "s3://bucket/warehouse/sales/orders/metadata/00002-....metadata.json",
+    {
+        "s3.region": "us-east-1",
+        "s3.access-key-id": env_get("AWS_ACCESS_KEY_ID"),
+        "s3.secret-access-key": env_get("AWS_SECRET_ACCESS_KEY")
+    }
+)
+```
+
+**Signature:** `read_iceberg(metadata_location, [props_map])`
+
+- `metadata_location` — path or URL to the table's `metadata.json`. Local paths
+  (made absolute automatically), `s3://`, and `gs://` URLs are supported; the
+  storage scheme is inferred from the location.
+- `props_map` *(optional)* — string→string FileIO/object-store properties
+  (e.g. `s3.region`, `s3.endpoint`, `s3.access-key-id`, `s3.secret-access-key`).
+  Omit for local files.
+
+**Aliases:** `iceberg()`, `read_iceberg()`
+
+TL uses the core `iceberg` crate, which shares DataFusion's Arrow version — so
+Iceberg data flows into the engine with no version bridge. The connector reads
+the table's current snapshot (all columns). Reads are catalog-less via the
+metadata location; it is read-only.
+
+A runnable end-to-end demo (generates a sample table with pyiceberg, then reads
+it from TL) lives at `examples/iceberg_demo.sh`.
 
 ### MSSQL / SQL Server
 
@@ -455,6 +498,7 @@ All connectors use batched Arrow conversion (50K rows per batch) for:
 Special optimizations:
 - **PostgreSQL** uses server-side cursors for streaming without loading all rows into client memory
 - **DuckDB** uses Arrow-native IPC transfer (near zero-copy)
+- **Apache Iceberg** reads Parquet data files into Arrow directly, sharing DataFusion's Arrow version (no bridge)
 - **MySQL/SQLite** use chunked row iteration with flush-on-threshold
 
 ## Feature Flag Summary
@@ -467,6 +511,7 @@ Special optimizations:
 | MySQL | `mysql` | MySQL protocol | Connection string |
 | SQLite | `sqlite` | File | None (file path) |
 | DuckDB | `duckdb` | File / in-memory | None (file path) |
+| Apache Iceberg | `iceberg` | Metadata + Parquet (FileIO) | None / object-store props |
 | MSSQL | `mssql` | TDS (tiberius) | ADO string / key=value |
 | Redis | `redis` | Redis protocol | Connection URL |
 | S3 | `s3` | AWS SDK | Access key + secret |

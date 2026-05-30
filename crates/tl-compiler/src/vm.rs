@@ -5073,6 +5073,44 @@ impl Vm {
                 Err(runtime_err("write_duckdb() requires the 'duckdb' feature"))
             }
             #[cfg(feature = "native")]
+            BuiltinId::ReadIceberg => {
+                #[cfg(feature = "iceberg")]
+                {
+                    if args.is_empty() {
+                        return Err(runtime_err(
+                            "iceberg() expects (metadata_location, [props_map])",
+                        ));
+                    }
+                    let location = match &args[0] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => {
+                            return Err(runtime_err(
+                                "iceberg() metadata_location must be a string",
+                            ));
+                        }
+                    };
+                    let props: Vec<(String, String)> = match args.get(1) {
+                        None | Some(VmValue::None) => Vec::new(),
+                        Some(VmValue::Map(entries)) => entries
+                            .iter()
+                            .map(|(k, v)| (k.to_string(), format!("{v}")))
+                            .collect(),
+                        Some(_) => {
+                            return Err(runtime_err(
+                                "iceberg() props must be a map of string keys to string values",
+                            ));
+                        }
+                    };
+                    let df = self
+                        .engine()
+                        .read_iceberg(&location, props)
+                        .map_err(runtime_err)?;
+                    Ok(VmValue::Table(VmTable { df }))
+                }
+                #[cfg(not(feature = "iceberg"))]
+                Err(runtime_err("iceberg() requires the 'iceberg' feature"))
+            }
+            #[cfg(feature = "native")]
             BuiltinId::ReadRedshift => {
                 if args.len() < 2 {
                     return Err(runtime_err("redshift() expects (conn_str, query)"));
@@ -5606,6 +5644,7 @@ impl Vm {
             | BuiltinId::WriteSqlite
             | BuiltinId::ReadDuckDb
             | BuiltinId::WriteDuckDb
+            | BuiltinId::ReadIceberg
             | BuiltinId::ReadRedshift
             | BuiltinId::ReadMssql
             | BuiltinId::ReadSnowflake

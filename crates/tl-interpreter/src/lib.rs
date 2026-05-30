@@ -953,6 +953,14 @@ impl Environment {
             Value::Builtin("duckdb".to_string()),
         );
         global.insert(
+            "iceberg".to_string(),
+            Value::Builtin("iceberg".to_string()),
+        );
+        global.insert(
+            "read_iceberg".to_string(),
+            Value::Builtin("iceberg".to_string()),
+        );
+        global.insert(
             "write_duckdb".to_string(),
             Value::Builtin("write_duckdb".to_string()),
         );
@@ -5439,6 +5447,43 @@ impl Interpreter {
                 }
                 #[cfg(not(feature = "duckdb"))]
                 Err(runtime_err_s("duckdb() requires the 'duckdb' feature"))
+            }
+            "iceberg" | "read_iceberg" => {
+                #[cfg(feature = "iceberg")]
+                {
+                    if args.is_empty() {
+                        return Err(runtime_err_s(
+                            "iceberg() expects (metadata_location, [props_map])",
+                        ));
+                    }
+                    let location = match &args[0] {
+                        Value::String(s) => s.clone(),
+                        _ => {
+                            return Err(runtime_err_s(
+                                "iceberg() metadata_location must be a string",
+                            ));
+                        }
+                    };
+                    let props: Vec<(String, String)> = match args.get(1) {
+                        None | Some(Value::None) => Vec::new(),
+                        Some(Value::Map(pairs)) => pairs
+                            .iter()
+                            .map(|(k, v)| (k.clone(), format!("{v}")))
+                            .collect(),
+                        Some(_) => {
+                            return Err(runtime_err_s(
+                                "iceberg() props must be a map of string keys to string values",
+                            ));
+                        }
+                    };
+                    let df = self
+                        .engine()
+                        .read_iceberg(&location, props)
+                        .map_err(runtime_err)?;
+                    Ok(Value::Table(TlTable { df }))
+                }
+                #[cfg(not(feature = "iceberg"))]
+                Err(runtime_err_s("iceberg() requires the 'iceberg' feature"))
             }
             "write_duckdb" => {
                 #[cfg(feature = "duckdb")]

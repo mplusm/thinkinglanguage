@@ -13,6 +13,8 @@ pub mod clickhouse_conn;
 pub mod databricks;
 #[cfg(feature = "duckdb")]
 pub mod duckdb_conn;
+#[cfg(feature = "iceberg")]
+pub mod iceberg_conn;
 #[cfg(feature = "mongodb")]
 pub mod mongo_conn;
 #[cfg(feature = "mssql")]
