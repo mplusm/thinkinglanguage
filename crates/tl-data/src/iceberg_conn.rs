@@ -17,9 +17,7 @@
 
 use std::sync::Arc;
 
-use datafusion::arrow::array::{
-    ArrayRef, BooleanArray, Int64Array, RecordBatch, StringArray,
-};
+use datafusion::arrow::array::{ArrayRef, BooleanArray, Int64Array, RecordBatch, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use futures::StreamExt;
 use iceberg::TableIdent;

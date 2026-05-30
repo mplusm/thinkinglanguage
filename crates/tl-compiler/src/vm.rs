@@ -5138,7 +5138,9 @@ impl Vm {
                         None | Some(VmValue::None) => {}
                         Some(VmValue::Int(n)) => opts.snapshot_id = Some(*n),
                         Some(_) => {
-                            return Err(runtime_err("iceberg() third arg (snapshot_id) must be an integer"));
+                            return Err(runtime_err(
+                                "iceberg() third arg (snapshot_id) must be an integer",
+                            ));
                         }
                     }
                     let df = self

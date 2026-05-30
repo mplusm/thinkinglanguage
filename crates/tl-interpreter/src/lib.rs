@@ -952,10 +952,7 @@ impl Environment {
             "read_duckdb".to_string(),
             Value::Builtin("duckdb".to_string()),
         );
-        global.insert(
-            "iceberg".to_string(),
-            Value::Builtin("iceberg".to_string()),
-        );
+        global.insert("iceberg".to_string(), Value::Builtin("iceberg".to_string()));
         global.insert(
             "read_iceberg".to_string(),
             Value::Builtin("iceberg".to_string()),
