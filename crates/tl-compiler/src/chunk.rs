@@ -674,6 +674,9 @@ pub enum BuiltinId {
     McpListPrompts = 225,
     McpGetPrompt = 226,
     ToRows = 227,
+    ReadIceberg = 228,
+    IcebergSnapshots = 229,
+    IcebergSchema = 230,
 }
 
 impl TryFrom<u16> for BuiltinId {
@@ -909,6 +912,9 @@ impl TryFrom<u16> for BuiltinId {
             225 => Ok(BuiltinId::McpListPrompts),
             226 => Ok(BuiltinId::McpGetPrompt),
             227 => Ok(BuiltinId::ToRows),
+            228 => Ok(BuiltinId::ReadIceberg),
+            229 => Ok(BuiltinId::IcebergSnapshots),
+            230 => Ok(BuiltinId::IcebergSchema),
             _ => Err(value),
         }
     }
@@ -1155,6 +1161,9 @@ impl BuiltinId {
             "mcp_list_prompts" => Some(BuiltinId::McpListPrompts),
             "mcp_get_prompt" => Some(BuiltinId::McpGetPrompt),
             "to_rows" => Some(BuiltinId::ToRows),
+            "iceberg" | "read_iceberg" => Some(BuiltinId::ReadIceberg),
+            "iceberg_snapshots" => Some(BuiltinId::IcebergSnapshots),
+            "iceberg_schema" => Some(BuiltinId::IcebergSchema),
             _ => None,
         }
     }
@@ -1400,6 +1409,9 @@ impl BuiltinId {
             BuiltinId::McpListPrompts => "mcp_list_prompts",
             BuiltinId::McpGetPrompt => "mcp_get_prompt",
             BuiltinId::ToRows => "to_rows",
+            BuiltinId::ReadIceberg => "iceberg",
+            BuiltinId::IcebergSnapshots => "iceberg_snapshots",
+            BuiltinId::IcebergSchema => "iceberg_schema",
         }
     }
 }
@@ -1483,7 +1495,7 @@ mod tests {
 
     #[test]
     fn test_builtin_id_try_from_invalid() {
-        assert_eq!(BuiltinId::try_from(228u16), Err(228u16));
+        assert_eq!(BuiltinId::try_from(231u16), Err(231u16));
         assert_eq!(BuiltinId::try_from(65535u16), Err(65535u16));
     }
 }

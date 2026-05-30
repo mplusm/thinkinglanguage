@@ -5073,6 +5073,126 @@ impl Vm {
                 Err(runtime_err("write_duckdb() requires the 'duckdb' feature"))
             }
             #[cfg(feature = "native")]
+            BuiltinId::ReadIceberg => {
+                #[cfg(feature = "iceberg")]
+                {
+                    if args.is_empty() {
+                        return Err(runtime_err(
+                            "iceberg() expects (metadata_location, [columns | snapshot_id | props], [snapshot_id])",
+                        ));
+                    }
+                    let location = match &args[0] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => {
+                            return Err(runtime_err(
+                                "iceberg() metadata_location must be a string",
+                            ));
+                        }
+                    };
+                    // Second arg is polymorphic:
+                    //   list  -> column projection
+                    //   int   -> snapshot_id (time-travel)
+                    //   map   -> full options { columns, snapshot_id, <props> }
+                    //            (props = object-store config, e.g. s3.region)
+                    let mut opts = tl_data::IcebergReadOptions::default();
+                    match args.get(1) {
+                        None | Some(VmValue::None) => {}
+                        Some(VmValue::List(items)) => {
+                            opts.columns = items.iter().map(|x| format!("{x}")).collect();
+                        }
+                        Some(VmValue::Int(n)) => opts.snapshot_id = Some(*n),
+                        Some(VmValue::Map(entries)) => {
+                            for (k, v) in entries.iter() {
+                                match k.as_ref() {
+                                    "columns" => {
+                                        if let VmValue::List(items) = v {
+                                            opts.columns =
+                                                items.iter().map(|x| format!("{x}")).collect();
+                                        } else {
+                                            return Err(runtime_err(
+                                                "iceberg() 'columns' must be a list",
+                                            ));
+                                        }
+                                    }
+                                    "snapshot_id" => {
+                                        if let VmValue::Int(n) = v {
+                                            opts.snapshot_id = Some(*n);
+                                        } else {
+                                            return Err(runtime_err(
+                                                "iceberg() 'snapshot_id' must be an integer",
+                                            ));
+                                        }
+                                    }
+                                    _ => opts.props.push((k.to_string(), format!("{v}"))),
+                                }
+                            }
+                        }
+                        Some(_) => {
+                            return Err(runtime_err(
+                                "iceberg() second arg must be a column list, a snapshot_id int, or a props map",
+                            ));
+                        }
+                    }
+                    // Optional third arg: snapshot_id (when columns given positionally).
+                    match args.get(2) {
+                        None | Some(VmValue::None) => {}
+                        Some(VmValue::Int(n)) => opts.snapshot_id = Some(*n),
+                        Some(_) => {
+                            return Err(runtime_err(
+                                "iceberg() third arg (snapshot_id) must be an integer",
+                            ));
+                        }
+                    }
+                    let df = self
+                        .engine()
+                        .read_iceberg(&location, opts)
+                        .map_err(runtime_err)?;
+                    Ok(VmValue::Table(VmTable { df }))
+                }
+                #[cfg(not(feature = "iceberg"))]
+                Err(runtime_err("iceberg() requires the 'iceberg' feature"))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::IcebergSnapshots | BuiltinId::IcebergSchema => {
+                #[cfg(feature = "iceberg")]
+                {
+                    let fname = if matches!(builtin_id, BuiltinId::IcebergSnapshots) {
+                        "iceberg_snapshots"
+                    } else {
+                        "iceberg_schema"
+                    };
+                    let location = match args.first() {
+                        Some(VmValue::String(s)) => s.to_string(),
+                        _ => {
+                            return Err(runtime_err(format!(
+                                "{fname}() expects (metadata_location, [props_map])"
+                            )));
+                        }
+                    };
+                    let props: Vec<(String, String)> = match args.get(1) {
+                        None | Some(VmValue::None) => Vec::new(),
+                        Some(VmValue::Map(entries)) => entries
+                            .iter()
+                            .map(|(k, v)| (k.to_string(), format!("{v}")))
+                            .collect(),
+                        Some(_) => {
+                            return Err(runtime_err(format!("{fname}() props must be a map")));
+                        }
+                    };
+                    let df = if matches!(builtin_id, BuiltinId::IcebergSnapshots) {
+                        self.engine().iceberg_snapshots(&location, props)
+                    } else {
+                        self.engine().iceberg_schema(&location, props)
+                    }
+                    .map_err(runtime_err)?;
+                    Ok(VmValue::Table(VmTable { df }))
+                }
+                #[cfg(not(feature = "iceberg"))]
+                Err(runtime_err(
+                    "iceberg_snapshots()/iceberg_schema() require the 'iceberg' feature",
+                ))
+            }
+            #[cfg(feature = "native")]
             BuiltinId::ReadRedshift => {
                 if args.len() < 2 {
                     return Err(runtime_err("redshift() expects (conn_str, query)"));
@@ -5606,6 +5726,9 @@ impl Vm {
             | BuiltinId::WriteSqlite
             | BuiltinId::ReadDuckDb
             | BuiltinId::WriteDuckDb
+            | BuiltinId::ReadIceberg
+            | BuiltinId::IcebergSnapshots
+            | BuiltinId::IcebergSchema
             | BuiltinId::ReadRedshift
             | BuiltinId::ReadMssql
             | BuiltinId::ReadSnowflake

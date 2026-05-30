@@ -239,6 +239,7 @@ TL uses Cargo feature flags for optional integrations:
 |------|-------------|--------------|
 | `sqlite` | SQLite connector | rusqlite (bundled) |
 | `duckdb` | DuckDB connector (Arrow-native) | duckdb (bundled) |
+| `iceberg` | Apache Iceberg tables (Arrow-native) | iceberg |
 | `mysql` | MySQL connector | mysql client libs |
 | `mssql` | SQL Server / MSSQL connector | tiberius |
 | `redis` | Redis connector | redis |
@@ -265,10 +266,10 @@ PostgreSQL and Redshift connectors are always available (no feature flag needed)
 cargo build --release --features "sqlite,gpu,async-runtime"
 
 # Build with all database connectors + SFTP
-cargo build --release --features "sqlite,duckdb,mysql,mssql,clickhouse,snowflake,bigquery,databricks,mongodb,redis,sftp"
+cargo build --release --features "sqlite,duckdb,iceberg,mysql,mssql,clickhouse,snowflake,bigquery,databricks,mongodb,redis,sftp"
 
 # Build with all features (except llvm-backend which needs LLVM 19 installed)
-cargo build --release --features "sqlite,duckdb,mysql,mssql,redis,s3,sftp,snowflake,bigquery,databricks,clickhouse,mongodb,kafka,python,gpu,async-runtime,notebook,registry"
+cargo build --release --features "sqlite,duckdb,iceberg,mysql,mssql,redis,s3,sftp,snowflake,bigquery,databricks,clickhouse,mongodb,kafka,python,gpu,async-runtime,notebook,registry"
 ```
 
 ## CLI Commands
