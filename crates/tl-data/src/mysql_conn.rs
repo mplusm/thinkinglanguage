@@ -30,6 +30,16 @@ fn mysql_type_to_arrow(col_type: mysql::consts::ColumnType) -> DataType {
     }
 }
 
+/// MySQL's text protocol (`Conn::query`) returns numeric values as `Bytes`
+/// (their text form), so numeric columns must parse the bytes.
+fn bytes_to_i64(b: &[u8]) -> Option<i64> {
+    std::str::from_utf8(b).ok()?.trim().parse::<i64>().ok()
+}
+
+fn bytes_to_f64(b: &[u8]) -> Option<f64> {
+    std::str::from_utf8(b).ok()?.trim().parse::<f64>().ok()
+}
+
 /// Build a RecordBatch from a chunk of MySQL rows.
 fn build_mysql_batch(
     rows: &[mysql::Row],
@@ -45,6 +55,7 @@ fn build_mysql_batch(
                     .map(|r| match &r[col_idx] {
                         MysqlValue::Int(n) => Some(*n != 0),
                         MysqlValue::UInt(n) => Some(*n != 0),
+                        MysqlValue::Bytes(b) => bytes_to_i64(b).map(|n| n != 0),
                         MysqlValue::NULL => None,
                         _ => None,
                     })
@@ -57,6 +68,7 @@ fn build_mysql_batch(
                     .map(|r| match &r[col_idx] {
                         MysqlValue::Int(n) => Some(*n as i16),
                         MysqlValue::UInt(n) => Some(*n as i16),
+                        MysqlValue::Bytes(b) => bytes_to_i64(b).map(|n| n as i16),
                         MysqlValue::NULL => None,
                         _ => None,
                     })
@@ -69,6 +81,7 @@ fn build_mysql_batch(
                     .map(|r| match &r[col_idx] {
                         MysqlValue::Int(n) => Some(*n as i32),
                         MysqlValue::UInt(n) => Some(*n as i32),
+                        MysqlValue::Bytes(b) => bytes_to_i64(b).map(|n| n as i32),
                         MysqlValue::NULL => None,
                         _ => None,
                     })
@@ -81,6 +94,7 @@ fn build_mysql_batch(
                     .map(|r| match &r[col_idx] {
                         MysqlValue::Int(n) => Some(*n),
                         MysqlValue::UInt(n) => Some(*n as i64),
+                        MysqlValue::Bytes(b) => bytes_to_i64(b),
                         MysqlValue::NULL => None,
                         _ => None,
                     })
@@ -94,6 +108,7 @@ fn build_mysql_batch(
                         MysqlValue::Float(f) => Some(*f),
                         MysqlValue::Double(f) => Some(*f as f32),
                         MysqlValue::Int(n) => Some(*n as f32),
+                        MysqlValue::Bytes(b) => bytes_to_f64(b).map(|f| f as f32),
                         MysqlValue::NULL => None,
                         _ => None,
                     })
@@ -107,6 +122,7 @@ fn build_mysql_batch(
                         MysqlValue::Float(f) => Some(*f as f64),
                         MysqlValue::Double(f) => Some(*f),
                         MysqlValue::Int(n) => Some(*n as f64),
+                        MysqlValue::Bytes(b) => bytes_to_f64(b),
                         MysqlValue::NULL => None,
                         _ => None,
                     })
