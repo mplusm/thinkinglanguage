@@ -107,6 +107,61 @@ fn build_databricks_batch(
 }
 
 impl DataEngine {
+    /// Write a DataFrame to Databricks SQL via the statements REST API.
+    /// See `write_postgres` for `mode` semantics. Returns the row count.
+    pub fn write_databricks(
+        &self,
+        df: datafusion::prelude::DataFrame,
+        config_str: &str,
+        table_name: &str,
+        mode: &str,
+    ) -> Result<usize, String> {
+        let mode = crate::write::WriteMode::parse(mode)?;
+        let batches = self.collect(df)?;
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        let stmts = crate::write::build_write_statements(
+            &crate::write::DatabricksDialect,
+            table_name,
+            &batches,
+            mode,
+        )?;
+        if stmts.is_empty() {
+            return Ok(0);
+        }
+
+        let (host, token, warehouse_id) = parse_databricks_config(config_str)?;
+        let url = format!("https://{host}/api/2.0/sql/statements");
+        let client = reqwest::blocking::Client::new();
+        for stmt in &stmts {
+            let body = serde_json::json!({
+                "statement": stmt,
+                "warehouse_id": warehouse_id,
+                "wait_timeout": "30s",
+                "on_wait_timeout": "CANCEL"
+            });
+            let resp = client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .bearer_auth(&token)
+                .json(&body)
+                .send()
+                .map_err(|e| format!("Databricks HTTP error: {e}"))?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().unwrap_or_default();
+                return Err(format!("Databricks write error {status}: {text}"));
+            }
+            let resp_json: serde_json::Value = resp
+                .json()
+                .map_err(|e| format!("Databricks JSON parse error: {e}"))?;
+            let state = resp_json["status"]["state"].as_str().unwrap_or("UNKNOWN");
+            if state != "SUCCEEDED" {
+                return Err(format!("Databricks statement state: {state}"));
+            }
+        }
+        Ok(total_rows)
+    }
+
     /// Read from Databricks using a config string and SQL query.
     /// Config: `{"host":"adb-xxx.azuredatabricks.net","token":"dapi...","warehouse_id":"abc123"}`
     /// Or: `host=adb-xxx.azuredatabricks.net token=dapi... warehouse_id=abc123`

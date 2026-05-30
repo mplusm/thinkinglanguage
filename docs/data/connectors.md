@@ -305,7 +305,8 @@ let t = read_snowflake(
 )
 ```
 
-**Aliases:** `snowflake()`, `read_snowflake()`
+**Aliases:** `snowflake()`, `read_snowflake()`.
+**Write:** `write_snowflake(table, config, table_name, [mode])` — writes via the SQL REST API.
 
 **Config fields:** `account` (required), `user`, `password`, `database`, `warehouse`, `schema`
 
@@ -330,7 +331,8 @@ let t = read_bigquery(
 )
 ```
 
-**Aliases:** `bigquery()`, `read_bigquery()`
+**Aliases:** `bigquery()`, `read_bigquery()`.
+**Write:** `write_bigquery(table, config, table_name, [mode])` — writes via the `jobs.query` DML API.
 
 **Config fields:** `project` (required), `access_token` (optional, falls back to `TL_BIGQUERY_TOKEN` or `GOOGLE_ACCESS_TOKEN` env vars)
 
@@ -355,7 +357,8 @@ let t = read_databricks(
 )
 ```
 
-**Aliases:** `databricks()`, `read_databricks()`
+**Aliases:** `databricks()`, `read_databricks()`.
+**Write:** `write_databricks(table, config, table_name, [mode])` — writes via the SQL statements API.
 
 **Config fields:** `host` (required), `token`, `warehouse_id`
 

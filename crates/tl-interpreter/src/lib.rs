@@ -605,6 +605,18 @@ impl Environment {
             "write_clickhouse".to_string(),
             Value::Builtin("write_clickhouse".to_string()),
         );
+        global.insert(
+            "write_snowflake".to_string(),
+            Value::Builtin("write_snowflake".to_string()),
+        );
+        global.insert(
+            "write_bigquery".to_string(),
+            Value::Builtin("write_bigquery".to_string()),
+        );
+        global.insert(
+            "write_databricks".to_string(),
+            Value::Builtin("write_databricks".to_string()),
+        );
         global.insert("fold".to_string(), Value::Builtin("fold".to_string()));
         global.insert(
             "tl_config_resolve".to_string(),
@@ -3884,6 +3896,51 @@ impl Interpreter {
                 #[cfg(not(feature = "clickhouse"))]
                 Err(runtime_err_s(
                     "write_clickhouse() requires the 'clickhouse' feature",
+                ))
+            }
+            "write_snowflake" => {
+                #[cfg(feature = "snowflake")]
+                {
+                    let (df, cfg, table_name, mode) = interp_write_args(args, "write_snowflake")?;
+                    let n = self
+                        .engine()
+                        .write_snowflake(df, &cfg, &table_name, &mode)
+                        .map_err(runtime_err)?;
+                    Ok(Value::Int(n as i64))
+                }
+                #[cfg(not(feature = "snowflake"))]
+                Err(runtime_err_s(
+                    "write_snowflake() requires the 'snowflake' feature",
+                ))
+            }
+            "write_bigquery" => {
+                #[cfg(feature = "bigquery")]
+                {
+                    let (df, cfg, table_name, mode) = interp_write_args(args, "write_bigquery")?;
+                    let n = self
+                        .engine()
+                        .write_bigquery(df, &cfg, &table_name, &mode)
+                        .map_err(runtime_err)?;
+                    Ok(Value::Int(n as i64))
+                }
+                #[cfg(not(feature = "bigquery"))]
+                Err(runtime_err_s(
+                    "write_bigquery() requires the 'bigquery' feature",
+                ))
+            }
+            "write_databricks" => {
+                #[cfg(feature = "databricks")]
+                {
+                    let (df, cfg, table_name, mode) = interp_write_args(args, "write_databricks")?;
+                    let n = self
+                        .engine()
+                        .write_databricks(df, &cfg, &table_name, &mode)
+                        .map_err(runtime_err)?;
+                    Ok(Value::Int(n as i64))
+                }
+                #[cfg(not(feature = "databricks"))]
+                Err(runtime_err_s(
+                    "write_databricks() requires the 'databricks' feature",
                 ))
             }
             "postgres_query" => {
@@ -9847,6 +9904,38 @@ fn runtime_err(message: String) -> TlError {
         span: None,
         stack_trace: vec![],
     })
+}
+
+/// Extract the common `(table, config, table_name, [mode])` arguments shared by
+/// the REST-warehouse write builtins.
+#[cfg(any(feature = "snowflake", feature = "bigquery", feature = "databricks"))]
+fn interp_write_args(
+    args: &[Value],
+    name: &str,
+) -> Result<(DataFrame, String, String, String), TlError> {
+    if args.len() < 3 {
+        return Err(runtime_err(format!(
+            "{name}() expects (table, config, table_name, [mode])"
+        )));
+    }
+    let df = match &args[0] {
+        Value::Table(t) => t.df.clone(),
+        _ => return Err(runtime_err(format!("{name}() first arg must be a table"))),
+    };
+    let cfg = match &args[1] {
+        Value::String(s) => resolve_tl_config_connection_interp(s),
+        _ => return Err(runtime_err(format!("{name}() config must be a string"))),
+    };
+    let table_name = match &args[2] {
+        Value::String(s) => s.clone(),
+        _ => return Err(runtime_err(format!("{name}() table_name must be a string"))),
+    };
+    let mode = match args.get(3) {
+        None | Some(Value::None) => "create".to_string(),
+        Some(Value::String(s)) => s.clone(),
+        _ => return Err(runtime_err(format!("{name}() mode must be a string"))),
+    };
+    Ok((df, cfg, table_name, mode))
 }
 
 fn runtime_err_s(message: &str) -> TlError {

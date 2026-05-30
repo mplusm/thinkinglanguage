@@ -420,7 +420,12 @@ All notable changes to ThinkingLanguage are documented here, organized by implem
 - **`write_mysql`** (233, feature `mysql`) — `MySqlDialect` (backtick idents, backslash escaping)
 - **`write_clickhouse`** (234, feature `clickhouse`) — `ClickHouseDialect` with `Nullable(...)`
   columns + `MergeTree` engine, written over the HTTP interface
+- **`write_snowflake`** (235, feature `snowflake`) — `SnowflakeDialect`, via the SQL REST API
+- **`write_bigquery`** (236, feature `bigquery`) — `BigQueryDialect`, via the `jobs.query` DML API
+- **`write_databricks`** (237, feature `databricks`) — `DatabricksDialect`, via the statements API
 - Writes are gated by the sandbox connector policy (`--allow-connector <type>`) — a sandbox
   can allow reads while denying writes
 - Each new SQL connector is a thin `SqlDialect` impl over the shared layer
-- Foundation for the remaining write connectors (MSSQL, Snowflake, BigQuery, Databricks, Mongo, …)
+- Foundation for the remaining write connectors (MSSQL, MongoDB, S3)
+- Fixed `read_mysql` returning MySQL/MariaDB numeric columns as null (the text protocol
+  returns numerics as bytes, which the numeric arms now parse)

@@ -681,6 +681,9 @@ pub enum BuiltinId {
     WriteRedshift = 232,
     WriteMysql = 233,
     WriteClickHouse = 234,
+    WriteSnowflake = 235,
+    WriteBigQuery = 236,
+    WriteDatabricks = 237,
 }
 
 impl TryFrom<u16> for BuiltinId {
@@ -923,6 +926,9 @@ impl TryFrom<u16> for BuiltinId {
             232 => Ok(BuiltinId::WriteRedshift),
             233 => Ok(BuiltinId::WriteMysql),
             234 => Ok(BuiltinId::WriteClickHouse),
+            235 => Ok(BuiltinId::WriteSnowflake),
+            236 => Ok(BuiltinId::WriteBigQuery),
+            237 => Ok(BuiltinId::WriteDatabricks),
             _ => Err(value),
         }
     }
@@ -1176,6 +1182,9 @@ impl BuiltinId {
             "write_redshift" => Some(BuiltinId::WriteRedshift),
             "write_mysql" => Some(BuiltinId::WriteMysql),
             "write_clickhouse" => Some(BuiltinId::WriteClickHouse),
+            "write_snowflake" => Some(BuiltinId::WriteSnowflake),
+            "write_bigquery" => Some(BuiltinId::WriteBigQuery),
+            "write_databricks" => Some(BuiltinId::WriteDatabricks),
             _ => None,
         }
     }
@@ -1428,6 +1437,9 @@ impl BuiltinId {
             BuiltinId::WriteRedshift => "write_redshift",
             BuiltinId::WriteMysql => "write_mysql",
             BuiltinId::WriteClickHouse => "write_clickhouse",
+            BuiltinId::WriteSnowflake => "write_snowflake",
+            BuiltinId::WriteBigQuery => "write_bigquery",
+            BuiltinId::WriteDatabricks => "write_databricks",
         }
     }
 }
@@ -1511,7 +1523,7 @@ mod tests {
 
     #[test]
     fn test_builtin_id_try_from_invalid() {
-        assert_eq!(BuiltinId::try_from(235u16), Err(235u16));
+        assert_eq!(BuiltinId::try_from(238u16), Err(238u16));
         assert_eq!(BuiltinId::try_from(65535u16), Err(65535u16));
     }
 }

@@ -111,6 +111,62 @@ fn build_snowflake_batch(
 }
 
 impl DataEngine {
+    /// Write a DataFrame to Snowflake via the SQL REST API. Each generated
+    /// statement is executed in its own request. See `write_postgres` for
+    /// `mode` semantics. Returns the row count.
+    pub fn write_snowflake(
+        &self,
+        df: datafusion::prelude::DataFrame,
+        config_str: &str,
+        table_name: &str,
+        mode: &str,
+    ) -> Result<usize, String> {
+        let mode = crate::write::WriteMode::parse(mode)?;
+        let batches = self.collect(df)?;
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        let stmts = crate::write::build_write_statements(
+            &crate::write::SnowflakeDialect,
+            table_name,
+            &batches,
+            mode,
+        )?;
+        if stmts.is_empty() {
+            return Ok(0);
+        }
+
+        let (account, user, password, database, warehouse, schema_name) =
+            parse_snowflake_config(config_str)?;
+        let url = format!("https://{account}.snowflakecomputing.com/api/v2/statements");
+        let client = reqwest::blocking::Client::new();
+        for stmt in &stmts {
+            let mut body = serde_json::json!({ "statement": stmt, "timeout": 600 });
+            if !database.is_empty() {
+                body["database"] = serde_json::Value::String(database.clone());
+            }
+            if !warehouse.is_empty() {
+                body["warehouse"] = serde_json::Value::String(warehouse.clone());
+            }
+            if !schema_name.is_empty() {
+                body["schema"] = serde_json::Value::String(schema_name.clone());
+            }
+            let resp = client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .header("X-Snowflake-Authorization-Token-Type", "KEYPAIR_JWT")
+                .basic_auth(&user, Some(&password))
+                .json(&body)
+                .send()
+                .map_err(|e| format!("Snowflake HTTP error: {e}"))?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().unwrap_or_default();
+                return Err(format!("Snowflake write error {status}: {text}"));
+            }
+        }
+        Ok(total_rows)
+    }
+
     /// Read from Snowflake using a JSON config string and SQL query.
     /// Config format: `{"account":"abc123","user":"USER","password":"...","database":"DB","warehouse":"WH"}`
     /// Or simple format: `account=abc123 user=USER password=... database=DB warehouse=WH`

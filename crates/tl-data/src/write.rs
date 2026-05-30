@@ -317,6 +317,87 @@ impl SqlDialect for ClickHouseDialect {
     }
 }
 
+/// Snowflake dialect. Standard double-quoted identifiers.
+pub struct SnowflakeDialect;
+
+impl SqlDialect for SnowflakeDialect {
+    fn column_type(&self, dt: &DataType) -> String {
+        match dt {
+            DataType::Boolean => "BOOLEAN",
+            DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => "NUMBER",
+            DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => "NUMBER",
+            DataType::Float32 | DataType::Float64 => "FLOAT",
+            DataType::Date32 | DataType::Date64 => "DATE",
+            DataType::Timestamp(_, _) => "TIMESTAMP_NTZ",
+            DataType::Decimal128(p, s) | DataType::Decimal256(p, s) => {
+                return format!("NUMBER({p}, {s})");
+            }
+            _ => "VARCHAR",
+        }
+        .to_string()
+    }
+}
+
+/// Google BigQuery dialect. Backtick identifiers, GoogleSQL types.
+pub struct BigQueryDialect;
+
+impl SqlDialect for BigQueryDialect {
+    fn column_type(&self, dt: &DataType) -> String {
+        match dt {
+            DataType::Boolean => "BOOL",
+            DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => "INT64",
+            DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => "INT64",
+            DataType::Float32 | DataType::Float64 => "FLOAT64",
+            DataType::Date32 | DataType::Date64 => "DATE",
+            DataType::Timestamp(_, _) => "TIMESTAMP",
+            DataType::Decimal128(p, s) | DataType::Decimal256(p, s) => {
+                return format!("NUMERIC({p}, {s})");
+            }
+            _ => "STRING",
+        }
+        .to_string()
+    }
+
+    fn quote_ident(&self, name: &str) -> String {
+        format!("`{}`", name.replace('`', "``"))
+    }
+
+    fn quote_str(&self, s: &str) -> String {
+        format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
+    }
+}
+
+/// Databricks SQL (Spark) dialect. Backtick identifiers.
+pub struct DatabricksDialect;
+
+impl SqlDialect for DatabricksDialect {
+    fn column_type(&self, dt: &DataType) -> String {
+        match dt {
+            DataType::Boolean => "BOOLEAN",
+            DataType::Int8 | DataType::Int16 => "SMALLINT",
+            DataType::Int32 | DataType::UInt8 | DataType::UInt16 => "INT",
+            DataType::Int64 | DataType::UInt32 | DataType::UInt64 => "BIGINT",
+            DataType::Float32 => "FLOAT",
+            DataType::Float64 => "DOUBLE",
+            DataType::Date32 | DataType::Date64 => "DATE",
+            DataType::Timestamp(_, _) => "TIMESTAMP",
+            DataType::Decimal128(p, s) | DataType::Decimal256(p, s) => {
+                return format!("DECIMAL({p}, {s})");
+            }
+            _ => "STRING",
+        }
+        .to_string()
+    }
+
+    fn quote_ident(&self, name: &str) -> String {
+        format!("`{}`", name.replace('`', "``"))
+    }
+
+    fn quote_str(&self, s: &str) -> String {
+        format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,6 +473,28 @@ mod tests {
         assert!(stmts[0].contains("`id` BIGINT"));
         // 'a\'b' escaped MySQL-style.
         assert!(stmts[1].contains("(1, 'a\\'b')"));
+    }
+
+    #[test]
+    fn warehouse_dialects_map_types_and_quote() {
+        let bq =
+            build_write_statements(&BigQueryDialect, "t", &[sample_batch()], WriteMode::Create)
+                .unwrap();
+        assert!(bq[0].contains("`id` INT64"));
+        assert!(bq[0].contains("`name` STRING"));
+        let sf =
+            build_write_statements(&SnowflakeDialect, "t", &[sample_batch()], WriteMode::Create)
+                .unwrap();
+        assert!(sf[0].contains("\"id\" NUMBER"));
+        assert!(sf[0].contains("\"name\" VARCHAR"));
+        let db = build_write_statements(
+            &DatabricksDialect,
+            "t",
+            &[sample_batch()],
+            WriteMode::Create,
+        )
+        .unwrap();
+        assert!(db[0].contains("`id` BIGINT"));
     }
 
     #[test]
