@@ -2,6 +2,8 @@
 
 This guide covers how to install ThinkingLanguage (TL) from source and configure optional features.
 
+> **No install needed to try it:** the online playground at **[tl.thinkingdbx.com](https://tl.thinkingdbx.com)** runs the core language in your browser.
+
 ## Prerequisites
 
 - **Rust toolchain** 1.85 or later (required for Rust edition 2024)
