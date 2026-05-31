@@ -2,6 +2,8 @@
 
 This guide walks you through your first ThinkingLanguage program, the REPL, core syntax, and data operations.
 
+> **Want to try the language without installing anything?** Open the online playground at **[tl.thinkingdbx.com](https://tl.thinkingdbx.com)** and run ThinkingLanguage right in your browser. (The playground runs the core language; connectors, warehouses and AI agents need the CLI below.)
+
 ## Your First Program
 
 Create a file called `hello.tl`:

@@ -1,10 +1,15 @@
 # ThinkingLanguage
 
 [![CI](https://github.com/mplusm/thinkinglanguage/actions/workflows/ci.yml/badge.svg)](https://github.com/mplusm/thinkinglanguage/actions/workflows/ci.yml)
+[![Playground](https://img.shields.io/badge/playground-tl.thinkingdbx.com-d97757)](https://tl.thinkingdbx.com)
+[![crates.io](https://img.shields.io/crates/v/thinkinglanguage)](https://crates.io/crates/thinkinglanguage)
+[![npm](https://img.shields.io/npm/v/thinkinglanguage)](https://www.npmjs.com/package/thinkinglanguage)
 
 **A purpose-built language for Data Engineering & AI — Modern Problems need Modern Solutions.**
 
 ThinkingLanguage (TL) replaces the fragile Python + SQL + YAML + Spark glue-code stack with a single, coherent language where data pipelines, transformations, AI model training, and real-time streaming are first-class language constructs.
+
+> **▶ Try it in your browser — no install:** **[tl.thinkingdbx.com](https://tl.thinkingdbx.com)**
 
 ## Highlights
 
