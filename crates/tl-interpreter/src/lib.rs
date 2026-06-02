@@ -11601,13 +11601,43 @@ impl Interpreter {
                 }
                 let mut result = Value::None;
                 for stmt in body {
-                    match self.exec_stmt(stmt)? {
-                        Signal::Return(v) => {
-                            result = v;
+                    match self.exec_stmt(stmt) {
+                        Ok(Signal::Return(val)) => {
+                            result = val;
                             break;
                         }
-                        Signal::None => {}
-                        _ => {}
+                        // A bare expression statement contributes its value as
+                        // the function's result if it's the last thing
+                        // evaluated (last-expression return) — matching the
+                        // normal call_function path.
+                        Ok(Signal::None) => {
+                            if let Some(val) = &self.last_expr_value {
+                                result = val.clone();
+                            }
+                        }
+                        Err(TlError::Runtime(ref e))
+                            if e.message.starts_with("__try_propagate__:") =>
+                        {
+                            let err_msg = e
+                                .message
+                                .strip_prefix("__try_propagate__:")
+                                .unwrap_or("error");
+                            self.env.pop_scope();
+                            return Ok(Value::EnumInstance {
+                                type_name: "Result".to_string(),
+                                variant: "Err".to_string(),
+                                fields: vec![Value::String(err_msg.to_string())],
+                            });
+                        }
+                        Err(TlError::Runtime(ref e)) if e.message == "__try_propagate_none__" => {
+                            self.env.pop_scope();
+                            return Ok(Value::None);
+                        }
+                        Err(e) => {
+                            self.env.pop_scope();
+                            return Err(e);
+                        }
+                        Ok(_) => {}
                     }
                 }
                 self.env.pop_scope();
