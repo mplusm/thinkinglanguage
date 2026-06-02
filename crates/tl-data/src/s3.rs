@@ -42,8 +42,9 @@ impl DataEngine {
         let url = Url::parse(&format!("s3://{bucket}"))
             .map_err(|e| format!("S3 URL parse error: {e}"))?;
 
-        self.rt
-            .block_on(self.ctx.register_object_store(&url, Arc::new(store)));
+        // SessionContext::register_object_store is synchronous in DataFusion 44
+        // (it returns the previously-registered store, if any).
+        self.ctx.register_object_store(&url, Arc::new(store));
 
         Ok(())
     }
