@@ -2,6 +2,16 @@
 
 All notable changes to ThinkingLanguage are documented here, organized by implementation phase.
 
+## 0.3.5
+
+### Fixed
+- **Interpreter:** agent tool functions now return their last expression like
+  every other function. `call_function_value` previously only captured a value
+  on an explicit `return`, so a tool ending in a bare expression returned
+  `none` — which was sent back to the model as the tool result, making agents
+  report that a tool "was not executed" even though it ran. The `?` operator is
+  now also handled in this path.
+
 ## Foundation
 
 ### Phase 0 — Core Language
