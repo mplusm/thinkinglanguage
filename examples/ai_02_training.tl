@@ -6,7 +6,8 @@
 
 // First, create training data (y = 2x + 1)
 let data = read_csv("examples/test_data/train_linreg.csv")
-data |> show(5)
+// `|>` moves its input; clone so `data` can still be used for training below.
+data.clone() |> show(5)
 
 // Train a linear regression model
 model linreg = train linear {

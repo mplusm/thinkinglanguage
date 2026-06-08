@@ -14,7 +14,7 @@ ThinkingLanguage (TL) replaces the fragile Python + SQL + YAML + Spark glue-code
 ## Highlights
 
 - **Native tables** — columnar data backed by Apache Arrow/DataFusion with pipe-based transforms
-- **AI/ML built-in** — tensors, model training (linfa), ONNX inference, embeddings, LLM APIs, AI agents with tool-use, MCP client/server
+- **AI/ML built-in** — tensors, model training (10 algorithms: regression, classification, clustering, and gradient boosting), ONNX inference, embeddings, LLM APIs, AI agents with tool-use, MCP client/server
 - **Streaming & Pipelines** — ETL/ELT constructs, windowed streams, Kafka integration
 - **GPU acceleration** — wgpu-based tensor operations on Vulkan/Metal/DX12/WebGPU
 - **Multiple backends** — bytecode VM (default), LLVM AOT native compilation, WASM browser target
@@ -131,11 +131,11 @@ for row in rows {
 
 ```
 let data = read_csv("iris.csv")
-let model = train_model(data, target: "species", algorithm: "random_forest")
-let predictions = predict(model, new_data)
+model clf = train random_forest { data: data, target: "species", features: ["sepal_len", "petal_len"] }
+let predictions = predict(clf, new_data)
 
 let t = tensor_ones([4, 4])
-let result = t |> matmul(t)
+let result = gpu_matmul(t, t)   // requires a build with --features gpu
 ```
 
 ### AI Agents

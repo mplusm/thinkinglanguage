@@ -4,27 +4,54 @@ TL provides built-in support for model training (via linfa), ONNX inference (via
 
 ## Model Training
 
-Train models using the linfa machine learning framework:
+Train models with the declarative `train` statement (backed by linfa):
 
 ```tl
-let model = train_model(data, target: "column", algorithm: "random_forest")
+model clf = train logistic {
+    data: data,
+    target: "label",
+    features: ["f1", "f2"]
+}
+let result = predict(clf, input_tensor)
 ```
 
 ### Supported Algorithms
 
-- `linear_regression`
-- `logistic_regression`
-- `random_forest`
-- `kmeans`
+The identifier after `train`:
 
-Models are first-class values in TL -- they can be stored in variables, passed to functions, and saved to the model registry.
+Regression
+- `linear` -- ordinary least squares
+- `ridge` -- L2-regularized regression (hyperparam `alpha`, default 1.0)
+
+Classification
+- `logistic` -- binary logistic classification
+- `tree` (alias `decision_tree`) -- decision-tree classifier (hyperparam `max_depth`)
+- `random_forest` -- bagged decision-tree ensemble (hyperparam `n_trees`, default 10)
+- `knn` -- k-nearest-neighbors (hyperparam `k`, default 5)
+- `naive_bayes` (alias `gaussian_nb`) -- Gaussian Naive Bayes
+
+Boosting (regression **or** binary classification -- task auto-detected from the target)
+- `gradient_boosting` (aliases `gbt`, `gbm`, `xgboost`) -- gradient-boosted trees with
+  second-order (Newton) leaves, the XGBoost family. Hyperparameters: `n_estimators`
+  (default 100), `learning_rate` (0.1), `max_depth` (3). Like all tree models it does
+  not extrapolate beyond the training range.
+
+Clustering (unsupervised -- `target` is ignored)
+- `kmeans` -- k-means (hyperparam `k`, default 3)
+- `dbscan` -- density-based clustering (hyperparams `eps` default 0.5, `min_samples` default 3; predict returns the nearest cluster, or -1 for noise)
+
+Targets must be **numeric** (integer-encoded classes); string labels are rejected.
+Models are first-class values -- store them in variables, pass them around, and
+save them with `model_save` / load with `model_load`.
 
 ## ONNX Inference
 
-Load and run pre-trained ONNX models using the ort runtime:
+Run pre-trained ONNX models (via the ort runtime) by wrapping the model in a
+`.tlmodel` directory (a `metadata.json` with `"type": "onnx"` next to `model.onnx`)
+and loading it with `model_load`:
 
 ```tl
-let model = load_onnx("model.onnx")
+let model = model_load("model.tlmodel")
 let result = predict(model, input_data)
 ```
 
@@ -96,7 +123,7 @@ Combine data transforms with model predictions in a single pipe chain:
 
 ```tl
 let data = read_csv("new_data.csv")
-let model = load_onnx("churn_model.onnx")
+let model = model_load("churn_model.tlmodel")
 
 data
     |> filter(is_active == true)

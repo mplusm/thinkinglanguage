@@ -20,7 +20,7 @@ Standard tensor operations:
 let a = tensor([[1.0, 2.0], [3.0, 4.0]])
 let b = tensor([[5.0, 6.0], [7.0, 8.0]])
 
-let c = matmul(a, b)
+let c = gpu_matmul(a, b)  // matrix multiply (requires a build with --features gpu)
 let d = a + b
 let e = a - b
 let f = a * b  // element-wise multiply

@@ -14,15 +14,16 @@ schema User {
 let users = read_csv("examples/test_data/users.csv")
 
 // Add derived columns
+// NOTE: `|>` moves its input, so reused tables are `.clone()`d (the final use need not be).
 print("Users with age group:")
-users
+users.clone()
     |> with { senior = age > 35 }
     |> select(name, age, senior)
     |> show()
 
 // Aggregate: count and average age by department
 print("\nDepartment statistics:")
-users
+users.clone()
     |> aggregate(by: department, count: count(), avg_age: avg(age))
     |> sort(count, "desc")
     |> show()

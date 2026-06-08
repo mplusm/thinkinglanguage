@@ -5,20 +5,21 @@
 let users = read_csv("examples/test_data/users.csv")
 
 // Show all users
+// NOTE: `|>` moves its input, so reused tables are `.clone()`d (the final use need not be).
 print("All users:")
-users |> show()
+users.clone() |> show()
 
 // Filter: users older than 30
 print("\nUsers older than 30:")
-users |> filter(age > 30) |> show()
+users.clone() |> filter(age > 30) |> show()
 
 // Select specific columns
 print("\nNames and cities:")
-users |> select(name, city) |> show()
+users.clone() |> select(name, city) |> show()
 
 // Sort by age descending
 print("\nSorted by age (descending):")
-users |> sort(age, "desc") |> show()
+users.clone() |> sort(age, "desc") |> show()
 
 // Chain operations: filter, select, sort
 print("\nEngineers in New York, sorted by age:")

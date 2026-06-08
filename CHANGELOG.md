@@ -2,6 +2,41 @@
 
 All notable changes to ThinkingLanguage are documented here, organized by implementation phase.
 
+## 0.3.7
+
+### Fixed
+- **ML — logistic regression `predict()` returned inverted labels.** Training
+  was correct but inference flipped the class. The class→decision-function
+  mapping is now derived from the fitted model and persisted, instead of
+  hard-coding `0/1`. (Old logistic models should be retrained.)
+- **ML — decision-tree `predict()` from a saved model.** The fitted tree is now
+  serialized and traversed at inference time; previously any `predict()` on a
+  reloaded `tree` model errored.
+- **Docs** updated to the real API: `train <algo> { … }` (not `train_model(...)`),
+  `model_load` on a `.tlmodel` directory (not `load_onnx`), and `gpu_matmul`
+  (not `matmul`). Stale examples that reused a moved value now `.clone()` it.
+
+### Added
+- **Seven new training algorithms** (all pure-Rust, no new dependencies),
+  bringing the total to **10**:
+  - `ridge` — L2-regularized regression
+  - `random_forest` — bagged decision-tree ensemble
+  - `knn` — k-nearest-neighbors classifier
+  - `naive_bayes` (`gaussian_nb`) — Gaussian Naive Bayes
+  - `dbscan` — density-based clustering
+  - `gradient_boosting` (aliases `gbt`, `gbm`, `xgboost`) — gradient-boosted
+    trees with second-order (Newton) leaves, for regression or binary
+    classification (task auto-detected)
+  - (`kmeans` shipped in 0.3.6)
+- See `docs/ai/ml.md` for the full list and hyperparameters.
+
+## 0.3.6
+
+### Fixed
+- **`s3.rs`:** `SessionContext::register_object_store` is synchronous in
+  DataFusion 44 — it was wrapped in `block_on`, a latent compile error under the
+  `s3` connector feature. Also added `kmeans` clustering.
+
 ## 0.3.5
 
 ### Fixed

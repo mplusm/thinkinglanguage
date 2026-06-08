@@ -62,6 +62,13 @@ pub enum LinfaKind {
     LinearRegression,
     LogisticRegression,
     DecisionTree,
+    RandomForest,
+    KMeans,
+    Knn,
+    NaiveBayes,
+    Dbscan,
+    Ridge,
+    GradientBoosting,
 }
 
 /// Model metadata.
