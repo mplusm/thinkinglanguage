@@ -52,7 +52,10 @@ pub fn train(algorithm: &str, config: &TrainConfig) -> Result<TlModel, String> {
 
 /// Apply a per-row prediction closure over a 1D (single sample) or 2D
 /// (samples × features) input tensor, returning a 1D tensor of predictions.
-fn apply_rowwise<P: Fn(&[f64]) -> f64>(input: &TlTensor, predict_row: P) -> Result<TlTensor, String> {
+fn apply_rowwise<P: Fn(&[f64]) -> f64>(
+    input: &TlTensor,
+    predict_row: P,
+) -> Result<TlTensor, String> {
     let shape = input.shape();
     let flat = input.to_vec();
     if shape.len() == 1 {
@@ -77,8 +80,14 @@ fn tree_node_to_json(node: &linfa_trees::TreeNode<f64, usize>) -> serde_json::Va
     } else {
         let (feature, threshold, _) = node.split();
         let children = node.children(); // [left, right]
-        let left = children[0].as_ref().map(|c| tree_node_to_json(c)).unwrap_or(serde_json::Value::Null);
-        let right = children[1].as_ref().map(|c| tree_node_to_json(c)).unwrap_or(serde_json::Value::Null);
+        let left = children[0]
+            .as_ref()
+            .map(|c| tree_node_to_json(c))
+            .unwrap_or(serde_json::Value::Null);
+        let right = children[1]
+            .as_ref()
+            .map(|c| tree_node_to_json(c))
+            .unwrap_or(serde_json::Value::Null);
         serde_json::json!({ "leaf": false, "feature": feature, "threshold": threshold, "left": left, "right": right })
     }
 }
@@ -92,7 +101,11 @@ fn predict_tree_json(node: &serde_json::Value, row: &[f64]) -> f64 {
     let f = node["feature"].as_u64().unwrap_or(0) as usize;
     let thr = node["threshold"].as_f64().unwrap_or(0.0);
     let xv = row.get(f).copied().unwrap_or(0.0);
-    if xv < thr { predict_tree_json(&node["left"], row) } else { predict_tree_json(&node["right"], row) }
+    if xv < thr {
+        predict_tree_json(&node["left"], row)
+    } else {
+        predict_tree_json(&node["right"], row)
+    }
 }
 
 /// Majority-vote class over a set of serialized trees (used by random forest;
@@ -102,7 +115,11 @@ fn vote_trees(trees: &[serde_json::Value], row: &[f64]) -> f64 {
     for t in trees {
         *counts.entry(predict_tree_json(t, row) as i64).or_insert(0) += 1;
     }
-    counts.into_iter().max_by_key(|(_, c)| *c).map(|(v, _)| v as f64).unwrap_or(0.0)
+    counts
+        .into_iter()
+        .max_by_key(|(_, c)| *c)
+        .map(|(v, _)| v as f64)
+        .unwrap_or(0.0)
 }
 
 fn features_to_array2(features: &TlTensor) -> Result<Array2<f64>, String> {
@@ -202,10 +219,18 @@ fn train_logistic(config: &TrainConfig) -> Result<TlModel, String> {
         let records = dataset.records();
         for (i, p) in pred.iter().enumerate() {
             let row = records.row(i);
-            let logit: f64 =
-                row.iter().zip(params_slice.iter()).map(|(a, b)| a * b).sum::<f64>() + intercept;
+            let logit: f64 = row
+                .iter()
+                .zip(params_slice.iter())
+                .map(|(a, b)| a * b)
+                .sum::<f64>()
+                + intercept;
             let label = if *p { 1.0 } else { 0.0 };
-            if logit > 0.0 { pos_label = label; } else { neg_label = label; }
+            if logit > 0.0 {
+                pos_label = label;
+            } else {
+                neg_label = label;
+            }
         }
     }
 
@@ -310,7 +335,11 @@ fn train_random_forest(config: &TrainConfig) -> Result<TlModel, String> {
         .copied()
         .map(|v| (v as usize).max(1))
         .unwrap_or(10);
-    let max_depth = config.hyperparams.get("max_depth").copied().map(|d| d as usize);
+    let max_depth = config
+        .hyperparams
+        .get("max_depth")
+        .copied()
+        .map(|d| d as usize);
 
     // Deterministic xorshift RNG for bootstrap sampling (no extra dependency).
     let mut seed: u64 = 0x2545F4914F6CDD1D;
@@ -443,7 +472,11 @@ fn train_kmeans(config: &TrainConfig) -> Result<TlModel, String> {
     for i in 0..n {
         let row = x.row(i);
         let cen = &centroids[assign[i]];
-        inertia += row.iter().zip(cen).map(|(a, b)| (a - b) * (a - b)).sum::<f64>();
+        inertia += row
+            .iter()
+            .zip(cen)
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum::<f64>();
     }
 
     let model_data = serde_json::json!({ "type": "kmeans", "centroids": centroids });
@@ -474,14 +507,21 @@ fn sq_dist(a: &[f64], b: &[f64]) -> f64 {
 
 /// k-NN majority vote of `ytrain` over the `k` nearest rows of `xtrain`.
 fn knn_vote(xtrain: &[Vec<f64>], ytrain: &[f64], k: usize, row: &[f64]) -> f64 {
-    let mut dists: Vec<(f64, f64)> =
-        xtrain.iter().zip(ytrain).map(|(p, &l)| (sq_dist(p, row), l)).collect();
+    let mut dists: Vec<(f64, f64)> = xtrain
+        .iter()
+        .zip(ytrain)
+        .map(|(p, &l)| (sq_dist(p, row), l))
+        .collect();
     dists.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     let mut counts: HashMap<i64, usize> = HashMap::new();
     for (_, l) in dists.iter().take(k.min(dists.len())) {
         *counts.entry(*l as i64).or_insert(0) += 1;
     }
-    counts.into_iter().max_by_key(|(_, c)| *c).map(|(v, _)| v as f64).unwrap_or(0.0)
+    counts
+        .into_iter()
+        .max_by_key(|(_, c)| *c)
+        .map(|(v, _)| v as f64)
+        .unwrap_or(0.0)
 }
 
 /// Solve A·x = b (n×n) by Gauss-Jordan elimination with partial pivoting.
@@ -543,7 +583,11 @@ fn train_knn(config: &TrainConfig) -> Result<TlModel, String> {
             correct += 1;
         }
     }
-    let accuracy = if rows.is_empty() { 0.0 } else { correct as f64 / rows.len() as f64 };
+    let accuracy = if rows.is_empty() {
+        0.0
+    } else {
+        correct as f64 / rows.len() as f64
+    };
 
     let model_data = serde_json::json!({ "type": "knn", "k": k, "x": rows, "y": labels });
     let data = serde_json::to_vec(&model_data).map_err(|e| format!("Serialization failed: {e}"))?;
@@ -601,7 +645,9 @@ fn train_naive_bayes(config: &TrainConfig) -> Result<TlModel, String> {
 
     // Training accuracy.
     let nb = NaiveBayesModel::from_json(&classes);
-    let correct = (0..n).filter(|&i| nb.predict(&x.row(i).to_vec()) == y[i].round()).count();
+    let correct = (0..n)
+        .filter(|&i| nb.predict(&x.row(i).to_vec()) == y[i].round())
+        .count();
     let accuracy = correct as f64 / n as f64;
 
     let model_data = serde_json::json!({ "type": "naive_bayes", "classes": classes });
@@ -623,7 +669,8 @@ impl NaiveBayesModel {
             .map(|c| {
                 let label = c["label"].as_f64().unwrap_or(0.0);
                 let prior = c["prior"].as_f64().unwrap_or(0.0);
-                let means: Vec<f64> = serde_json::from_value(c["means"].clone()).unwrap_or_default();
+                let means: Vec<f64> =
+                    serde_json::from_value(c["means"].clone()).unwrap_or_default();
                 let vars: Vec<f64> = serde_json::from_value(c["vars"].clone()).unwrap_or_default();
                 (label, prior, means, vars)
             })
@@ -637,7 +684,8 @@ impl NaiveBayesModel {
             let mut score = *log_prior;
             for j in 0..row.len().min(means.len()) {
                 let v = vars[j].max(1e-9);
-                score += -0.5 * ((row[j] - means[j]).powi(2) / v + (2.0 * std::f64::consts::PI * v).ln());
+                score += -0.5
+                    * ((row[j] - means[j]).powi(2) / v + (2.0 * std::f64::consts::PI * v).ln());
             }
             if score > best_score {
                 best_score = score;
@@ -668,7 +716,11 @@ fn train_dbscan(config: &TrainConfig) -> Result<TlModel, String> {
         .map(|v| (v as usize).max(1))
         .unwrap_or(3);
     let eps2 = eps * eps;
-    let neighbors = |i: usize| -> Vec<usize> { (0..n).filter(|&j| sq_dist(&pts[i], &pts[j]) <= eps2).collect() };
+    let neighbors = |i: usize| -> Vec<usize> {
+        (0..n)
+            .filter(|&j| sq_dist(&pts[i], &pts[j]) <= eps2)
+            .collect()
+    };
 
     let mut labels = vec![-1i64; n];
     let mut visited = vec![false; n];
@@ -778,7 +830,11 @@ fn train_ridge(config: &TrainConfig) -> Result<TlModel, String> {
         ss_res += (y[i] - pred).powi(2);
         ss_tot += (y[i] - mean_y).powi(2);
     }
-    let r2 = if ss_tot > 0.0 { 1.0 - ss_res / ss_tot } else { 0.0 };
+    let r2 = if ss_tot > 0.0 {
+        1.0 - ss_res / ss_tot
+    } else {
+        0.0
+    };
 
     let model_data = serde_json::json!({ "type": "ridge", "params": coef, "intercept": intercept });
     let data = serde_json::to_vec(&model_data).map_err(|e| format!("Serialization failed: {e}"))?;
@@ -817,7 +873,11 @@ fn build_reg_tree(
     let mut best: Option<(usize, f64, f64)> = None; // (feature, threshold, sse)
     for f in 0..d {
         let mut order: Vec<usize> = idx.to_vec();
-        order.sort_by(|&a, &b| x[[a, f]].partial_cmp(&x[[b, f]]).unwrap_or(std::cmp::Ordering::Equal));
+        order.sort_by(|&a, &b| {
+            x[[a, f]]
+                .partial_cmp(&x[[b, f]])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         let (mut lw, mut lwr, mut lwr2) = (0.0f64, 0.0f64, 0.0f64);
         for k in 0..order.len() - 1 {
             let i = order[k];
@@ -872,12 +932,23 @@ fn train_gradient_boosting(config: &TrainConfig) -> Result<TlModel, String> {
         return Err("Gradient boosting: no training samples".to_string());
     }
     let hp_usize = |a: &str, b: &str, def: usize| -> usize {
-        config.hyperparams.get(a).or_else(|| config.hyperparams.get(b)).copied().map(|v| (v as usize).max(1)).unwrap_or(def)
+        config
+            .hyperparams
+            .get(a)
+            .or_else(|| config.hyperparams.get(b))
+            .copied()
+            .map(|v| (v as usize).max(1))
+            .unwrap_or(def)
     };
     let n_est = hp_usize("n_estimators", "trees", 100);
     let max_depth = hp_usize("max_depth", "depth", 3);
     let min_leaf = hp_usize("min_leaf", "min_samples_leaf", 1);
-    let lr = config.hyperparams.get("learning_rate").or_else(|| config.hyperparams.get("eta")).copied().unwrap_or(0.1);
+    let lr = config
+        .hyperparams
+        .get("learning_rate")
+        .or_else(|| config.hyperparams.get("eta"))
+        .copied()
+        .unwrap_or(0.1);
 
     let all01 = y.iter().all(|v| *v == 0.0 || *v == 1.0);
     let distinct: HashSet<i64> = y.iter().map(|v| *v as i64).collect();
@@ -938,7 +1009,14 @@ fn train_gradient_boosting(config: &TrainConfig) -> Result<TlModel, String> {
             ss_res += (y[i] - f_scores[i]).powi(2);
             ss_tot += (y[i] - mean_y).powi(2);
         }
-        metrics.insert("r2".to_string(), if ss_tot > 0.0 { 1.0 - ss_res / ss_tot } else { 0.0 });
+        metrics.insert(
+            "r2".to_string(),
+            if ss_tot > 0.0 {
+                1.0 - ss_res / ss_tot
+            } else {
+                0.0
+            },
+        );
     }
     metrics.insert("n_estimators".to_string(), n_est as f64);
 
@@ -946,11 +1024,21 @@ fn train_gradient_boosting(config: &TrainConfig) -> Result<TlModel, String> {
         "type": "gradient_boosting", "binary": binary, "init": init, "lr": lr, "trees": trees,
     });
     let data = serde_json::to_vec(&model_data).map_err(|e| format!("Serialization failed: {e}"))?;
-    Ok(linfa_model(LinfaKind::GradientBoosting, data, config, metrics))
+    Ok(linfa_model(
+        LinfaKind::GradientBoosting,
+        data,
+        config,
+        metrics,
+    ))
 }
 
 /// Build a `TlModel::Linfa` with standard metadata (shared by the new algorithms).
-fn linfa_model(kind: LinfaKind, data: Vec<u8>, config: &TrainConfig, metrics: HashMap<String, f64>) -> TlModel {
+fn linfa_model(
+    kind: LinfaKind,
+    data: Vec<u8>,
+    config: &TrainConfig,
+    metrics: HashMap<String, f64>,
+) -> TlModel {
     TlModel::Linfa {
         kind,
         data,
@@ -1022,8 +1110,12 @@ pub fn predict_linfa(model: &TlModel, input: &TlTensor) -> Result<TlTensor, Stri
                 let neg_label = model_data["neg_label"].as_f64().unwrap_or(0.0);
 
                 apply_rowwise(input, |row| {
-                    let logit: f64 =
-                        row.iter().zip(params.iter()).map(|(a, b)| a * b).sum::<f64>() + intercept;
+                    let logit: f64 = row
+                        .iter()
+                        .zip(params.iter())
+                        .map(|(a, b)| a * b)
+                        .sum::<f64>()
+                        + intercept;
                     let prob = 1.0 / (1.0 + (-logit).exp());
                     if prob > 0.5 { pos_label } else { neg_label }
                 })
@@ -1052,8 +1144,9 @@ pub fn predict_linfa(model: &TlModel, input: &TlTensor) -> Result<TlTensor, Stri
             LinfaKind::KMeans => {
                 let model_data: serde_json::Value = serde_json::from_slice(data)
                     .map_err(|e| format!("Deserialization failed: {e}"))?;
-                let centroids: Vec<Vec<f64>> = serde_json::from_value(model_data["centroids"].clone())
-                    .map_err(|e| format!("Missing centroids: {e}"))?;
+                let centroids: Vec<Vec<f64>> =
+                    serde_json::from_value(model_data["centroids"].clone())
+                        .map_err(|e| format!("Missing centroids: {e}"))?;
                 apply_rowwise(input, |row| {
                     let mut best = 0usize;
                     let mut best_d = f64::INFINITY;
@@ -1080,7 +1173,10 @@ pub fn predict_linfa(model: &TlModel, input: &TlTensor) -> Result<TlTensor, Stri
             LinfaKind::NaiveBayes => {
                 let model_data: serde_json::Value = serde_json::from_slice(data)
                     .map_err(|e| format!("Deserialization failed: {e}"))?;
-                let classes = model_data["classes"].as_array().ok_or("Missing classes")?.clone();
+                let classes = model_data["classes"]
+                    .as_array()
+                    .ok_or("Missing classes")?
+                    .clone();
                 let nb = NaiveBayesModel::from_json(&classes);
                 apply_rowwise(input, |row| nb.predict(row))
             }
@@ -1094,7 +1190,8 @@ pub fn predict_linfa(model: &TlModel, input: &TlTensor) -> Result<TlTensor, Stri
                     .ok_or("Missing cores")?
                     .iter()
                     .map(|c| {
-                        let p: Vec<f64> = serde_json::from_value(c["p"].clone()).unwrap_or_default();
+                        let p: Vec<f64> =
+                            serde_json::from_value(c["p"].clone()).unwrap_or_default();
                         (p, c["c"].as_f64().unwrap_or(-1.0))
                     })
                     .collect();
@@ -1117,15 +1214,21 @@ pub fn predict_linfa(model: &TlModel, input: &TlTensor) -> Result<TlTensor, Stri
                 let binary = model_data["binary"].as_bool().unwrap_or(false);
                 let init = model_data["init"].as_f64().unwrap_or(0.0);
                 let lr = model_data["lr"].as_f64().unwrap_or(0.1);
-                let trees: Vec<serde_json::Value> =
-                    model_data["trees"].as_array().ok_or("Missing trees")?.clone();
+                let trees: Vec<serde_json::Value> = model_data["trees"]
+                    .as_array()
+                    .ok_or("Missing trees")?
+                    .clone();
                 apply_rowwise(input, |row| {
                     let mut score = init;
                     for t in &trees {
                         score += lr * predict_tree_json(t, row);
                     }
                     if binary {
-                        if 1.0 / (1.0 + (-score).exp()) > 0.5 { 1.0 } else { 0.0 }
+                        if 1.0 / (1.0 + (-score).exp()) > 0.5 {
+                            1.0
+                        } else {
+                            0.0
+                        }
                     } else {
                         score
                     }
