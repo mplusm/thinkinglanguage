@@ -401,7 +401,7 @@ fn train_kmeans(config: &TrainConfig) -> Result<TlModel, String> {
 
     for _ in 0..max_iter {
         let mut changed = false;
-        for i in 0..n {
+        for (i, slot) in assign.iter_mut().enumerate() {
             let row = x.row(i);
             let mut best = 0usize;
             let mut best_d = f64::INFINITY;
@@ -412,8 +412,8 @@ fn train_kmeans(config: &TrainConfig) -> Result<TlModel, String> {
                     best = c;
                 }
             }
-            if assign[i] != best {
-                assign[i] = best;
+            if *slot != best {
+                *slot = best;
                 changed = true;
             }
         }
@@ -501,18 +501,20 @@ fn solve_linear_system(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>
         a.swap(col, piv);
         b.swap(col, piv);
         let d = a[col][col];
-        for j in 0..n {
-            a[col][j] /= d;
+        for v in a[col].iter_mut() {
+            *v /= d;
         }
         b[col] /= d;
+        let pivot_row = a[col].clone();
+        let pivot_b = b[col];
         for r in 0..n {
             if r != col {
                 let f = a[r][col];
                 if f != 0.0 {
-                    for j in 0..n {
-                        a[r][j] -= f * a[col][j];
+                    for (v, p) in a[r].iter_mut().zip(&pivot_row) {
+                        *v -= f * p;
                     }
-                    b[r] -= f * b[col];
+                    b[r] -= f * pivot_b;
                 }
             }
         }
@@ -758,8 +760,9 @@ fn train_ridge(config: &TrainConfig) -> Result<TlModel, String> {
             bvec[j] += r[j] * yi;
         }
     }
-    for j in 0..d {
-        a[j][j] += lambda; // regularize coefficients, not the intercept (index d)
+    // Regularize the coefficients, not the intercept (the trailing row/col `d`).
+    for (j, row) in a.iter_mut().enumerate().take(d) {
+        row[j] += lambda;
     }
     let w = solve_linear_system(a, bvec)
         .ok_or("Ridge: singular system — try a larger alpha or fewer collinear features")?;
@@ -832,7 +835,7 @@ fn build_reg_tree(
             let sse_l = lwr2 - lwr * lwr / lw;
             let sse_r = (swr2 - lwr2) - (swr - lwr) * (swr - lwr) / rw;
             let sse = sse_l + sse_r;
-            if best.map_or(true, |(_, _, bs)| sse < bs) {
+            if best.is_none_or(|(_, _, bs)| sse < bs) {
                 best = Some((f, (xi + xnext) / 2.0, sse));
             }
         }
@@ -915,8 +918,8 @@ fn train_gradient_boosting(config: &TrainConfig) -> Result<TlModel, String> {
             w[i] = h;
         }
         let tree = build_reg_tree(&all_idx, &x, &r, &w, 0, max_depth, min_leaf);
-        for i in 0..n {
-            f_scores[i] += lr * predict_tree_json(&tree, &x.row(i).to_vec());
+        for (i, fs) in f_scores.iter_mut().enumerate() {
+            *fs += lr * predict_tree_json(&tree, &x.row(i).to_vec());
         }
         trees.push(tree);
     }
