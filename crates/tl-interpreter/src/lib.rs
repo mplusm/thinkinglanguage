@@ -10723,6 +10723,8 @@ impl Interpreter {
         let mut target_val = None;
         let mut feature_names = Vec::new();
         let mut target_name = String::new();
+        let mut hyperparams: std::collections::HashMap<String, f64> =
+            std::collections::HashMap::new();
 
         for (key, expr) in config {
             let val = self.eval_expr(expr)?;
@@ -10743,7 +10745,16 @@ impl Interpreter {
                         }
                     }
                 }
-                _ => {} // ignore unknown config keys for now
+                // Numeric hyperparameters (n_trees, max_depth, learning_rate, ...).
+                other => match &val {
+                    Value::Int(n) => {
+                        hyperparams.insert(other.to_string(), *n as f64);
+                    }
+                    Value::Float(f) => {
+                        hyperparams.insert(other.to_string(), *f);
+                    }
+                    _ => {}
+                },
             }
         }
 
@@ -10754,8 +10765,7 @@ impl Interpreter {
             if batches.is_empty() {
                 return Err(runtime_err("train: empty dataset".to_string()));
             }
-            let batch = &batches[0];
-            let schema = batch.schema();
+            let schema = batches[0].schema();
 
             // Determine feature columns
             if feature_names.is_empty() {
@@ -10765,40 +10775,69 @@ impl Interpreter {
                     }
                 }
             }
-
-            let n_rows = batch.num_rows();
             let n_features = feature_names.len();
 
-            // Extract feature columns
-            let mut col_data: Vec<Vec<f64>> = Vec::new();
-            for col_name in &feature_names {
-                let col_idx = schema
-                    .index_of(col_name)
-                    .map_err(|_| runtime_err(format!("Column not found: {col_name}")))?;
-                let arr = batch.column(col_idx);
-                let mut vals = Vec::with_capacity(n_rows);
-                Self::extract_f64_col(arr, &mut vals)?;
-                col_data.push(vals);
-            }
-
-            // Convert to row-major
-            let mut row_major = Vec::with_capacity(n_rows * n_features);
-            for row in 0..n_rows {
-                for col in &col_data {
-                    row_major.push(col[row]);
-                }
-            }
-            let features_tensor =
-                tl_ai::TlTensor::from_vec(row_major, &[n_rows, n_features]).map_err(runtime_err)?;
-
-            // Extract target column
+            // Resolve column indices once.
+            let feat_idx: Vec<usize> = feature_names
+                .iter()
+                .map(|c| {
+                    schema
+                        .index_of(c)
+                        .map_err(|_| runtime_err(format!("Column not found: {c}")))
+                })
+                .collect::<Result<_, _>>()?;
             let target_idx = schema
                 .index_of(&target_name)
                 .map_err(|_| runtime_err(format!("Target column not found: {target_name}")))?;
-            let target_arr = batch.column(target_idx);
-            let mut target_data = Vec::with_capacity(n_rows);
-            Self::extract_f64_col(target_arr, &mut target_data)?;
-            let target_tensor = tl_ai::TlTensor::from_list(target_data);
+
+            // Build the full feature matrix + target across ALL batches. Previously
+            // only batches[0] was used, so under DataFusion's parallel multi-partition
+            // output the model trained on a nondeterministic SUBSET of the rows.
+            let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+            if total_rows == 0 {
+                return Err(runtime_err("train: empty dataset".to_string()));
+            }
+            let mut row_major = Vec::with_capacity(total_rows * n_features);
+            let mut target_data = Vec::with_capacity(total_rows);
+            for batch in &batches {
+                let nb = batch.num_rows();
+                let mut cols: Vec<Vec<f64>> = Vec::with_capacity(n_features);
+                for &ci in &feat_idx {
+                    let mut tmp = Vec::with_capacity(nb);
+                    Self::extract_f64_col(batch.column(ci), &mut tmp)?;
+                    cols.push(tmp);
+                }
+                for r in 0..nb {
+                    for c in 0..n_features {
+                        row_major.push(cols[c][r]);
+                    }
+                }
+                Self::extract_f64_col(batch.column(target_idx), &mut target_data)?;
+            }
+
+            // Canonicalize row order for reproducible training regardless of the
+            // (nondeterministic) partition/row order DataFusion returns.
+            let mut order: Vec<usize> = (0..total_rows).collect();
+            order.sort_by(|&a, &b| {
+                let ra = &row_major[a * n_features..(a + 1) * n_features];
+                let rb = &row_major[b * n_features..(b + 1) * n_features];
+                ra.iter()
+                    .zip(rb)
+                    .map(|(x, y)| x.total_cmp(y))
+                    .find(|o| o.is_ne())
+                    .unwrap_or_else(|| target_data[a].total_cmp(&target_data[b]))
+            });
+            let mut sorted_feats = Vec::with_capacity(total_rows * n_features);
+            let mut sorted_target = Vec::with_capacity(total_rows);
+            for &i in &order {
+                sorted_feats.extend_from_slice(&row_major[i * n_features..(i + 1) * n_features]);
+                sorted_target.push(target_data[i]);
+            }
+
+            let n_rows = total_rows;
+            let features_tensor = tl_ai::TlTensor::from_vec(sorted_feats, &[n_rows, n_features])
+                .map_err(runtime_err)?;
+            let target_tensor = tl_ai::TlTensor::from_list(sorted_target);
 
             let train_config = tl_ai::TrainConfig {
                 features: features_tensor,
@@ -10807,7 +10846,7 @@ impl Interpreter {
                 target_name,
                 model_name: name.to_string(),
                 split_ratio: 1.0,
-                hyperparams: std::collections::HashMap::new(),
+                hyperparams,
             };
 
             let model = tl_ai::train(algorithm, &train_config).map_err(runtime_err)?;
