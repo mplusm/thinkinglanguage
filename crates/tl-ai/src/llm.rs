@@ -53,7 +53,9 @@ impl LlmClient {
             max_tokens: max_tokens.unwrap_or(1024),
             // Allow targeting any OpenAI-compatible endpoint (Groq, Together,
             // local servers, ...) via TL_LLM_BASE_URL, like chat_with_tools.
-            base_url: std::env::var("TL_LLM_BASE_URL").ok().filter(|s| !s.is_empty()),
+            base_url: std::env::var("TL_LLM_BASE_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
         })
     }
 }

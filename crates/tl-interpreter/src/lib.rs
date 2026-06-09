@@ -10808,8 +10808,8 @@ impl Interpreter {
                     cols.push(tmp);
                 }
                 for r in 0..nb {
-                    for c in 0..n_features {
-                        row_major.push(cols[c][r]);
+                    for col in &cols {
+                        row_major.push(col[r]);
                     }
                 }
                 Self::extract_f64_col(batch.column(target_idx), &mut target_data)?;
