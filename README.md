@@ -100,11 +100,11 @@ fn greet(who: string) -> string {
 
 let doubled = nums |> map((x) => x * 2) |> filter((x) => x > 4)
 let total   = reduce(nums, 0, (acc, x) => acc + x)  // 15
-print(greet(name))
-print(doubled)
-print(floor(3.7))    // 3.0
-print(7 % 3)         // 1
-print(min(4, 9))     // 4
+println(greet(name))
+println(doubled)
+println(floor(3.7))    // 3.0
+println(7 % 3)         // 1
+println(min(4, 9))     // 4
 ```
 
 ### Data Pipelines
@@ -123,7 +123,7 @@ users
 // Access rows as List<Map> for programmatic use
 let rows = users |> filter(age > 30) |> to_rows()
 for row in rows {
-    print(row["name"] + " — dept: " + row["department"])
+    println(row["name"] + " — dept: " + row["department"])
 }
 ```
 
