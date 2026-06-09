@@ -10962,16 +10962,9 @@ impl Vm {
                 if let Some(val) = self.globals.get(name) {
                     return Ok(val.clone());
                 }
-                // Check current frame's stack
-                if let Some(frame) = self.frames.last() {
-                    for i in 0..frame.prototype.num_registers as usize {
-                        if let Some(val) = self.stack.get(frame.base + i)
-                            && !matches!(val, VmValue::None)
-                        {
-                            // Without name->register mapping, we can't be sure
-                            // which register holds this variable
-                        }
-                    }
+                // Then resolve a local of the current frame via the name->register map.
+                if let Some(val) = self.lookup_frame_local(name) {
+                    return Ok(val);
                 }
                 Err(runtime_err(format!("Undefined variable: `{name}`")))
             }
@@ -10994,8 +10987,12 @@ impl Vm {
                 };
                 let proto = compiler::compile(&wrapper)?;
                 let mut temp_vm = Vm::new();
-                // Copy globals
+                // Copy globals + the current frame's locals so the expression can
+                // reference local variables (e.g. a closure capturing a local table).
                 temp_vm.globals = self.globals.clone();
+                for (n, v) in self.current_frame_locals() {
+                    temp_vm.globals.insert(n, v);
+                }
                 let result = temp_vm.execute(&proto)?;
                 Ok(result)
             }
@@ -11012,10 +11009,51 @@ impl Vm {
                 use crate::compiler;
                 let proto = compiler::compile(&wrapper)?;
                 let mut temp_vm = Vm::new();
+                // Copy globals + the current frame's locals so the expression can
+                // reference local variables (e.g. `join(usage.clone(), ...)`).
                 temp_vm.globals = self.globals.clone();
+                for (n, v) in self.current_frame_locals() {
+                    temp_vm.globals.insert(n, v);
+                }
                 temp_vm.execute(&proto)
             }
         }
+    }
+
+    /// Resolve a variable by name in the current frame's locals via the
+    /// compiler-emitted name->register map (`top_level_locals`). Returns the most
+    /// recent binding for the name. Used to evaluate table-op AST args (e.g. the
+    /// right-hand table of `join`/`union`) that reference local variables.
+    fn lookup_frame_local(&self, name: &str) -> Option<VmValue> {
+        let frame = self.frames.last()?;
+        let mut found = None;
+        for (local_name, reg) in &frame.prototype.top_level_locals {
+            if local_name == name {
+                let idx = frame.base + *reg as usize;
+                if let Some(v) = self.stack.get(idx)
+                    && !matches!(v, VmValue::None)
+                {
+                    found = Some(v.clone()); // keep the last (most recent) binding
+                }
+            }
+        }
+        found
+    }
+
+    /// Snapshot the current frame's named locals as (name, value) pairs.
+    fn current_frame_locals(&self) -> Vec<(String, VmValue)> {
+        let mut out = Vec::new();
+        if let Some(frame) = self.frames.last() {
+            for (name, reg) in &frame.prototype.top_level_locals {
+                let idx = frame.base + *reg as usize;
+                if let Some(v) = self.stack.get(idx)
+                    && !matches!(v, VmValue::None)
+                {
+                    out.push((name.clone(), v.clone()));
+                }
+            }
+        }
+        out
     }
 
     fn eval_ast_to_string(&mut self, expr: &AstExpr) -> Result<String, TlError> {
