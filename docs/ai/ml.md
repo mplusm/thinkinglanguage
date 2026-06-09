@@ -42,7 +42,10 @@ Clustering (unsupervised -- `target` is ignored)
 
 Targets must be **numeric** (integer-encoded classes); string labels are rejected.
 Models are first-class values -- store them in variables, pass them around, and
-save them with `model_save` / load with `model_load`.
+save them with `model_save` / load with `model_load`. Pass hyperparameters as
+named fields in the `train` block, e.g. `train random_forest { ..., n_trees: 80 }`.
+Training reads the full dataset in a canonical row order, so results are
+**reproducible** run-to-run regardless of how the source table was partitioned.
 
 ## ONNX Inference
 
@@ -96,6 +99,18 @@ let response = ai_chat("gpt-4o", "You are a tutor.", [
 ```
 
 Configure API keys via environment variables: `TL_OPENAI_KEY`, `TL_ANTHROPIC_KEY`, or `TL_LLM_KEY`.
+
+To target any **OpenAI-compatible** endpoint (Groq, Together, vLLM, a local
+server, ...), set `TL_LLM_BASE_URL` together with `TL_LLM_KEY` and pass a model
+the endpoint serves. This applies to `ai_complete`, `ai_chat`, and agents:
+
+```bash
+export TL_LLM_BASE_URL="https://api.groq.com/openai/v1"
+export TL_LLM_KEY="gsk_..."
+```
+```tl
+let response = ai_complete("Summarize this in one line", "llama-3.3-70b-versatile")
+```
 
 ## AI Agents
 

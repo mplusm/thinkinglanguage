@@ -2,6 +2,32 @@
 
 All notable changes to ThinkingLanguage are documented here, organized by implementation phase.
 
+## 0.3.8
+
+### Fixed
+- **`join` / `union` with a variable right-hand table on the VM backend.**
+  `left |> join(right, on: id == k)` errored `Undefined variable: right` (it
+  worked under the interpreter). The VM evaluated table-op arguments against
+  globals only; it now resolves local variables via the frame's name→register
+  map, so a local right-hand table — including `join(usage.clone(), ...)` — works.
+- **Non-deterministic / degenerate model training.** Training collected the data
+  table to Arrow batches but used only the first batch, so under DataFusion's
+  parallel multi-partition output it trained on a nondeterministic *subset* of
+  rows. Models were flaky run-to-run and sometimes degenerated to an
+  all-one-class predictor (e.g. `random_forest` / `gradient_boosting` returning
+  all-zeros). Training now reads **all** batches in a **canonical row order** and
+  is reproducible. Fixed in both the VM and interpreter backends.
+- **`ai_complete` / `ai_chat` ignored `TL_LLM_BASE_URL`.** Both hard-coded the
+  OpenAI/Anthropic endpoints, so they could not reach OpenAI-compatible providers
+  (Groq, Together, local servers). They now honor `TL_LLM_BASE_URL` like
+  `chat_with_tools` does.
+
+### Changed
+- **Training hyperparameters are now applied.** Numeric fields in a `train` block
+  (`n_trees`, `max_depth`, `learning_rate`, `n_estimators`, `alpha`, `k`, `eps`,
+  ...) were silently dropped, so `train { n_trees: 80 }` used defaults. They are
+  now passed through to the trainer.
+
 ## 0.3.7
 
 ### Fixed
