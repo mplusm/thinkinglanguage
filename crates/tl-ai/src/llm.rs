@@ -51,7 +51,11 @@ impl LlmClient {
             system_prompt: system_prompt.map(|s| s.to_string()),
             temperature: temperature.unwrap_or(0.7),
             max_tokens: max_tokens.unwrap_or(1024),
-            base_url: None,
+            // Allow targeting any OpenAI-compatible endpoint (Groq, Together,
+            // local servers, ...) via TL_LLM_BASE_URL, like chat_with_tools.
+            base_url: std::env::var("TL_LLM_BASE_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
         })
     }
 }
@@ -593,8 +597,11 @@ fn do_complete(client: &LlmClient, prompt: &str) -> Result<String, String> {
     let http = reqwest::blocking::Client::new();
     let mut last_err = String::new();
 
+    // A base_url override always means an OpenAI-compatible endpoint.
+    let use_anthropic = (client.provider == "anthropic" || client.model.starts_with("claude"))
+        && client.base_url.is_none();
     for attempt in 0..3 {
-        let result = if client.provider == "anthropic" || client.model.starts_with("claude") {
+        let result = if use_anthropic {
             complete_anthropic(&http, client, prompt)
         } else {
             complete_openai(&http, client, prompt)
@@ -619,7 +626,9 @@ fn do_complete(client: &LlmClient, prompt: &str) -> Result<String, String> {
 fn do_chat(client: &LlmClient, messages: &[(String, String)]) -> Result<String, String> {
     let http = reqwest::blocking::Client::new();
 
-    if client.provider == "anthropic" || client.model.starts_with("claude") {
+    let use_anthropic = (client.provider == "anthropic" || client.model.starts_with("claude"))
+        && client.base_url.is_none();
+    if use_anthropic {
         chat_anthropic(&http, client, messages)
     } else {
         chat_openai(&http, client, messages)
@@ -675,8 +684,13 @@ fn complete_openai(
         "messages": [{"role": "user", "content": prompt}],
     });
 
+    let base = client
+        .base_url
+        .as_deref()
+        .unwrap_or("https://api.openai.com/v1");
+    let url = format!("{}/chat/completions", base.trim_end_matches('/'));
     let resp = http
-        .post("https://api.openai.com/v1/chat/completions")
+        .post(&url)
         .header("Authorization", format!("Bearer {}", client.api_key))
         .json(&body)
         .send()
@@ -764,8 +778,13 @@ fn chat_openai(
         "messages": msgs,
     });
 
+    let base = client
+        .base_url
+        .as_deref()
+        .unwrap_or("https://api.openai.com/v1");
+    let url = format!("{}/chat/completions", base.trim_end_matches('/'));
     let resp = http
-        .post("https://api.openai.com/v1/chat/completions")
+        .post(&url)
         .header("Authorization", format!("Bearer {}", client.api_key))
         .json(&body)
         .send()
