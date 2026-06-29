@@ -184,6 +184,17 @@ impl DataEngine {
         Ok(total_rows)
     }
 
+    /// Execute a write/DDL statement on MySQL, returning rows affected.
+    pub fn execute_mysql(&self, conn_str: &str, sql: &str) -> Result<u64, String> {
+        let pool = Pool::new(conn_str).map_err(|e| format!("MySQL connection error: {e}"))?;
+        let mut conn = pool
+            .get_conn()
+            .map_err(|e| format!("MySQL connection error: {e}"))?;
+        conn.query_drop(sql)
+            .map_err(|e| format!("MySQL execute error: {e}"))?;
+        Ok(conn.affected_rows())
+    }
+
     /// Read from MySQL using a connection string and SQL query.
     /// Uses batched Arrow conversion (50K rows per batch) to reduce peak memory
     /// and enable DataFusion partition parallelism on large result sets.

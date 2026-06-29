@@ -341,6 +341,20 @@ impl DataEngine {
             .map_err(|e| format!("SQLite COMMIT error: {e}"))?;
         Ok(())
     }
+
+    /// Execute a write/DDL statement on SQLite, returning rows affected. Falls
+    /// back to `execute_batch` for statements that can't run via `execute`.
+    pub fn execute_sqlite(&self, db_path: &str, sql: &str) -> Result<u64, String> {
+        let conn =
+            Connection::open(db_path).map_err(|e| format!("SQLite connection error: {e}"))?;
+        match conn.execute(sql, []) {
+            Ok(n) => Ok(n as u64),
+            Err(_) => conn
+                .execute_batch(sql)
+                .map(|_| 0u64)
+                .map_err(|e| format!("SQLite execute error: {e}")),
+        }
+    }
 }
 
 /// Convert a borrowed ValueRef into an owned Value.

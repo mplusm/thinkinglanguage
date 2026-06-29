@@ -40,6 +40,17 @@ impl DataEngine {
         };
         self.write_postgres(df, &conn_str, table_name, mode)
     }
+
+    /// Execute a write/DDL statement on Redshift, returning rows affected.
+    /// Redshift speaks the PostgreSQL wire protocol, so this reuses the pg path.
+    pub fn execute_redshift(&self, conn_str: &str, sql: &str) -> Result<u64, String> {
+        let conn_str = if !conn_str.contains("sslmode") {
+            format!("{conn_str} sslmode=require")
+        } else {
+            conn_str.to_string()
+        };
+        self.execute_postgres(&conn_str, sql)
+    }
 }
 
 #[cfg(test)]

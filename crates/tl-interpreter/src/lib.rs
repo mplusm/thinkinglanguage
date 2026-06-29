@@ -597,6 +597,9 @@ impl Environment {
             "postgres_execute".to_string(),
             Value::Builtin("postgres_execute".to_string()),
         );
+        for name in ["redshift_execute", "mysql_execute", "sqlite_execute", "duckdb_execute"] {
+            global.insert(name.to_string(), Value::Builtin(name.to_string()));
+        }
         global.insert(
             "write_redshift".to_string(),
             Value::Builtin("write_redshift".to_string()),
@@ -3793,6 +3796,66 @@ impl Interpreter {
                     .engine()
                     .execute_postgres(&conn_str, &sql)
                     .map_err(runtime_err)?;
+                Ok(Value::Int(n as i64))
+            }
+            "redshift_execute" => {
+                if args.len() != 2 {
+                    return Err(runtime_err("redshift_execute() expects (conn_str, sql)".into()));
+                }
+                let conn_str = match &args[0] {
+                    Value::String(s) => resolve_tl_config_connection_interp(s),
+                    _ => return Err(runtime_err("redshift_execute() conn_str must be a string".into())),
+                };
+                let sql = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err("redshift_execute() sql must be a string".into())),
+                };
+                let n = self.engine().execute_redshift(&conn_str, &sql).map_err(runtime_err)?;
+                Ok(Value::Int(n as i64))
+            }
+            "mysql_execute" => {
+                if args.len() != 2 {
+                    return Err(runtime_err("mysql_execute() expects (conn_str, sql)".into()));
+                }
+                let conn_str = match &args[0] {
+                    Value::String(s) => resolve_tl_config_connection_interp(s),
+                    _ => return Err(runtime_err("mysql_execute() conn_str must be a string".into())),
+                };
+                let sql = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err("mysql_execute() sql must be a string".into())),
+                };
+                let n = self.engine().execute_mysql(&conn_str, &sql).map_err(runtime_err)?;
+                Ok(Value::Int(n as i64))
+            }
+            "sqlite_execute" => {
+                if args.len() != 2 {
+                    return Err(runtime_err("sqlite_execute() expects (db_path, sql)".into()));
+                }
+                let db_path = match &args[0] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err("sqlite_execute() db_path must be a string".into())),
+                };
+                let sql = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err("sqlite_execute() sql must be a string".into())),
+                };
+                let n = self.engine().execute_sqlite(&db_path, &sql).map_err(runtime_err)?;
+                Ok(Value::Int(n as i64))
+            }
+            "duckdb_execute" => {
+                if args.len() != 2 {
+                    return Err(runtime_err("duckdb_execute() expects (db_path, sql)".into()));
+                }
+                let db_path = match &args[0] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err("duckdb_execute() db_path must be a string".into())),
+                };
+                let sql = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err("duckdb_execute() sql must be a string".into())),
+                };
+                let n = self.engine().execute_duckdb(&db_path, &sql).map_err(runtime_err)?;
                 Ok(Value::Int(n as i64))
             }
             "write_redshift" => {

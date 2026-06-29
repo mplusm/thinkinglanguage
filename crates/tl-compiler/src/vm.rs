@@ -3253,6 +3253,74 @@ impl Vm {
                 Ok(VmValue::Int(n as i64))
             }
             #[cfg(feature = "native")]
+            BuiltinId::ExecuteRedshift => {
+                if args.len() != 2 {
+                    return Err(runtime_err("redshift_execute() expects 2 arguments (conn_str, sql)"));
+                }
+                self.check_permission("connector:redshift")?;
+                let conn_str = match &args[0] {
+                    VmValue::String(s) => resolve_tl_config_connection(s),
+                    _ => return Err(runtime_err("redshift_execute() conn_str must be a string")),
+                };
+                let sql = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("redshift_execute() sql must be a string")),
+                };
+                let n = self.engine().execute_redshift(&conn_str, &sql).map_err(runtime_err)?;
+                Ok(VmValue::Int(n as i64))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::ExecuteMysql => {
+                if args.len() != 2 {
+                    return Err(runtime_err("mysql_execute() expects 2 arguments (conn_str, sql)"));
+                }
+                self.check_permission("connector:mysql")?;
+                let conn_str = match &args[0] {
+                    VmValue::String(s) => resolve_tl_config_connection(s),
+                    _ => return Err(runtime_err("mysql_execute() conn_str must be a string")),
+                };
+                let sql = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("mysql_execute() sql must be a string")),
+                };
+                let n = self.engine().execute_mysql(&conn_str, &sql).map_err(runtime_err)?;
+                Ok(VmValue::Int(n as i64))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::ExecuteSqlite => {
+                if args.len() != 2 {
+                    return Err(runtime_err("sqlite_execute() expects 2 arguments (db_path, sql)"));
+                }
+                self.check_permission("connector:sqlite")?;
+                let db_path = match &args[0] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("sqlite_execute() db_path must be a string")),
+                };
+                let sql = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("sqlite_execute() sql must be a string")),
+                };
+                let n = self.engine().execute_sqlite(&db_path, &sql).map_err(runtime_err)?;
+                Ok(VmValue::Int(n as i64))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::ExecuteDuckDb => {
+                if args.len() != 2 {
+                    return Err(runtime_err("duckdb_execute() expects 2 arguments (db_path, sql)"));
+                }
+                self.check_permission("connector:duckdb")?;
+                let db_path = match &args[0] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("duckdb_execute() db_path must be a string")),
+                };
+                let sql = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("duckdb_execute() sql must be a string")),
+                };
+                let n = self.engine().execute_duckdb(&db_path, &sql).map_err(runtime_err)?;
+                Ok(VmValue::Int(n as i64))
+            }
+            #[cfg(feature = "native")]
             BuiltinId::WriteRedshift => {
                 if args.len() < 3 {
                     return Err(runtime_err(
@@ -3559,6 +3627,10 @@ impl Vm {
             | BuiltinId::WriteMssql
             | BuiltinId::WriteMongo
             | BuiltinId::PostgresExecute
+            | BuiltinId::ExecuteRedshift
+            | BuiltinId::ExecuteMysql
+            | BuiltinId::ExecuteSqlite
+            | BuiltinId::ExecuteDuckDb
             | BuiltinId::PostgresQuery => Err(runtime_err("Data operations not available in WASM")),
             // ── AI builtins ──
             #[cfg(feature = "native")]

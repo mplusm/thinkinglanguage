@@ -216,6 +216,20 @@ impl DataEngine {
 
         Ok(())
     }
+
+    /// Execute a write/DDL statement on DuckDB, returning rows affected. Falls
+    /// back to `execute_batch` for statements that can't run via `execute`.
+    pub fn execute_duckdb(&self, db_path: &str, sql: &str) -> Result<u64, String> {
+        let conn = duckdb::Connection::open(db_path)
+            .map_err(|e| format!("DuckDB connection error: {e}"))?;
+        match conn.execute(sql, []) {
+            Ok(n) => Ok(n as u64),
+            Err(_) => conn
+                .execute_batch(sql)
+                .map(|_| 0u64)
+                .map_err(|e| format!("DuckDB execute error: {e}")),
+        }
+    }
 }
 
 /// Map Arrow DataType to DuckDB SQL type name.

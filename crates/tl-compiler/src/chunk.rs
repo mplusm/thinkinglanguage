@@ -687,6 +687,10 @@ pub enum BuiltinId {
     WriteMssql = 238,
     WriteMongo = 239,
     PostgresExecute = 240,
+    ExecuteRedshift = 241,
+    ExecuteMysql = 242,
+    ExecuteSqlite = 243,
+    ExecuteDuckDb = 244,
 }
 
 impl TryFrom<u16> for BuiltinId {
@@ -935,6 +939,10 @@ impl TryFrom<u16> for BuiltinId {
             238 => Ok(BuiltinId::WriteMssql),
             239 => Ok(BuiltinId::WriteMongo),
             240 => Ok(BuiltinId::PostgresExecute),
+            241 => Ok(BuiltinId::ExecuteRedshift),
+            242 => Ok(BuiltinId::ExecuteMysql),
+            243 => Ok(BuiltinId::ExecuteSqlite),
+            244 => Ok(BuiltinId::ExecuteDuckDb),
             _ => Err(value),
         }
     }
@@ -1186,6 +1194,10 @@ impl BuiltinId {
             "iceberg_schema" => Some(BuiltinId::IcebergSchema),
             "write_postgres" => Some(BuiltinId::WritePostgres),
             "postgres_execute" => Some(BuiltinId::PostgresExecute),
+            "redshift_execute" => Some(BuiltinId::ExecuteRedshift),
+            "mysql_execute" => Some(BuiltinId::ExecuteMysql),
+            "sqlite_execute" => Some(BuiltinId::ExecuteSqlite),
+            "duckdb_execute" => Some(BuiltinId::ExecuteDuckDb),
             "write_redshift" => Some(BuiltinId::WriteRedshift),
             "write_mysql" => Some(BuiltinId::WriteMysql),
             "write_clickhouse" => Some(BuiltinId::WriteClickHouse),
@@ -1444,6 +1456,10 @@ impl BuiltinId {
             BuiltinId::IcebergSchema => "iceberg_schema",
             BuiltinId::WritePostgres => "write_postgres",
             BuiltinId::PostgresExecute => "postgres_execute",
+            BuiltinId::ExecuteRedshift => "redshift_execute",
+            BuiltinId::ExecuteMysql => "mysql_execute",
+            BuiltinId::ExecuteSqlite => "sqlite_execute",
+            BuiltinId::ExecuteDuckDb => "duckdb_execute",
             BuiltinId::WriteRedshift => "write_redshift",
             BuiltinId::WriteMysql => "write_mysql",
             BuiltinId::WriteClickHouse => "write_clickhouse",
