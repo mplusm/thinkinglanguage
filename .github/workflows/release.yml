@@ -23,13 +23,19 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
             archive: tar.gz
+            # Full connector set — this is the runner/server platform.
+            features: "sqlite,duckdb,mysql,mssql,snowflake,bigquery,databricks,clickhouse,mongodb,mcp"
           - target: aarch64-apple-darwin
             runner: macos-latest
             archive: tar.gz
+            continue-on-error: true
+            # Lighter set on macOS (skip the heavier native deps).
+            features: "sqlite,snowflake,bigquery,databricks,clickhouse,mcp"
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
             archive: zip
             continue-on-error: true
+            features: "sqlite,snowflake,bigquery,databricks,clickhouse,mcp"
 
     steps:
       - uses: actions/checkout@v4
@@ -48,7 +54,7 @@ jobs:
         with:
           timeout_minutes: 30
           max_attempts: 3
-          command: cargo build --release --target ${{ matrix.target }} --package thinkinglanguage --features sqlite
+          command: cargo build --release --target ${{ matrix.target }} --package thinkinglanguage --features "${{ matrix.features }}"
 
       - name: Package (unix)
         if: matrix.archive == 'tar.gz'
