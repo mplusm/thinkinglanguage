@@ -152,6 +152,25 @@ impl DataEngine {
         Ok(total_rows)
     }
 
+    /// Execute a single write/DDL statement and return the number of rows
+    /// affected. Unlike `query_postgres`, this expects no result set — it is the
+    /// path for INSERT/UPDATE/DELETE/CREATE/DROP. Tries the extended protocol
+    /// (which reports a row count) and falls back to the simple protocol for
+    /// statements that can't be prepared (some DDL/utility/multi-statement SQL).
+    pub fn execute_postgres(&self, conn_str: &str, sql: &str) -> Result<u64, String> {
+        let mut client = pg_connect(conn_str)?;
+        match client.execute(sql, &[]) {
+            Ok(n) => Ok(n),
+            Err(_) => {
+                let mut client2 = pg_connect(conn_str)?;
+                client2
+                    .batch_execute(sql)
+                    .map(|_| 0u64)
+                    .map_err(|e| format!("Postgres execute error: {}", pg_error_detail(&e)))
+            }
+        }
+    }
+
     /// Read a PostgreSQL table into a DataFusion DataFrame.
     pub fn read_postgres(
         &self,

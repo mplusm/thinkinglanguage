@@ -594,6 +594,10 @@ impl Environment {
             Value::Builtin("write_postgres".to_string()),
         );
         global.insert(
+            "postgres_execute".to_string(),
+            Value::Builtin("postgres_execute".to_string()),
+        );
+        global.insert(
             "write_redshift".to_string(),
             Value::Builtin("write_redshift".to_string()),
         );
@@ -3768,6 +3772,26 @@ impl Interpreter {
                 let n = self
                     .engine()
                     .write_postgres(df, &conn_str, &table_name, &mode)
+                    .map_err(runtime_err)?;
+                Ok(Value::Int(n as i64))
+            }
+            "postgres_execute" => {
+                if args.len() != 2 {
+                    return Err(runtime_err(
+                        "postgres_execute() expects (conn_str, sql)".into(),
+                    ));
+                }
+                let conn_str = match &args[0] {
+                    Value::String(s) => resolve_tl_config_connection_interp(s),
+                    _ => return Err(runtime_err("postgres_execute() conn_str must be a string".into())),
+                };
+                let sql = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err("postgres_execute() sql must be a string".into())),
+                };
+                let n = self
+                    .engine()
+                    .execute_postgres(&conn_str, &sql)
                     .map_err(runtime_err)?;
                 Ok(Value::Int(n as i64))
             }

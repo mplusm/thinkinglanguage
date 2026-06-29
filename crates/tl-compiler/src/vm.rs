@@ -3230,6 +3230,29 @@ impl Vm {
                 Ok(VmValue::Int(n as i64))
             }
             #[cfg(feature = "native")]
+            BuiltinId::PostgresExecute => {
+                if args.len() != 2 {
+                    return Err(runtime_err(
+                        "postgres_execute() expects 2 arguments (conn_str, sql)",
+                    ));
+                }
+                // A write/DDL statement is state-mutating — gate on the sandbox policy.
+                self.check_permission("connector:postgres")?;
+                let conn_str = match &args[0] {
+                    VmValue::String(s) => resolve_tl_config_connection(s),
+                    _ => return Err(runtime_err("postgres_execute() conn_str must be a string")),
+                };
+                let sql = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("postgres_execute() sql must be a string")),
+                };
+                let n = self
+                    .engine()
+                    .execute_postgres(&conn_str, &sql)
+                    .map_err(runtime_err)?;
+                Ok(VmValue::Int(n as i64))
+            }
+            #[cfg(feature = "native")]
             BuiltinId::WriteRedshift => {
                 if args.len() < 3 {
                     return Err(runtime_err(
@@ -3535,6 +3558,7 @@ impl Vm {
             | BuiltinId::WriteDatabricks
             | BuiltinId::WriteMssql
             | BuiltinId::WriteMongo
+            | BuiltinId::PostgresExecute
             | BuiltinId::PostgresQuery => Err(runtime_err("Data operations not available in WASM")),
             // ── AI builtins ──
             #[cfg(feature = "native")]

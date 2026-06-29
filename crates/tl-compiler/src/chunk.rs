@@ -686,6 +686,7 @@ pub enum BuiltinId {
     WriteDatabricks = 237,
     WriteMssql = 238,
     WriteMongo = 239,
+    PostgresExecute = 240,
 }
 
 impl TryFrom<u16> for BuiltinId {
@@ -933,6 +934,7 @@ impl TryFrom<u16> for BuiltinId {
             237 => Ok(BuiltinId::WriteDatabricks),
             238 => Ok(BuiltinId::WriteMssql),
             239 => Ok(BuiltinId::WriteMongo),
+            240 => Ok(BuiltinId::PostgresExecute),
             _ => Err(value),
         }
     }
@@ -1183,6 +1185,7 @@ impl BuiltinId {
             "iceberg_snapshots" => Some(BuiltinId::IcebergSnapshots),
             "iceberg_schema" => Some(BuiltinId::IcebergSchema),
             "write_postgres" => Some(BuiltinId::WritePostgres),
+            "postgres_execute" => Some(BuiltinId::PostgresExecute),
             "write_redshift" => Some(BuiltinId::WriteRedshift),
             "write_mysql" => Some(BuiltinId::WriteMysql),
             "write_clickhouse" => Some(BuiltinId::WriteClickHouse),
@@ -1440,6 +1443,7 @@ impl BuiltinId {
             BuiltinId::IcebergSnapshots => "iceberg_snapshots",
             BuiltinId::IcebergSchema => "iceberg_schema",
             BuiltinId::WritePostgres => "write_postgres",
+            BuiltinId::PostgresExecute => "postgres_execute",
             BuiltinId::WriteRedshift => "write_redshift",
             BuiltinId::WriteMysql => "write_mysql",
             BuiltinId::WriteClickHouse => "write_clickhouse",
