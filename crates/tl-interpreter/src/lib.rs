@@ -597,7 +597,11 @@ impl Environment {
             "postgres_execute".to_string(),
             Value::Builtin("postgres_execute".to_string()),
         );
-        for name in ["redshift_execute", "mysql_execute", "sqlite_execute", "duckdb_execute"] {
+        for name in [
+            "redshift_execute", "mysql_execute", "sqlite_execute", "duckdb_execute",
+            "snowflake_execute", "bigquery_execute", "databricks_execute", "clickhouse_execute",
+            "mssql_execute",
+        ] {
             global.insert(name.to_string(), Value::Builtin(name.to_string()));
         }
         global.insert(
@@ -3856,6 +3860,29 @@ impl Interpreter {
                     _ => return Err(runtime_err("duckdb_execute() sql must be a string".into())),
                 };
                 let n = self.engine().execute_duckdb(&db_path, &sql).map_err(runtime_err)?;
+                Ok(Value::Int(n as i64))
+            }
+            "snowflake_execute" | "bigquery_execute" | "databricks_execute" | "clickhouse_execute"
+            | "mssql_execute" => {
+                if args.len() != 2 {
+                    return Err(runtime_err(format!("{name}() expects (config, sql)")));
+                }
+                let conf = match &args[0] {
+                    Value::String(s) => resolve_tl_config_connection_interp(s),
+                    _ => return Err(runtime_err(format!("{name}() first arg must be a string"))),
+                };
+                let sql = match &args[1] {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(runtime_err(format!("{name}() sql must be a string"))),
+                };
+                let n = match name {
+                    "snowflake_execute" => self.engine().execute_snowflake(&conf, &sql),
+                    "bigquery_execute" => self.engine().execute_bigquery(&conf, &sql),
+                    "databricks_execute" => self.engine().execute_databricks(&conf, &sql),
+                    "clickhouse_execute" => self.engine().execute_clickhouse(&conf, &sql),
+                    _ => self.engine().execute_mssql(&conf, &sql),
+                }
+                .map_err(runtime_err)?;
                 Ok(Value::Int(n as i64))
             }
             "write_redshift" => {

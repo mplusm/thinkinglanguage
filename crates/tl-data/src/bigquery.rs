@@ -112,6 +112,29 @@ impl DataEngine {
         Ok(total_rows)
     }
 
+    /// Execute an arbitrary write/DDL statement on BigQuery. Mirrors
+    /// write_bigquery's request; returns numDmlAffectedRows when present.
+    pub fn execute_bigquery(&self, config_str: &str, sql: &str) -> Result<u64, String> {
+        let (project_id, access_token) = parse_bq_config(config_str)?;
+        let url =
+            format!("https://bigquery.googleapis.com/bigquery/v2/projects/{project_id}/queries");
+        let client = reqwest::blocking::Client::new();
+        let body = serde_json::json!({ "query": sql, "useLegacySql": false });
+        let resp = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .bearer_auth(&access_token)
+            .json(&body)
+            .send()
+            .map_err(|e| format!("BigQuery HTTP error: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("BigQuery execute error {}: {}", resp.status(), resp.text().unwrap_or_default()));
+        }
+        let v: serde_json::Value = resp.json().unwrap_or_default();
+        let n = v["numDmlAffectedRows"].as_str().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+        Ok(n)
+    }
+
     /// Read from BigQuery using a project ID and SQL query.
     /// Requires `GOOGLE_APPLICATION_CREDENTIALS` env var or `TL_BIGQUERY_KEY` for API key.
     /// Config can be JSON: `{"project":"my-project","credentials_file":"/path/to/sa.json"}`

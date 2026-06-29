@@ -167,6 +167,39 @@ impl DataEngine {
         Ok(total_rows)
     }
 
+    /// Execute an arbitrary write/DDL statement on Snowflake. Mirrors
+    /// write_snowflake's request with the caller's single statement. Returns 0
+    /// (the v2 statements API doesn't report a uniform affected-row count).
+    pub fn execute_snowflake(&self, config_str: &str, sql: &str) -> Result<u64, String> {
+        let (account, user, password, database, warehouse, schema_name) =
+            parse_snowflake_config(config_str)?;
+        let url = format!("https://{account}.snowflakecomputing.com/api/v2/statements");
+        let client = reqwest::blocking::Client::new();
+        let mut body = serde_json::json!({ "statement": sql, "timeout": 600 });
+        if !database.is_empty() {
+            body["database"] = serde_json::Value::String(database);
+        }
+        if !warehouse.is_empty() {
+            body["warehouse"] = serde_json::Value::String(warehouse);
+        }
+        if !schema_name.is_empty() {
+            body["schema"] = serde_json::Value::String(schema_name);
+        }
+        let resp = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .header("X-Snowflake-Authorization-Token-Type", "KEYPAIR_JWT")
+            .basic_auth(&user, Some(&password))
+            .json(&body)
+            .send()
+            .map_err(|e| format!("Snowflake HTTP error: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("Snowflake execute error {}: {}", resp.status(), resp.text().unwrap_or_default()));
+        }
+        Ok(0)
+    }
+
     /// Read from Snowflake using a JSON config string and SQL query.
     /// Config format: `{"account":"abc123","user":"USER","password":"...","database":"DB","warehouse":"WH"}`
     /// Or simple format: `account=abc123 user=USER password=... database=DB warehouse=WH`

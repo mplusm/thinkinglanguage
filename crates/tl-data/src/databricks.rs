@@ -162,6 +162,36 @@ impl DataEngine {
         Ok(total_rows)
     }
 
+    /// Execute an arbitrary write/DDL statement on Databricks. Mirrors
+    /// write_databricks's request with the caller's single statement.
+    pub fn execute_databricks(&self, config_str: &str, sql: &str) -> Result<u64, String> {
+        let (host, token, warehouse_id) = parse_databricks_config(config_str)?;
+        let url = format!("https://{host}/api/2.0/sql/statements");
+        let client = reqwest::blocking::Client::new();
+        let body = serde_json::json!({
+            "statement": sql,
+            "warehouse_id": warehouse_id,
+            "wait_timeout": "30s",
+            "on_wait_timeout": "CANCEL"
+        });
+        let resp = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .bearer_auth(&token)
+            .json(&body)
+            .send()
+            .map_err(|e| format!("Databricks HTTP error: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("Databricks execute error {}: {}", resp.status(), resp.text().unwrap_or_default()));
+        }
+        let v: serde_json::Value = resp.json().map_err(|e| format!("Databricks JSON parse error: {e}"))?;
+        let state = v["status"]["state"].as_str().unwrap_or("UNKNOWN");
+        if state != "SUCCEEDED" {
+            return Err(format!("Databricks statement state: {state}"));
+        }
+        Ok(0)
+    }
+
     /// Read from Databricks using a config string and SQL query.
     /// Config: `{"host":"adb-xxx.azuredatabricks.net","token":"dapi...","warehouse_id":"abc123"}`
     /// Or: `host=adb-xxx.azuredatabricks.net token=dapi... warehouse_id=abc123`

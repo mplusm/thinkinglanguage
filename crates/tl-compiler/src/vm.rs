@@ -3321,6 +3321,91 @@ impl Vm {
                 Ok(VmValue::Int(n as i64))
             }
             #[cfg(feature = "native")]
+            BuiltinId::ExecuteSnowflake => {
+                if args.len() != 2 {
+                    return Err(runtime_err("snowflake_execute() expects 2 arguments (config, sql)"));
+                }
+                self.check_permission("connector:snowflake")?;
+                let config = match &args[0] {
+                    VmValue::String(s) => resolve_tl_config_connection(s),
+                    _ => return Err(runtime_err("snowflake_execute() config must be a string")),
+                };
+                let sql = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("snowflake_execute() sql must be a string")),
+                };
+                let n = self.engine().execute_snowflake(&config, &sql).map_err(runtime_err)?;
+                Ok(VmValue::Int(n as i64))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::ExecuteBigquery => {
+                if args.len() != 2 {
+                    return Err(runtime_err("bigquery_execute() expects 2 arguments (config, sql)"));
+                }
+                self.check_permission("connector:bigquery")?;
+                let config = match &args[0] {
+                    VmValue::String(s) => resolve_tl_config_connection(s),
+                    _ => return Err(runtime_err("bigquery_execute() config must be a string")),
+                };
+                let sql = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("bigquery_execute() sql must be a string")),
+                };
+                let n = self.engine().execute_bigquery(&config, &sql).map_err(runtime_err)?;
+                Ok(VmValue::Int(n as i64))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::ExecuteDatabricks => {
+                if args.len() != 2 {
+                    return Err(runtime_err("databricks_execute() expects 2 arguments (config, sql)"));
+                }
+                self.check_permission("connector:databricks")?;
+                let config = match &args[0] {
+                    VmValue::String(s) => resolve_tl_config_connection(s),
+                    _ => return Err(runtime_err("databricks_execute() config must be a string")),
+                };
+                let sql = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("databricks_execute() sql must be a string")),
+                };
+                let n = self.engine().execute_databricks(&config, &sql).map_err(runtime_err)?;
+                Ok(VmValue::Int(n as i64))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::ExecuteClickhouse => {
+                if args.len() != 2 {
+                    return Err(runtime_err("clickhouse_execute() expects 2 arguments (url, sql)"));
+                }
+                self.check_permission("connector:clickhouse")?;
+                let url = match &args[0] {
+                    VmValue::String(s) => resolve_tl_config_connection(s),
+                    _ => return Err(runtime_err("clickhouse_execute() url must be a string")),
+                };
+                let sql = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("clickhouse_execute() sql must be a string")),
+                };
+                let n = self.engine().execute_clickhouse(&url, &sql).map_err(runtime_err)?;
+                Ok(VmValue::Int(n as i64))
+            }
+            #[cfg(feature = "native")]
+            BuiltinId::ExecuteMssql => {
+                if args.len() != 2 {
+                    return Err(runtime_err("mssql_execute() expects 2 arguments (conn_str, sql)"));
+                }
+                self.check_permission("connector:mssql")?;
+                let conn_str = match &args[0] {
+                    VmValue::String(s) => resolve_tl_config_connection(s),
+                    _ => return Err(runtime_err("mssql_execute() conn_str must be a string")),
+                };
+                let sql = match &args[1] {
+                    VmValue::String(s) => s.to_string(),
+                    _ => return Err(runtime_err("mssql_execute() sql must be a string")),
+                };
+                let n = self.engine().execute_mssql(&conn_str, &sql).map_err(runtime_err)?;
+                Ok(VmValue::Int(n as i64))
+            }
+            #[cfg(feature = "native")]
             BuiltinId::WriteRedshift => {
                 if args.len() < 3 {
                     return Err(runtime_err(
@@ -3631,6 +3716,11 @@ impl Vm {
             | BuiltinId::ExecuteMysql
             | BuiltinId::ExecuteSqlite
             | BuiltinId::ExecuteDuckDb
+            | BuiltinId::ExecuteSnowflake
+            | BuiltinId::ExecuteBigquery
+            | BuiltinId::ExecuteDatabricks
+            | BuiltinId::ExecuteClickhouse
+            | BuiltinId::ExecuteMssql
             | BuiltinId::PostgresQuery => Err(runtime_err("Data operations not available in WASM")),
             // ── AI builtins ──
             #[cfg(feature = "native")]

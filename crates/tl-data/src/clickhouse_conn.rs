@@ -141,6 +141,25 @@ impl DataEngine {
         Ok(total_rows)
     }
 
+    /// Execute an arbitrary write/DDL statement on ClickHouse via its HTTP
+    /// interface (POST the statement as the body). Returns 0 (ClickHouse's HTTP
+    /// interface doesn't report an affected-row count).
+    pub fn execute_clickhouse(&self, url: &str, sql: &str) -> Result<u64, String> {
+        let client = reqwest::blocking::Client::new();
+        let endpoint = format!("{}/", url.trim_end_matches('/'));
+        let response = client
+            .post(&endpoint)
+            .body(sql.to_string())
+            .send()
+            .map_err(|e| format!("ClickHouse HTTP request error: {e}"))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().unwrap_or_else(|_| "<unreadable body>".to_string());
+            return Err(format!("ClickHouse execute error (HTTP {status}): {body}"));
+        }
+        Ok(0)
+    }
+
     /// Read from ClickHouse using its HTTP interface and a SQL query.
     /// Uses JSONEachRow format for streaming-friendly line-delimited JSON.
     /// Batches rows into 50K-row RecordBatches and registers them with

@@ -194,6 +194,27 @@ impl DataEngine {
         })
     }
 
+    /// Execute an arbitrary write/DDL statement on SQL Server, returning rows
+    /// affected. Mirrors write_mssql's tiberius connect + execute.
+    pub fn execute_mssql(&self, conn_str: &str, sql: &str) -> Result<u64, String> {
+        self.rt.block_on(async {
+            let config = parse_mssql_config(conn_str)?;
+            let tcp = TcpStream::connect(config.get_addr())
+                .await
+                .map_err(|e| format!("MSSQL TCP connection error: {e}"))?;
+            tcp.set_nodelay(true)
+                .map_err(|e| format!("TCP nodelay error: {e}"))?;
+            let mut client = Client::connect(config, tcp.compat_write())
+                .await
+                .map_err(|e| format!("MSSQL connection error: {e}"))?;
+            let res = client
+                .execute(sql, &[])
+                .await
+                .map_err(|e| format!("MSSQL execute error: {e}"))?;
+            Ok(res.rows_affected().iter().sum::<u64>())
+        })
+    }
+
     /// Read from MSSQL using an ADO-style connection string and SQL query.
     /// Uses tiberius async client with row streaming and batched Arrow conversion.
     pub fn read_mssql(

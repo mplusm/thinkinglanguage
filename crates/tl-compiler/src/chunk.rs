@@ -691,6 +691,11 @@ pub enum BuiltinId {
     ExecuteMysql = 242,
     ExecuteSqlite = 243,
     ExecuteDuckDb = 244,
+    ExecuteSnowflake = 245,
+    ExecuteBigquery = 246,
+    ExecuteDatabricks = 247,
+    ExecuteClickhouse = 248,
+    ExecuteMssql = 249,
 }
 
 impl TryFrom<u16> for BuiltinId {
@@ -943,6 +948,11 @@ impl TryFrom<u16> for BuiltinId {
             242 => Ok(BuiltinId::ExecuteMysql),
             243 => Ok(BuiltinId::ExecuteSqlite),
             244 => Ok(BuiltinId::ExecuteDuckDb),
+            245 => Ok(BuiltinId::ExecuteSnowflake),
+            246 => Ok(BuiltinId::ExecuteBigquery),
+            247 => Ok(BuiltinId::ExecuteDatabricks),
+            248 => Ok(BuiltinId::ExecuteClickhouse),
+            249 => Ok(BuiltinId::ExecuteMssql),
             _ => Err(value),
         }
     }
@@ -1198,6 +1208,11 @@ impl BuiltinId {
             "mysql_execute" => Some(BuiltinId::ExecuteMysql),
             "sqlite_execute" => Some(BuiltinId::ExecuteSqlite),
             "duckdb_execute" => Some(BuiltinId::ExecuteDuckDb),
+            "snowflake_execute" => Some(BuiltinId::ExecuteSnowflake),
+            "bigquery_execute" => Some(BuiltinId::ExecuteBigquery),
+            "databricks_execute" => Some(BuiltinId::ExecuteDatabricks),
+            "clickhouse_execute" => Some(BuiltinId::ExecuteClickhouse),
+            "mssql_execute" => Some(BuiltinId::ExecuteMssql),
             "write_redshift" => Some(BuiltinId::WriteRedshift),
             "write_mysql" => Some(BuiltinId::WriteMysql),
             "write_clickhouse" => Some(BuiltinId::WriteClickHouse),
@@ -1460,6 +1475,11 @@ impl BuiltinId {
             BuiltinId::ExecuteMysql => "mysql_execute",
             BuiltinId::ExecuteSqlite => "sqlite_execute",
             BuiltinId::ExecuteDuckDb => "duckdb_execute",
+            BuiltinId::ExecuteSnowflake => "snowflake_execute",
+            BuiltinId::ExecuteBigquery => "bigquery_execute",
+            BuiltinId::ExecuteDatabricks => "databricks_execute",
+            BuiltinId::ExecuteClickhouse => "clickhouse_execute",
+            BuiltinId::ExecuteMssql => "mssql_execute",
             BuiltinId::WriteRedshift => "write_redshift",
             BuiltinId::WriteMysql => "write_mysql",
             BuiltinId::WriteClickHouse => "write_clickhouse",
