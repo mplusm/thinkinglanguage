@@ -61,6 +61,9 @@ fn pg_type_to_arrow(pg_type: &postgres::types::Type) -> DataType {
         postgres::types::Type::INT8 => DataType::Int64,
         postgres::types::Type::FLOAT4 => DataType::Float32,
         postgres::types::Type::FLOAT8 => DataType::Float64,
+        // NUMERIC/DECIMAL arrive as a binary decimal; surface them as Float64
+        // (read via rust_decimal in the builder) so the values aren't dropped.
+        postgres::types::Type::NUMERIC => DataType::Float64,
         postgres::types::Type::TEXT
         | postgres::types::Type::VARCHAR
         | postgres::types::Type::BPCHAR => DataType::Utf8,
@@ -94,7 +97,18 @@ fn build_record_batch(rows: &[postgres::Row], schema: &Arc<Schema>) -> Result<Re
                 Arc::new(Float32Array::from(values))
             }
             DataType::Float64 => {
-                let values: Vec<Option<f64>> = rows.iter().map(|r| r.get(col_idx)).collect();
+                // FLOAT8 reads straight to f64; NUMERIC/DECIMAL needs rust_decimal
+                // (then to f64) — try both so neither type comes back null.
+                let values: Vec<Option<f64>> = rows
+                    .iter()
+                    .map(|r| {
+                        r.try_get::<_, f64>(col_idx).ok().or_else(|| {
+                            r.try_get::<_, rust_decimal::Decimal>(col_idx)
+                                .ok()
+                                .and_then(|d| d.to_string().parse::<f64>().ok())
+                        })
+                    })
+                    .collect();
                 Arc::new(Float64Array::from(values))
             }
             _ => {
