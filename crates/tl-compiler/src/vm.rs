@@ -3271,139 +3271,179 @@ impl Vm {
             }
             #[cfg(feature = "native")]
             BuiltinId::ExecuteMysql => {
-                if args.len() != 2 {
-                    return Err(runtime_err("mysql_execute() expects 2 arguments (conn_str, sql)"));
+                #[cfg(feature = "mysql")]
+                {
+                    if args.len() != 2 {
+                        return Err(runtime_err("mysql_execute() expects 2 arguments (conn_str, sql)"));
+                    }
+                    self.check_permission("connector:mysql")?;
+                    let conn_str = match &args[0] {
+                        VmValue::String(s) => resolve_tl_config_connection(s),
+                        _ => return Err(runtime_err("mysql_execute() conn_str must be a string")),
+                    };
+                    let sql = match &args[1] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("mysql_execute() sql must be a string")),
+                    };
+                    let n = self.engine().execute_mysql(&conn_str, &sql).map_err(runtime_err)?;
+                    Ok(VmValue::Int(n as i64))
                 }
-                self.check_permission("connector:mysql")?;
-                let conn_str = match &args[0] {
-                    VmValue::String(s) => resolve_tl_config_connection(s),
-                    _ => return Err(runtime_err("mysql_execute() conn_str must be a string")),
-                };
-                let sql = match &args[1] {
-                    VmValue::String(s) => s.to_string(),
-                    _ => return Err(runtime_err("mysql_execute() sql must be a string")),
-                };
-                let n = self.engine().execute_mysql(&conn_str, &sql).map_err(runtime_err)?;
-                Ok(VmValue::Int(n as i64))
+                #[cfg(not(feature = "mysql"))]
+                Err(runtime_err("mysql_execute() requires the 'mysql' feature"))
             }
             #[cfg(feature = "native")]
             BuiltinId::ExecuteSqlite => {
-                if args.len() != 2 {
-                    return Err(runtime_err("sqlite_execute() expects 2 arguments (db_path, sql)"));
+                #[cfg(feature = "sqlite")]
+                {
+                    if args.len() != 2 {
+                        return Err(runtime_err("sqlite_execute() expects 2 arguments (db_path, sql)"));
+                    }
+                    self.check_permission("connector:sqlite")?;
+                    let db_path = match &args[0] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("sqlite_execute() db_path must be a string")),
+                    };
+                    let sql = match &args[1] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("sqlite_execute() sql must be a string")),
+                    };
+                    let n = self.engine().execute_sqlite(&db_path, &sql).map_err(runtime_err)?;
+                    Ok(VmValue::Int(n as i64))
                 }
-                self.check_permission("connector:sqlite")?;
-                let db_path = match &args[0] {
-                    VmValue::String(s) => s.to_string(),
-                    _ => return Err(runtime_err("sqlite_execute() db_path must be a string")),
-                };
-                let sql = match &args[1] {
-                    VmValue::String(s) => s.to_string(),
-                    _ => return Err(runtime_err("sqlite_execute() sql must be a string")),
-                };
-                let n = self.engine().execute_sqlite(&db_path, &sql).map_err(runtime_err)?;
-                Ok(VmValue::Int(n as i64))
+                #[cfg(not(feature = "sqlite"))]
+                Err(runtime_err("sqlite_execute() requires the 'sqlite' feature"))
             }
             #[cfg(feature = "native")]
             BuiltinId::ExecuteDuckDb => {
-                if args.len() != 2 {
-                    return Err(runtime_err("duckdb_execute() expects 2 arguments (db_path, sql)"));
+                #[cfg(feature = "duckdb")]
+                {
+                    if args.len() != 2 {
+                        return Err(runtime_err("duckdb_execute() expects 2 arguments (db_path, sql)"));
+                    }
+                    self.check_permission("connector:duckdb")?;
+                    let db_path = match &args[0] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("duckdb_execute() db_path must be a string")),
+                    };
+                    let sql = match &args[1] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("duckdb_execute() sql must be a string")),
+                    };
+                    let n = self.engine().execute_duckdb(&db_path, &sql).map_err(runtime_err)?;
+                    Ok(VmValue::Int(n as i64))
                 }
-                self.check_permission("connector:duckdb")?;
-                let db_path = match &args[0] {
-                    VmValue::String(s) => s.to_string(),
-                    _ => return Err(runtime_err("duckdb_execute() db_path must be a string")),
-                };
-                let sql = match &args[1] {
-                    VmValue::String(s) => s.to_string(),
-                    _ => return Err(runtime_err("duckdb_execute() sql must be a string")),
-                };
-                let n = self.engine().execute_duckdb(&db_path, &sql).map_err(runtime_err)?;
-                Ok(VmValue::Int(n as i64))
+                #[cfg(not(feature = "duckdb"))]
+                Err(runtime_err("duckdb_execute() requires the 'duckdb' feature"))
             }
             #[cfg(feature = "native")]
             BuiltinId::ExecuteSnowflake => {
-                if args.len() != 2 {
-                    return Err(runtime_err("snowflake_execute() expects 2 arguments (config, sql)"));
+                #[cfg(feature = "snowflake")]
+                {
+                    if args.len() != 2 {
+                        return Err(runtime_err("snowflake_execute() expects 2 arguments (config, sql)"));
+                    }
+                    self.check_permission("connector:snowflake")?;
+                    let config = match &args[0] {
+                        VmValue::String(s) => resolve_tl_config_connection(s),
+                        _ => return Err(runtime_err("snowflake_execute() config must be a string")),
+                    };
+                    let sql = match &args[1] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("snowflake_execute() sql must be a string")),
+                    };
+                    let n = self.engine().execute_snowflake(&config, &sql).map_err(runtime_err)?;
+                    Ok(VmValue::Int(n as i64))
                 }
-                self.check_permission("connector:snowflake")?;
-                let config = match &args[0] {
-                    VmValue::String(s) => resolve_tl_config_connection(s),
-                    _ => return Err(runtime_err("snowflake_execute() config must be a string")),
-                };
-                let sql = match &args[1] {
-                    VmValue::String(s) => s.to_string(),
-                    _ => return Err(runtime_err("snowflake_execute() sql must be a string")),
-                };
-                let n = self.engine().execute_snowflake(&config, &sql).map_err(runtime_err)?;
-                Ok(VmValue::Int(n as i64))
+                #[cfg(not(feature = "snowflake"))]
+                Err(runtime_err("snowflake_execute() requires the 'snowflake' feature"))
             }
             #[cfg(feature = "native")]
             BuiltinId::ExecuteBigquery => {
-                if args.len() != 2 {
-                    return Err(runtime_err("bigquery_execute() expects 2 arguments (config, sql)"));
+                #[cfg(feature = "bigquery")]
+                {
+                    if args.len() != 2 {
+                        return Err(runtime_err("bigquery_execute() expects 2 arguments (config, sql)"));
+                    }
+                    self.check_permission("connector:bigquery")?;
+                    let config = match &args[0] {
+                        VmValue::String(s) => resolve_tl_config_connection(s),
+                        _ => return Err(runtime_err("bigquery_execute() config must be a string")),
+                    };
+                    let sql = match &args[1] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("bigquery_execute() sql must be a string")),
+                    };
+                    let n = self.engine().execute_bigquery(&config, &sql).map_err(runtime_err)?;
+                    Ok(VmValue::Int(n as i64))
                 }
-                self.check_permission("connector:bigquery")?;
-                let config = match &args[0] {
-                    VmValue::String(s) => resolve_tl_config_connection(s),
-                    _ => return Err(runtime_err("bigquery_execute() config must be a string")),
-                };
-                let sql = match &args[1] {
-                    VmValue::String(s) => s.to_string(),
-                    _ => return Err(runtime_err("bigquery_execute() sql must be a string")),
-                };
-                let n = self.engine().execute_bigquery(&config, &sql).map_err(runtime_err)?;
-                Ok(VmValue::Int(n as i64))
+                #[cfg(not(feature = "bigquery"))]
+                Err(runtime_err("bigquery_execute() requires the 'bigquery' feature"))
             }
             #[cfg(feature = "native")]
             BuiltinId::ExecuteDatabricks => {
-                if args.len() != 2 {
-                    return Err(runtime_err("databricks_execute() expects 2 arguments (config, sql)"));
+                #[cfg(feature = "databricks")]
+                {
+                    if args.len() != 2 {
+                        return Err(runtime_err("databricks_execute() expects 2 arguments (config, sql)"));
+                    }
+                    self.check_permission("connector:databricks")?;
+                    let config = match &args[0] {
+                        VmValue::String(s) => resolve_tl_config_connection(s),
+                        _ => return Err(runtime_err("databricks_execute() config must be a string")),
+                    };
+                    let sql = match &args[1] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("databricks_execute() sql must be a string")),
+                    };
+                    let n = self.engine().execute_databricks(&config, &sql).map_err(runtime_err)?;
+                    Ok(VmValue::Int(n as i64))
                 }
-                self.check_permission("connector:databricks")?;
-                let config = match &args[0] {
-                    VmValue::String(s) => resolve_tl_config_connection(s),
-                    _ => return Err(runtime_err("databricks_execute() config must be a string")),
-                };
-                let sql = match &args[1] {
-                    VmValue::String(s) => s.to_string(),
-                    _ => return Err(runtime_err("databricks_execute() sql must be a string")),
-                };
-                let n = self.engine().execute_databricks(&config, &sql).map_err(runtime_err)?;
-                Ok(VmValue::Int(n as i64))
+                #[cfg(not(feature = "databricks"))]
+                Err(runtime_err("databricks_execute() requires the 'databricks' feature"))
             }
             #[cfg(feature = "native")]
             BuiltinId::ExecuteClickhouse => {
-                if args.len() != 2 {
-                    return Err(runtime_err("clickhouse_execute() expects 2 arguments (url, sql)"));
+                #[cfg(feature = "clickhouse")]
+                {
+                    if args.len() != 2 {
+                        return Err(runtime_err("clickhouse_execute() expects 2 arguments (url, sql)"));
+                    }
+                    self.check_permission("connector:clickhouse")?;
+                    let url = match &args[0] {
+                        VmValue::String(s) => resolve_tl_config_connection(s),
+                        _ => return Err(runtime_err("clickhouse_execute() url must be a string")),
+                    };
+                    let sql = match &args[1] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("clickhouse_execute() sql must be a string")),
+                    };
+                    let n = self.engine().execute_clickhouse(&url, &sql).map_err(runtime_err)?;
+                    Ok(VmValue::Int(n as i64))
                 }
-                self.check_permission("connector:clickhouse")?;
-                let url = match &args[0] {
-                    VmValue::String(s) => resolve_tl_config_connection(s),
-                    _ => return Err(runtime_err("clickhouse_execute() url must be a string")),
-                };
-                let sql = match &args[1] {
-                    VmValue::String(s) => s.to_string(),
-                    _ => return Err(runtime_err("clickhouse_execute() sql must be a string")),
-                };
-                let n = self.engine().execute_clickhouse(&url, &sql).map_err(runtime_err)?;
-                Ok(VmValue::Int(n as i64))
+                #[cfg(not(feature = "clickhouse"))]
+                Err(runtime_err("clickhouse_execute() requires the 'clickhouse' feature"))
             }
             #[cfg(feature = "native")]
             BuiltinId::ExecuteMssql => {
-                if args.len() != 2 {
-                    return Err(runtime_err("mssql_execute() expects 2 arguments (conn_str, sql)"));
+                #[cfg(feature = "mssql")]
+                {
+                    if args.len() != 2 {
+                        return Err(runtime_err("mssql_execute() expects 2 arguments (conn_str, sql)"));
+                    }
+                    self.check_permission("connector:mssql")?;
+                    let conn_str = match &args[0] {
+                        VmValue::String(s) => resolve_tl_config_connection(s),
+                        _ => return Err(runtime_err("mssql_execute() conn_str must be a string")),
+                    };
+                    let sql = match &args[1] {
+                        VmValue::String(s) => s.to_string(),
+                        _ => return Err(runtime_err("mssql_execute() sql must be a string")),
+                    };
+                    let n = self.engine().execute_mssql(&conn_str, &sql).map_err(runtime_err)?;
+                    Ok(VmValue::Int(n as i64))
                 }
-                self.check_permission("connector:mssql")?;
-                let conn_str = match &args[0] {
-                    VmValue::String(s) => resolve_tl_config_connection(s),
-                    _ => return Err(runtime_err("mssql_execute() conn_str must be a string")),
-                };
-                let sql = match &args[1] {
-                    VmValue::String(s) => s.to_string(),
-                    _ => return Err(runtime_err("mssql_execute() sql must be a string")),
-                };
-                let n = self.engine().execute_mssql(&conn_str, &sql).map_err(runtime_err)?;
-                Ok(VmValue::Int(n as i64))
+                #[cfg(not(feature = "mssql"))]
+                Err(runtime_err("mssql_execute() requires the 'mssql' feature"))
             }
             #[cfg(feature = "native")]
             BuiltinId::WriteRedshift => {
