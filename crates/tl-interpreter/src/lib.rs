@@ -3818,49 +3818,64 @@ impl Interpreter {
                 Ok(Value::Int(n as i64))
             }
             "mysql_execute" => {
-                if args.len() != 2 {
-                    return Err(runtime_err("mysql_execute() expects (conn_str, sql)".into()));
+                #[cfg(feature = "mysql")]
+                {
+                    if args.len() != 2 {
+                        return Err(runtime_err("mysql_execute() expects (conn_str, sql)".into()));
+                    }
+                    let conn_str = match &args[0] {
+                        Value::String(s) => resolve_tl_config_connection_interp(s),
+                        _ => return Err(runtime_err("mysql_execute() conn_str must be a string".into())),
+                    };
+                    let sql = match &args[1] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err("mysql_execute() sql must be a string".into())),
+                    };
+                    let n = self.engine().execute_mysql(&conn_str, &sql).map_err(runtime_err)?;
+                    Ok(Value::Int(n as i64))
                 }
-                let conn_str = match &args[0] {
-                    Value::String(s) => resolve_tl_config_connection_interp(s),
-                    _ => return Err(runtime_err("mysql_execute() conn_str must be a string".into())),
-                };
-                let sql = match &args[1] {
-                    Value::String(s) => s.clone(),
-                    _ => return Err(runtime_err("mysql_execute() sql must be a string".into())),
-                };
-                let n = self.engine().execute_mysql(&conn_str, &sql).map_err(runtime_err)?;
-                Ok(Value::Int(n as i64))
+                #[cfg(not(feature = "mysql"))]
+                Err(runtime_err("mysql_execute() requires the 'mysql' feature".into()))
             }
             "sqlite_execute" => {
-                if args.len() != 2 {
-                    return Err(runtime_err("sqlite_execute() expects (db_path, sql)".into()));
+                #[cfg(feature = "sqlite")]
+                {
+                    if args.len() != 2 {
+                        return Err(runtime_err("sqlite_execute() expects (db_path, sql)".into()));
+                    }
+                    let db_path = match &args[0] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err("sqlite_execute() db_path must be a string".into())),
+                    };
+                    let sql = match &args[1] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err("sqlite_execute() sql must be a string".into())),
+                    };
+                    let n = self.engine().execute_sqlite(&db_path, &sql).map_err(runtime_err)?;
+                    Ok(Value::Int(n as i64))
                 }
-                let db_path = match &args[0] {
-                    Value::String(s) => s.clone(),
-                    _ => return Err(runtime_err("sqlite_execute() db_path must be a string".into())),
-                };
-                let sql = match &args[1] {
-                    Value::String(s) => s.clone(),
-                    _ => return Err(runtime_err("sqlite_execute() sql must be a string".into())),
-                };
-                let n = self.engine().execute_sqlite(&db_path, &sql).map_err(runtime_err)?;
-                Ok(Value::Int(n as i64))
+                #[cfg(not(feature = "sqlite"))]
+                Err(runtime_err("sqlite_execute() requires the 'sqlite' feature".into()))
             }
             "duckdb_execute" => {
-                if args.len() != 2 {
-                    return Err(runtime_err("duckdb_execute() expects (db_path, sql)".into()));
+                #[cfg(feature = "duckdb")]
+                {
+                    if args.len() != 2 {
+                        return Err(runtime_err("duckdb_execute() expects (db_path, sql)".into()));
+                    }
+                    let db_path = match &args[0] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err("duckdb_execute() db_path must be a string".into())),
+                    };
+                    let sql = match &args[1] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(runtime_err("duckdb_execute() sql must be a string".into())),
+                    };
+                    let n = self.engine().execute_duckdb(&db_path, &sql).map_err(runtime_err)?;
+                    Ok(Value::Int(n as i64))
                 }
-                let db_path = match &args[0] {
-                    Value::String(s) => s.clone(),
-                    _ => return Err(runtime_err("duckdb_execute() db_path must be a string".into())),
-                };
-                let sql = match &args[1] {
-                    Value::String(s) => s.clone(),
-                    _ => return Err(runtime_err("duckdb_execute() sql must be a string".into())),
-                };
-                let n = self.engine().execute_duckdb(&db_path, &sql).map_err(runtime_err)?;
-                Ok(Value::Int(n as i64))
+                #[cfg(not(feature = "duckdb"))]
+                Err(runtime_err("duckdb_execute() requires the 'duckdb' feature".into()))
             }
             "snowflake_execute" | "bigquery_execute" | "databricks_execute" | "clickhouse_execute"
             | "mssql_execute" => {
@@ -3875,14 +3890,26 @@ impl Interpreter {
                     Value::String(s) => s.clone(),
                     _ => return Err(runtime_err(format!("{name}() sql must be a string"))),
                 };
-                let n = match name {
-                    "snowflake_execute" => self.engine().execute_snowflake(&conf, &sql),
-                    "bigquery_execute" => self.engine().execute_bigquery(&conf, &sql),
-                    "databricks_execute" => self.engine().execute_databricks(&conf, &sql),
-                    "clickhouse_execute" => self.engine().execute_clickhouse(&conf, &sql),
-                    _ => self.engine().execute_mssql(&conf, &sql),
-                }
-                .map_err(runtime_err)?;
+                // Each connector is feature-gated; an unbuilt one falls through to a clear
+                // error. `n: u64` is annotated so the match still types when every real
+                // arm is cfg'd out (default/reduced builds), leaving only the `_` arm.
+                let n: u64 = match name {
+                    #[cfg(feature = "snowflake")]
+                    "snowflake_execute" => self.engine().execute_snowflake(&conf, &sql).map_err(runtime_err)?,
+                    #[cfg(feature = "bigquery")]
+                    "bigquery_execute" => self.engine().execute_bigquery(&conf, &sql).map_err(runtime_err)?,
+                    #[cfg(feature = "databricks")]
+                    "databricks_execute" => self.engine().execute_databricks(&conf, &sql).map_err(runtime_err)?,
+                    #[cfg(feature = "clickhouse")]
+                    "clickhouse_execute" => self.engine().execute_clickhouse(&conf, &sql).map_err(runtime_err)?,
+                    #[cfg(feature = "mssql")]
+                    "mssql_execute" => self.engine().execute_mssql(&conf, &sql).map_err(runtime_err)?,
+                    _ => {
+                        return Err(runtime_err(format!(
+                            "{name}() requires its connector feature, which is not built into this binary"
+                        )))
+                    }
+                };
                 Ok(Value::Int(n as i64))
             }
             "write_redshift" => {
